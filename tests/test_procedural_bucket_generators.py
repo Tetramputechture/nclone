@@ -240,6 +240,59 @@ def test_mine_path_contains_at_least_one_mine(phase1_entries):
     assert checked > 0, "no MINE_NAVIGATION entries exercised"
 
 
+# Entity types the simulator actually instantiates (each has an entity class in
+# entity_factory.get_entity_class_for_type). Types outside ALLOWED_INSTANTIATED
+# are out of scope for the RL training subset; the exit *switch* (type 4) is
+# created as the exit door's child slot, not a class of its own.
+_SIM_INSTANTIATED_TYPES = {1, 2, 3, 5, 6, 8, 10, 11, 14, 17, 20, 21, 24, 25, 26, 28}
+_ALLOWED_INSTANTIATED_TYPES = {1, 2, 3, 21}  # mines, gold, exit door (+ child switch)
+
+
+def _instantiated_entity_types(map_data: List[int]) -> set:
+    """Mirror ``MapLoader.load_map_entities``: scan from 1230, stride 5, to the
+    end of the buffer, returning the set of types the simulator would actually
+    instantiate. This is the ground truth for "what the RL agent sees" and is
+    robust to zero-padding gaps (unlike a break-on-first-zero parse)."""
+    found = set()
+    idx = 1230
+    n = len(map_data)
+    while idx + 4 < n:
+        t = map_data[idx]
+        if t in _SIM_INSTANTIATED_TYPES:
+            found.add(t)
+        idx += 5
+    return found
+
+
+@pytest.mark.parametrize("seed", [0, 1, 7, 42, 123])
+def test_phase1_levels_only_contain_subset_entities(phase1_entries, seed):
+    """Every Phase-1 catalog level stays within the RL entity subset.
+
+    Contract: the simulator may only instantiate toggle mines (1/21), gold (2),
+    and exactly one exit door (3) + exit switch (4) -- no locked/trap doors,
+    drones, thwumps, bounce blocks, launch pads, one-ways, boost pads, etc.
+    This guards the regression where ``horizontal_corridor`` leaked incidental
+    locked doors and ``add_random_entities_outside_playspace`` could emit
+    hazards, and mirrors the production ``subset_ok`` gate.
+    """
+    from nclone.levelgen.labeling import subset_ok
+
+    checked = 0
+    for bucket, tier, gen_type, preset in phase1_entries:
+        md = _build(gen_type, preset, seed=seed).map_data()
+        disallowed = _instantiated_entity_types(md) - _ALLOWED_INSTANTIATED_TYPES
+        assert not disallowed, (
+            f"{bucket}/{gen_type}:{preset} (seed={seed}) instantiates "
+            f"out-of-subset entity types {sorted(disallowed)}"
+        )
+        assert subset_ok(md), (
+            f"{bucket}/{gen_type}:{preset} (seed={seed}) failed subset_ok "
+            f"(entity classes or door/switch count outside contract)"
+        )
+        checked += 1
+    assert checked > 0, "no Phase-1 entries exercised"
+
+
 @pytest.mark.parametrize("seed", [0, 1, 42])
 def test_dedicated_generators_emit_exactly_one_exit_door(phase1_entries, seed):
     """Dedicated Phase-1 generators emit exactly one exit door + switch pair."""

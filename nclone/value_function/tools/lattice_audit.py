@@ -232,6 +232,17 @@ class AuditResult:
     spike_solved: Optional[bool] = None
 
 
+class LatticeTooLargeError(Exception):
+    """Raised when the surface graph exceeds the node budget, so the caller can
+    fall back to the cheap free-space cost-to-go instead of a minutes-long
+    enumeration on an open-arena level."""
+
+    def __init__(self, n_nodes: int, budget: int):
+        self.n_nodes = n_nodes
+        self.budget = budget
+        super().__init__(f"surface graph too large: {n_nodes} nodes > {budget} budget")
+
+
 class LatticeAudit:
     def __init__(self, map_path: Optional[str] = None, workers: int = 4,
                  mine_inflation: bool = True,
@@ -244,18 +255,35 @@ class LatticeAudit:
                  momentum_model: str = "legacy",
                  cdj_launch_modes: Optional[str] = None,
                  slope_jump_modes: Optional[str] = None,
-                 keep_mine_geometry: Optional[bool] = None):
+                 keep_mine_geometry: Optional[bool] = None,
+                 max_nodes: Optional[int] = None):
         self.map_path = map_path
         self.use_native = use_native
-        # CDJ trick-edge launch families to enumerate.  "floor_jump" (default) =
-        # settle + floor-jump up the wall only; "floor_jump+carry" also enumerates
-        # generalized carry launches from reachable wall nodes that arrive rising
-        # (any upward velocity at the corner, not just a floor jump from rest).
-        # Env override NCLONE_CDJ_LAUNCH_MODES lets corpus/training jobs flip it.
+        # Node-count budget (surface_points x velocity_bins). Edge enumeration is
+        # ~O(nodes x arcs) and EXPLODES on open arenas (hundreds of surface points
+        # -> minutes). When the graph exceeds this budget we abort BEFORE the
+        # doomed enumeration and raise ``LatticeTooLargeError`` so the caller falls
+        # back to the cheap free-space cost-to-go (a valid dense PBRS potential).
+        # None (default) = no limit (byte-identical legacy behavior). Env override
+        # NCLONE_LATTICE_MAX_NODES for corpus/training precompute.
+        if max_nodes is None:
+            _env = os.environ.get("NCLONE_LATTICE_MAX_NODES", "").strip()
+            max_nodes = int(_env) if _env.isdigit() else None
+        self.max_nodes = max_nodes
+        # CDJ trick-edge launch families to enumerate.  Empty (default) => OFF:
+        # CDJ enumeration (settle + floor-jump/carry launches off every wall
+        # corner) is the dominant lattice-precompute cost and is wasted on the
+        # vast majority of levels, which never need a CDJ.  Opt in per-level for
+        # the few CDJ-required maps:  "floor_jump" = settle + floor-jump up the
+        # wall only; "floor_jump+carry" also enumerates generalized carry
+        # launches from reachable wall nodes that arrive rising (any upward
+        # velocity at the corner, not just a floor jump from rest).  Set via the
+        # ``cdj_launch_modes`` arg or the NCLONE_CDJ_LAUNCH_MODES env override
+        # (corpus/training jobs leave it off for speed).
         self.cdj_launch_modes = str(
             cdj_launch_modes
             if cdj_launch_modes is not None
-            else os.environ.get("NCLONE_CDJ_LAUNCH_MODES", "floor_jump")
+            else os.environ.get("NCLONE_CDJ_LAUNCH_MODES", "")
         )
         # Slope-jump trick edges (slope_jump_edges).  Empty (default) => OFF, so
         # the enumerated edge set is byte-identical to before.  Any non-empty
@@ -300,6 +328,12 @@ class LatticeAudit:
         else:
             self.name = name or os.path.basename(map_path.rstrip("/"))
             self.map_data = _load_map_data(map_path)
+        # Some datasets store entity coords as FLOATS (e.g. 144.0); the native sim
+        # loader requires ints and floors floats internally anyway. Coerce to int so
+        # the lattice builds on float-coord levels instead of raising
+        # (otherwise the dense lattice reward would silently fall back everywhere).
+        # Non-negative map coords => int() == floor(), matching the native sim.
+        self.map_data = [int(v) for v in self.map_data]
         self.sim = Nnative.Simulator.load(self.map_data)
         self.workers = workers
         self.mine_inflation = mine_inflation
@@ -354,11 +388,15 @@ class LatticeAudit:
         for ``compute_two_phase_cost_to_go``.  Additive: a map with no firing
         corner gets no edges and the pipeline is unchanged.
         """
-        from ..cdj_edges import enumerate_cdj_edges
         sw_air: dict = {}
         ex_air: dict = {}
         enable_floor = "floor_jump" in self.cdj_launch_modes
         enable_carry = "carry" in self.cdj_launch_modes
+        # OFF by default: skip the (expensive) CDJ enumeration entirely unless a
+        # launch family was explicitly requested.  Mirrors the slope-jump guard.
+        if not (enable_floor or enable_carry):
+            return sw_air, ex_air
+        from ..cdj_edges import enumerate_cdj_edges
         try:
             tedges = enumerate_cdj_edges(graph, self.sim, self.switch, self.exit,
                                          enable_floor=enable_floor,
@@ -487,6 +525,12 @@ class LatticeAudit:
                                           momentum_model=self.momentum_model,
                                           keep_mine_geometry=self.keep_mine_geometry)
         graph = build_graph(surface_points)
+        # Node-budget early-out: edge enumeration is ~O(nodes x arcs) and explodes
+        # on open arenas (a single open level was measured >240s). Abort BEFORE the
+        # doomed enumeration so the caller falls back to the cheap free-space
+        # cost-to-go (a valid dense PBRS potential). No-op when max_nodes is None.
+        if self.max_nodes is not None and graph.n_nodes > self.max_nodes:
+            raise LatticeTooLargeError(graph.n_nodes, self.max_nodes)
         # Tag the graph so route_extraction reconstructs launch/landing velocity
         # in the matching frame (tangential => via per-point tangent).
         graph.momentum_model = self.momentum_model

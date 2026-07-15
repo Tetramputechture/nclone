@@ -72,6 +72,7 @@ class LatticeDistanceSource:
         name: Optional[str] = None,
         workers: int = 4,
         slope_jump_modes: Optional[str] = None,
+        max_nodes: Optional[int] = None,
     ):
         self.available = False
         self._graph: Optional[SurfaceGraph] = None
@@ -99,6 +100,7 @@ class LatticeDistanceSource:
                 jump_tax=DEFAULT_JUMP_TAX if jump_tax is None else float(jump_tax),
                 momentum_model=momentum_model,
                 slope_jump_modes=slope_jump_modes,
+                max_nodes=max_nodes,
             )
             pc = audit.precompute(use_cache=use_cache)
             self._graph = pc["graph"]

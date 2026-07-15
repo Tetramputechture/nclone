@@ -138,8 +138,14 @@ def _interior_gap_count(grid: List[int]) -> int:
 
 
 def test_multi_jump_gaps_presets_require_multiple_jumps():
-    """The gap-based MULTI_JUMP presets carve >=2 pits (>=2 sequenced jumps)."""
-    checks = {"two_gaps_t1": 2, "many_gaps_t4": 2}
+    """The gap-based MULTI_JUMP presets carve the expected pit counts.
+
+    NB: ``two_gaps_t1`` was re-ramped to a SINGLE gap (min/max_jumps=1) as the
+    bucket's easy on-ramp -- the old 2-3 tile double-gap mix plateaued a
+    from-scratch agent at ~0.25 (see the preset's comment in
+    ``generator_configs.py``) -- so tier 1 now expects exactly one pit.
+    """
+    checks = {"two_gaps_t1": 1, "many_gaps_t4": 2}
     seen = 0
     for tier in (1, 2, 3, 4):
         for gen_type, preset, _w in get_bucket_entries("MULTI_JUMP", tier):

@@ -6,6 +6,7 @@ mixins for graph, reachability, and debug features.
 """
 
 import logging
+import os
 import gymnasium
 from gymnasium.spaces import box, discrete, Dict as SpacesDict
 import random
@@ -1021,12 +1022,39 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
     def set_goal_distance_fraction(self, fraction: float) -> float:
         """Set the goal-distance reverse-curriculum fraction (callable via
         ``VecEnv.env_method``). 1.0 = true goal; <1.0 = nearer intermediate goal.
+
+        Stores the requested TARGET; the value actually applied to the reward
+        calculator is resolved by ``_apply_goal_distance_scope`` so it can be
+        gated to specific buckets (``config.goal_distance_curriculum_buckets``)
+        and re-resolved on every reset as the level changes.
         """
+        self._goal_distance_fraction_target = float(fraction)
+        self._apply_goal_distance_scope()
+        return float(fraction)
+
+    def _apply_goal_distance_scope(self) -> None:
+        """Resolve + apply the (possibly bucket-scoped) goal-distance fraction.
+
+        When ``config.goal_distance_curriculum_buckets`` is non-empty the reverse
+        curriculum is active only on levels whose current bucket is in that set;
+        elsewhere the fraction is forced to 1.0 (off). Empty scope = apply the
+        target globally. Safe to call any time (before/after a reset); uses
+        getattr defaults so ordering never matters.
+        """
+        target = float(getattr(self, "_goal_distance_fraction_target", 1.0))
+        scope = tuple(
+            getattr(self.config, "goal_distance_curriculum_buckets", ()) or ()
+        )
+        if scope:
+            cur = getattr(self, "_current_bucket", None)
+            in_scope = cur is not None and str(cur) in {str(b) for b in scope}
+            effective = target if in_scope else 1.0
+        else:
+            effective = target
         try:
-            self.reward_calculator.config.goal_distance_fraction = float(fraction)
+            self.reward_calculator.config.goal_distance_fraction = effective
         except Exception:  # noqa: BLE001
             pass
-        return float(fraction)
 
     def _update_dynamic_truncation_if_needed(self):
         """Update dynamic truncation limit if the level surface area can be computed now.
@@ -1366,6 +1394,24 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                   If provided, the environment will reset and replay the checkpoint's
                   action sequence to restore the exact game state.
         """
+        # Periodic glibc heap release (v14 worker-RSS audit): env workers'
+        # VmRSS grew ~9MB/episode while python-traced memory stayed FLAT —
+        # glibc retains freed pages instead of returning them to the OS.
+        # malloc_trim(0) every N resets returned a 6.3GB probe worker to
+        # ~1.0GB with no measurable cost (one syscall per N episodes).
+        # NCLONE_MALLOC_TRIM_EVERY tunes cadence; 0 disables. Non-glibc
+        # platforms no-op via the except.
+        self._resets_since_trim = getattr(self, "_resets_since_trim", 0) + 1
+        trim_every = int(os.environ.get("NCLONE_MALLOC_TRIM_EVERY", "10"))
+        if trim_every > 0 and self._resets_since_trim >= trim_every:
+            self._resets_since_trim = 0
+            try:
+                import ctypes
+
+                ctypes.CDLL("libc.so.6").malloc_trim(0)
+            except Exception:  # noqa: BLE001 - musl/mac/windows: no glibc trim
+                pass
+
         # Clear observation cache on reset
         self._prev_obs_cache = None
 
@@ -2652,7 +2698,12 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         # Calculate time remaining feature using curriculum-aware truncation limit
         # This ensures agents see accurate time pressure that aligns with actual truncation behavior
-        current_frame = self.nplay_headless.sim.frame
+        # Mirror the truncation clock (truncation_checker.update_and_check_for_truncation):
+        # checkpoint-replay frames are excluded from the truncation check, so exclude
+        # them here too — otherwise the observed clock runs fast on checkpoint/RFCL
+        # episodes and the completion-speed bonus underpays.
+        replay_frames = getattr(self, "_checkpoint_replay_frame_count", 0)
+        current_frame = max(0, self.nplay_headless.sim.frame - replay_frames)
         curriculum_limit = self._get_curriculum_aware_truncation_limit()
 
         # Robust time_remaining calculation (avoid division by zero, clamp to [0, 1])
@@ -2854,6 +2905,15 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             "player_xspeed_old": ninja_vel_old[0],
             "player_yspeed_old": ninja_vel_old[1],
             "player_airborn_old": self.nplay_headless.ninja_airborn_old(),
+            # Current-frame airborne flag (grounded = not airborn). Consumed by the
+            # landing high-water-mark reward (enable_landing_pbrs). Same source as
+            # info["airborne"]; cross-backend safe (native + python sims both expose
+            # ninja.airborn).
+            "player_airborn": bool(self.nplay_headless.sim.ninja.airborn),
+            # Current-frame wall-contact flag. Consumed by the landing HWM reward's
+            # WALL-JUMP branch (a wall touch while approaching the goal counts as a
+            # safe progress contact). Same source as info["ninja_walled"].
+            "player_walled": bool(self.nplay_headless.sim.ninja.walled),
             "jump_duration_remaining": jump_duration_remaining,  # For physics-aware PBRS
             "switch_activated": switch_activated,  # Use fresh value, not cached
             "gold_collected": total_gold - gold_remaining,
@@ -3076,6 +3136,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             if n_mines < 256:
                 self._relevant_mine_keys = None
                 self._relevant_mine_keys_map = map_name
+                # ALWAYS push (including None) so a cull installed for a
+                # previous level can never survive on the sim proxy.
+                if hasattr(nplay, "set_relevant_mine_keys"):
+                    nplay.set_relevant_mine_keys(None)
                 return None
 
             spawn = nplay.ninja_position()
@@ -3112,6 +3176,13 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 self._mine_cull_failed_logged = True
             self._relevant_mine_keys = None
             self._relevant_mine_keys_map = map_name
+            # Push the cleared cull to the proxy too (best-effort): the
+            # exception path must not leave a previous level's cull installed.
+            try:
+                if hasattr(self.nplay_headless, "set_relevant_mine_keys"):
+                    self.nplay_headless.set_relevant_mine_keys(None)
+            except Exception:  # noqa: BLE001 — filtering is best-effort
+                pass
             return None
 
     def _filter_relevant_mines(self, mines: list) -> list:

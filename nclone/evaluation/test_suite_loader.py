@@ -77,6 +77,47 @@ class TestSuiteLoader:
 
         self._level_cache: Dict[str, Dict[str, Any]] = {}
 
+        # Build a format-agnostic index. The canonical dataset is now the
+        # mechanic-primary benchmark (``"buckets"`` schema, ``<BUCKET>/T<tier>/``
+        # layout); the legacy difficulty-category schema (``"categories"``,
+        # ``<category>/`` layout) is still read for backward compatibility.
+        #   * ``self.categories``  -> ordered list of category/bucket names present
+        #   * ``self._cat_ids``    -> {category: [level_id, ...]}
+        #   * ``self._id_to_path`` -> {str(level_id): Path to its .pkl}
+        self._cat_ids: Dict[str, List[str]] = {}
+        self._id_to_path: Dict[str, Path] = {}
+        self._build_index()
+        self.categories: List[str] = list(self._cat_ids.keys())
+
+    def _build_index(self) -> None:
+        """Populate ``self._cat_ids`` / ``self._id_to_path`` from either schema."""
+        if "buckets" in self.metadata:
+            # Mechanic-primary benchmark: category == bucket; files live under
+            # ``<bucket>/T<tier>/<level_id>.pkl``.
+            for bucket, binfo in self.metadata["buckets"].items():
+                ids: List[str] = []
+                for tier_key, tinfo in binfo.get("tiers", {}).items():
+                    tier_dir = self.test_suite_dir / bucket / f"T{tier_key}"
+                    for level_id in tinfo.get("level_ids", []):
+                        sid = str(level_id)
+                        ids.append(sid)
+                        self._id_to_path[sid] = tier_dir / f"{sid}.pkl"
+                if ids:
+                    self._cat_ids[bucket] = ids
+        elif "categories" in self.metadata:
+            # Legacy difficulty-category schema.
+            for cat in self.CATEGORIES:
+                cinfo = self.metadata["categories"].get(cat)
+                if not cinfo:
+                    continue
+                ids = [str(i) for i in cinfo.get("level_ids", [])]
+                if not ids:
+                    continue
+                self._cat_ids[cat] = ids
+                cat_dir = self.test_suite_dir / cat
+                for sid in ids:
+                    self._id_to_path[sid] = cat_dir / f"{sid}.pkl"
+
     def get_category(self, category: str) -> List[Dict[str, Any]]:
         """Load all levels from a specific category.
 
@@ -86,50 +127,30 @@ class TestSuiteLoader:
         Returns:
             List of level dictionaries
         """
-        if category not in self.CATEGORIES:
+        if category not in self._cat_ids:
             raise ValueError(
-                f"Unknown category: {category}. Must be one of {self.CATEGORIES}"
+                f"Unknown category: {category}. Must be one of {self.categories}"
             )
 
-        category_dir = self.test_suite_dir / category
-        if not category_dir.exists():
-            raise ValueError(f"Category directory not found: {category_dir}")
-
-        levels = []
-        level_ids = self.metadata["categories"][category]["level_ids"]
-
-        for level_id in level_ids:
-            levels.append(self.get_level(level_id))
-
-        return levels
+        return [self.get_level(level_id) for level_id in self._cat_ids[category]]
 
     def get_level(self, level_id: str) -> Dict[str, Any]:
         """Load a specific level by ID.
 
         Args:
-            level_id: Level ID (e.g., 'simple_000', 'mine_heavy_000')
+            level_id: Level ID (legacy ``'simple_000'`` or a benchmark integer ID)
 
         Returns:
             Level dictionary with map_data and metadata
         """
+        level_id = str(level_id)
         # Check cache first
         if level_id in self._level_cache:
             return self._level_cache[level_id]
 
-        # Determine category from level_id (handle multi-word categories like 'mine_heavy')
-        category = None
-        for cat in self.CATEGORIES:
-            if level_id.startswith(cat + "_"):
-                category = cat
-                break
-
-        if category is None:
-            raise ValueError(f"Invalid level_id format: {level_id}")
-
-        # Load level file
-        level_file = self.test_suite_dir / category / f"{level_id}.pkl"
-        if not level_file.exists():
-            raise ValueError(f"Level file not found: {level_file}")
+        level_file = self._id_to_path.get(level_id)
+        if level_file is None or not level_file.exists():
+            raise ValueError(f"Level file not found for id: {level_id}")
 
         with open(level_file, "rb") as f:
             level = pickle.load(f)
@@ -140,13 +161,13 @@ class TestSuiteLoader:
         return level
 
     def get_all_levels(self) -> List[Dict[str, Any]]:
-        """Load all levels from all categories.
+        """Load all levels from all categories/buckets.
 
         Returns:
             List of all level dictionaries
         """
         all_levels = []
-        for category in self.CATEGORIES:
+        for category in self.categories:
             all_levels.extend(self.get_category(category))
         return all_levels
 
@@ -168,32 +189,35 @@ class TestSuiteLoader:
             Number of levels
         """
         if category is None:
-            return self.metadata["total_levels"]
+            return self.metadata.get(
+                "total_levels", sum(len(v) for v in self._cat_ids.values())
+            )
 
-        if category not in self.CATEGORIES:
+        if category not in self._cat_ids:
             raise ValueError(f"Unknown category: {category}")
 
-        return self.metadata["categories"][category]["count"]
+        return len(self._cat_ids[category])
 
     def get_level_ids(self, category: Optional[str] = None) -> List[str]:
         """Get list of level IDs.
 
         Args:
-            category: Optional category name. If None, returns all level IDs.
+            category: Optional category/bucket name. If None, returns all IDs in
+                category order.
 
         Returns:
             List of level IDs
         """
         if category is None:
-            all_ids = []
-            for cat in self.CATEGORIES:
-                all_ids.extend(self.metadata["categories"][cat]["level_ids"])
+            all_ids: List[str] = []
+            for cat in self.categories:
+                all_ids.extend(self._cat_ids[cat])
             return all_ids
 
-        if category not in self.CATEGORIES:
+        if category not in self._cat_ids:
             raise ValueError(f"Unknown category: {category}")
 
-        return self.metadata["categories"][category]["level_ids"]
+        return list(self._cat_ids[category])
 
 
 def load_test_suite_into_env(env, level_id: str, test_suite_dir: str) -> None:

@@ -15,6 +15,7 @@ pub mod map;
 pub mod ninja;
 pub mod segments;
 pub mod simulator;
+pub mod trajectory;
 pub mod types;
 pub mod vecenv;
 
@@ -118,6 +119,10 @@ impl PySimulator {
                 }
                 entities::Entity::LockedDoor(e) => {
                     // Position is the switch; the door barrier segment is static.
+                    e.xpos = x;
+                    e.ypos = y;
+                }
+                entities::Entity::OneWay(e) => {
                     e.xpos = x;
                     e.ypos = y;
                 }
@@ -645,6 +650,7 @@ fn nclone_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<vecenv::NativeVecEnv>()?;
     m.add_class::<level_cache::LevelCache>()?;
     m.add_class::<mine_sdf::MineThreatMap>()?;
+    m.add_class::<trajectory::TrajectoryProjector>()?;
     m.add_class::<ArcBatch>()?;
     m.add_function(wrap_pyfunction!(enumerate_arcs, m)?)?;
     m.add_function(wrap_pyfunction!(flood_stats, m)?)?;

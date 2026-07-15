@@ -41,6 +41,7 @@ class NPlayHeadless:
         enable_animation: bool = False,
         enable_logging: bool = False,
         enable_debug_overlay: bool = False,
+        panel_width: int = 0,
         seed: Optional[int] = None,
         enable_rendering: bool = True,
         debug=False,
@@ -76,7 +77,11 @@ class NPlayHeadless:
             use_grayscale = render_mode == "grayscale_array"
 
             self.sim_renderer = NSimRenderer(
-                self.sim, render_mode, enable_debug_overlay, grayscale=use_grayscale
+                self.sim,
+                render_mode,
+                enable_debug_overlay,
+                grayscale=use_grayscale,
+                panel_width=panel_width,
             )
             self.current_map_data = None
             self.clock = pygame.time.Clock()
@@ -87,8 +92,12 @@ class NPlayHeadless:
             if self.render_mode == "grayscale_array":
                 os.environ["SDL_VIDEODRIVER"] = "dummy"
             else:
+                # Keep the panel strip reserved by NSimRenderer (panel_width > 0
+                # widens the window; this re-set_mode must match or it clobbers it).
                 print("Setting up pygame display")
-                pygame.display.set_mode((render_utils.SRCWIDTH, render_utils.SRCHEIGHT))
+                pygame.display.set_mode(
+                    (render_utils.SRCWIDTH + panel_width, render_utils.SRCHEIGHT)
+                )
 
             # Pre-allocate buffer for surface to array conversion
             self._render_buffer = np.empty(
@@ -787,11 +796,21 @@ class NPlayHeadless:
         state.append(airborne_status)
 
         # === Buffer State (4 features) ===
-        # 7-9. Buffer states (normalized to [-1, 1])
+        # 7-9. Buffer states (normalized to [-1, 1]).
+        # Map (buffer + 1) over (window + 1) so INACTIVE (-1) -> -1.0 and every
+        # ACTIVE value 0..window lands in (-1, 1] distinctly — with the previous
+        # max(b, 0)/window form, "just armed" (b=0, ACTIVE) aliased "inactive"
+        # (b=-1) at exactly -1.0, a one-frame ambiguity in a frame-perfect domain.
         buffer_window_size = 5.0
-        jump_buffer_norm = (max(ninja.jump_buffer, 0) / buffer_window_size) * 2 - 1
-        floor_buffer_norm = (max(ninja.floor_buffer, 0) / buffer_window_size) * 2 - 1
-        wall_buffer_norm = (max(ninja.wall_buffer, 0) / buffer_window_size) * 2 - 1
+        jump_buffer_norm = (
+            (max(ninja.jump_buffer, -1) + 1) / (buffer_window_size + 1)
+        ) * 2 - 1
+        floor_buffer_norm = (
+            (max(ninja.floor_buffer, -1) + 1) / (buffer_window_size + 1)
+        ) * 2 - 1
+        wall_buffer_norm = (
+            (max(ninja.wall_buffer, -1) + 1) / (buffer_window_size + 1)
+        ) * 2 - 1
         state.extend([jump_buffer_norm, floor_buffer_norm, wall_buffer_norm])
 
         # 10. Jump duration remaining (MDP critical)
@@ -806,9 +825,12 @@ class NPlayHeadless:
         state.append(jump_duration_remaining)
 
         # === Surface Contact Information (3 features) ===
-        # 11-13. Contact states (binary)
+        # 11-13. Contact states (binary). Wall contact gates on the live
+        # ``walled`` flag: ``wall_count`` is never incremented during simulation
+        # (tile wall contacts fold into ceiling_count in post_collision), so
+        # gating on it left this feature permanently -1.
         floor_contact = (min(ninja.floor_count, 1) * 2) - 1  # Convert 0,1 to -1,1
-        wall_contact = (min(ninja.wall_count, 1) * 2) - 1
+        wall_contact = 1.0 if ninja.walled else -1.0
         ceiling_contact = (min(ninja.ceiling_count, 1) * 2) - 1
         state.extend([floor_contact, wall_contact, ceiling_contact])
 
@@ -818,8 +840,10 @@ class NPlayHeadless:
         floor_normal_y = ninja.floor_normalized_y
         state.extend([floor_normal_x, floor_normal_y])
 
-        # 18. Wall normal direction (scalar, -1 or 1)
-        if ninja.wall_count > 0 and hasattr(ninja, "wall_normal"):
+        # 18. Wall normal direction (scalar, -1 or 1). Gate on ``walled`` (not
+        # the never-incremented ``wall_count``): post_collision recomputes
+        # ``wall_normal`` whenever walled is true, so it is always current here.
+        if ninja.walled and hasattr(ninja, "wall_normal"):
             wall_normal = float(ninja.wall_normal)  # Already [-1, 1]
         else:
             wall_normal = 0.0

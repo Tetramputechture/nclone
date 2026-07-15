@@ -118,6 +118,15 @@ class RewardCalculator:
         self.episode_backtrack_penalty_total = 0.0
         self.episode_forward_steps = 0
         self.episode_backtrack_steps = 0
+        # Per-episode component breakdown accumulators (metrics only). Defined
+        # here as well as in reset() so calculate_reward() is safe even before the
+        # first reset() (they are read/incremented on every step, incl. terminals).
+        self.episode_sparse_switch_reward = 0.0
+        self.episode_sparse_exit_reward = 0.0
+        self.episode_death_penalty_reward = 0.0
+        self.episode_gold_reward_total = 0.0
+        self.episode_locked_door_reward_total = 0.0
+        self.episode_frontier_bonus_total = 0.0
 
         self.episode_path_length = 0.0
         self.optimal_path_length: Optional[float] = None
@@ -147,6 +156,20 @@ class RewardCalculator:
         # to normalize it. Phi(s) = -clamp(completion_cost / D0, 0, 1).
         self._prev_potential: Optional[float] = None
         self._pbrs_d0: Optional[float] = None
+        # Geometric-fallback continuity (per episode). When PBRS is enabled but
+        # the env's potential substitution did NOT commit (obs
+        # "_potential_substituted" is False), the raw per-phase A* distances
+        # would flip the potential basis at switch activation (net-negative
+        # activation step). Fix: compose the pre-switch basis to
+        # dist_to_switch + dist(switch -> exit) so Phi is continuous.
+        # ``_pbrs_exit_leg`` holds that constant exit tail; when it cannot be
+        # computed, ``_pbrs_hwm_fallback`` disables the PBRS term for the
+        # episode and re-enables the HWM ratchet (+ backtrack penalty) instead.
+        self._pbrs_exit_leg: Optional[float] = None
+        self._pbrs_hwm_fallback: bool = False
+        # One-shot per-episode warning latch for the switch-activation
+        # potential-continuity guard.
+        self._phi_flip_warned: bool = False
         # Normalized cost-to-completion of the CURRENT step (= -Phi, in [0,1]),
         # exposed so the trainer can use it as a cost-to-go auxiliary-task target.
         # -1.0 = no valid signal this step (mask it out of the aux loss).
@@ -171,11 +194,46 @@ class RewardCalculator:
         self._frontier_best_dist: Optional[float] = None
         self._frontier_phase: Optional[bool] = None
 
+        # Grounded-landing high-water-mark (gated by config.enable_landing_pbrs):
+        # the closest-ever *grounded* cost-to-go to the current live objective this
+        # episode, plus the objective phase it was measured against (rebased on the
+        # switch->exit flip, like the frontier bonus). See RewardConfig.
+        self._landing_best_dist: Optional[float] = None
+        self._landing_phase: Optional[bool] = None
+        self.episode_landing_bonus_total: float = 0.0
+        # Previous-step airborne flag: the landing bonus fires ONLY on the
+        # airborne->contact transition (an actual landing / wall-catch), never on
+        # continuous ground contact, so flat running earns nothing here.
+        self._prev_airborne: Optional[bool] = None
+        # Progress-stall (dither) penalty state (gated by config.enable_stall_penalty).
+        # _stall_best_cost = best (min) cost-to-go to the live objective seen this
+        # episode; _stall_phase = objective phase it was measured against (rebased on
+        # switch->exit flip); _stall_no_improve_frames = sim frames since the last
+        # strict improvement; _stall_anchor_pos = position at the last improvement
+        # (the low-variance reference).
+        self._stall_best_cost: Optional[float] = None
+        self._stall_phase: Optional[bool] = None
+        self._stall_no_improve_frames: int = 0
+        self._stall_anchor_pos: Optional[tuple] = None
+        self.episode_stall_penalty_total: float = 0.0
+        # Per-episode route-length normalizer for the frontier/landing HWM bonuses
+        # (spawn cost-to-completion). SEPARATE from the PBRS _pbrs_d0, which may be a
+        # fixed cross-level reference: a fixed reference below a long maze's cost-to-go
+        # would let the whole-route bonus balloon to weight * route/ref instead of
+        # staying bounded by ~weight. None until the first finite cost-to-completion.
+        self._shaping_d0: Optional[float] = None
+
         # Dense mine-hazard PBRS (gated by config.enable_hazard_pbrs): previous-step
         # normalized nearest-deadly-mine distance potential (Phi_haz = d in [0,1]).
         # See RewardConfig.enable_hazard_pbrs.
         self._prev_hazard_potential: Optional[float] = None
         self.episode_hazard_pbrs_reward: float = 0.0
+        # Dense impact-survivability PBRS (gated by config.enable_impact_pbrs).
+        self._prev_impact_potential: Optional[float] = None
+        self.episode_impact_pbrs_reward: float = 0.0
+        # Doomed-arc risk PBRS (gated by config.enable_arc_risk_pbrs).
+        self._prev_arc_risk_potential: Optional[float] = None
+        self.episode_arc_risk_pbrs_reward: float = 0.0
         self.episode_speed_bonus_reward: float = 0.0
 
         # Gold collection (gated by config.enable_gold_rewards): track the
@@ -268,36 +326,103 @@ class RewardCalculator:
             self.optimal_path_length = (
                 self._initial_dist_switch + self._initial_dist_exit
             )
+            # Geometric-fallback continuity: when PBRS is on but the env's
+            # potential substitution did NOT commit (the obs flag is explicitly
+            # False; absent = legacy/substituted behavior), the raw pre-switch
+            # distance is switch-leg-only and Phi would flip basis at
+            # activation. Compose a continuous cost-to-completion basis by
+            # adding the constant switch->exit tail; if that tail is not
+            # computable, degrade this episode to the HWM ratchet instead.
+            self._pbrs_exit_leg = None
+            self._pbrs_hwm_fallback = False
+            self._phi_flip_warned = False
+            if (
+                self.config.enable_lattice_pbrs
+                and obs.get("_potential_substituted") is False
+            ):
+                exit_leg = self._switch_to_exit_distance(obs)
+                if exit_leg is not None:
+                    self._pbrs_exit_leg = float(exit_leg)
+                else:
+                    self._pbrs_hwm_fallback = True
+                    logger.debug(
+                        "PBRS potential unsubstituted and switch->exit leg "
+                        "uncomputable (level=%s); degrading to HWM ratchet "
+                        "this episode.",
+                        obs.get("map_name"),
+                    )
             # PBRS normalization: D0 = spawn cost-to-completion. Under the lattice/
             # free-space substitution the pre-switch distance is ALREADY composed to
             # cost-to-completion, so the spawn value is the phase-0 distance itself
-            # (not switch+exit, which would double-count the exit tail).
+            # (not switch+exit, which would double-count the exit tail). Under the
+            # composed geometric fallback the exit tail is added so D0 covers the
+            # full spawn -> switch -> exit route.
             #
             # A FIXED reference (config._pbrs_d0_ref_override) overrides the
             # per-episode spawn D0 so the per-step shaping magnitude is route-length-
             # invariant across a geometry-morphing curriculum (otherwise it scales
             # 1/D0 and fades on the long, tight rungs). See RewardConfig.
             d0_ref = getattr(self.config, "_pbrs_d0_ref_override", None)
+            spawn_completion = self._initial_dist_switch + (
+                self._pbrs_exit_leg or 0.0
+            )
             self._pbrs_d0 = (
                 max(float(d0_ref), 1e-6) if d0_ref is not None
-                else max(self._initial_dist_switch, 1e-6)
+                else max(spawn_completion, 1e-6)
             )
-            self._prev_potential = self._potential(
-                dist_switch if not switch_activated else dist_exit
+            # SHAPING normalizer for the frontier/landing HWM bonuses: ALWAYS the
+            # per-episode spawn cost-to-completion (route length), independent of
+            # the PBRS _pbrs_d0 fixed-reference override. This keeps the whole-route
+            # bonus bounded by ~weight regardless of level size. None when the spawn
+            # cost was non-finite (cache not ready); re-established below off the
+            # first finite cost-to-completion.
+            self._shaping_d0 = (
+                max(spawn_completion, 1e-6)
+                if dist_switch < float("inf")
+                else None
             )
+            if self._pbrs_hwm_fallback:
+                # PBRS disabled for this episode (see the shaping block below);
+                # leaving the potential None also skips the terminal PBRS terms.
+                self._prev_potential = None
+            else:
+                self._prev_potential = self._potential(
+                    self._completion_cost(dist_switch, dist_exit, switch_activated)
+                )
             # Goal-distance reverse curriculum basis: spawn cost-to-completion.
             # Only valid when the distance is finite (a reachable path exists).
             self._spawn_goal_dist = (
-                float(dist_switch) if dist_switch < float("inf") else None
+                float(spawn_completion) if dist_switch < float("inf") else None
             )
             self._reached_intermediate_goal = False
             self._episode_initialized = True
 
         # Cost-to-completion to the current sub-goal (phase-aware). Under the
         # lattice/free-space substitution this is one continuous potential basis
-        # across switch activation; under the geometric fallback it is the legacy
-        # per-phase distance. Used by both the backtrack check and the PBRS term.
-        current_goal_dist = dist_switch if not switch_activated else dist_exit
+        # across switch activation; under the composed geometric fallback the
+        # constant switch->exit tail is added pre-switch so it stays continuous
+        # too. Used by the backtrack check, frontier/landing HWMs, the reverse
+        # curriculum, and the PBRS term.
+        current_goal_dist = self._completion_cost(
+            dist_switch, dist_exit, switch_activated
+        )
+
+        # Establish the SHAPING normalizer (per-episode spawn cost-to-completion =
+        # route length) from the first finite cost-to-completion when the spawn
+        # value was non-finite at step 0. This is deliberately SEPARATE from the
+        # PBRS _pbrs_d0 (which may be a fixed cross-level reference chosen for
+        # dense-gradient scale-invariance): the frontier/landing HWM bonuses must
+        # normalize by the ACTUAL route length so their whole-route total stays
+        # bounded by ~weight on EVERY level. A fixed reference far below a long
+        # maze's cost-to-go (e.g. ref=1000 vs a ~1e5 maze route) would otherwise
+        # let them balloon to weight * route/ref. Rebase the HWMs so no delta pays.
+        if self._shaping_d0 is None and current_goal_dist < float("inf"):
+            self._shaping_d0 = max(current_goal_dist, 1e-6)
+            self._frontier_best_dist = None
+            self._landing_best_dist = None
+            self._stall_best_cost = None
+            self._stall_anchor_pos = None
+            self._stall_no_improve_frames = 0
 
         # Goal-distance reverse curriculum: the episode SUCCEEDS once the agent has
         # covered a curriculum-controlled fraction of the path to the true goal,
@@ -373,21 +498,46 @@ class RewardCalculator:
                 terminal_reward += self.config.switch_activation_reward
             terminal_reward += gold_reward
             terminal_reward += door_reward
-            # Completion SPEED bonus: pay extra for finishing with more time left
-            # (a faster, more direct route). Terminal-only, so it never touches the
-            # per-step PBRS telescoping; read the normalized time_remaining
-            # (game_state[NINJA_STATE_DIM-1] in [0,1]). Kept < R_EXIT so a slow win
-            # still beats dying.
+            # Completion SPEED bonus: pay extra for a faster, more direct route.
+            # Terminal-only, so it never touches the per-step PBRS telescoping.
+            # Kept < R_EXIT so a slow win still beats dying. Two forms, selected by
+            # completion_speed_par_norm:
+            #   par form (v15): efficiency ratio vs the per-level optimal route
+            #     (par_frames = optimal_path_length / par_speed_px) -> learnable on
+            #     EVERY level, not just long ones where the budget is tight.
+            #   legacy form: normalized time_remaining vs the truncation budget
+            #     (game_state[NINJA_STATE_DIM-1] in [0,1]); saturates on short levels.
+            # The par form falls back to the legacy form when the optimal route
+            # length is unavailable, so the bonus always has a signal to pay on.
             speed_bonus = 0.0
             if self.config.completion_speed_bonus > 0.0:
-                gs = obs.get("game_state")
-                if gs is not None and len(gs) >= NINJA_STATE_DIM:
-                    t_rem = float(gs[NINJA_STATE_DIM - 1])
-                    if t_rem == t_rem:  # not NaN
-                        speed_bonus = self.config.completion_speed_bonus * min(
-                            max(t_rem, 0.0), 1.0
-                        )
-                        terminal_reward += speed_bonus
+                frac = None  # in [0, 1]; scaled by completion_speed_bonus
+                if self.config.completion_speed_par_norm and self.optimal_path_length:
+                    par_frames = float(self.optimal_path_length) / max(
+                        self.config.completion_speed_par_speed_px, 1e-6
+                    )
+                    frames_used = obs.get("sim_frame")
+                    if (
+                        par_frames > 0.0
+                        and frames_used is not None
+                        and float(frames_used) > 0.0
+                    ):
+                        # Efficiency ratio in (0, 1]: 1.0 at/under par, decaying
+                        # as the win takes more frames. Clamps at 1.0 -> beating
+                        # par cannot inflate the bonus past completion_speed_bonus.
+                        frac = par_frames / max(float(frames_used), par_frames)
+                if frac is None:
+                    # Legacy / fallback: normalized time_remaining vs the budget.
+                    gs = obs.get("game_state")
+                    if gs is not None and len(gs) >= NINJA_STATE_DIM:
+                        t_rem = float(gs[NINJA_STATE_DIM - 1])
+                        if t_rem == t_rem:  # not NaN
+                            frac = t_rem
+                if frac is not None:
+                    speed_bonus = self.config.completion_speed_bonus * min(
+                        max(frac, 0.0), 1.0
+                    )
+                    terminal_reward += speed_bonus
             self.episode_speed_bonus_reward = speed_bonus
             # PBRS terminal: Phi(terminal) = 0, so F = w*(gamma*0 - Phi(s)) =
             # -w*Phi(s) >= 0. This completes the telescoping sum to
@@ -431,7 +581,16 @@ class RewardCalculator:
             subgoal_phase=subgoal_phase,
         )
         beta_hwm = self.config.beta_blend()
-        hwm_reward = self.config.hwm_alpha * hwm_progress * beta_hwm
+        # Degraded-episode fallback: with PBRS disabled for this episode
+        # (unsubstituted potential + uncomputable exit leg) the HWM ratchet is
+        # explicitly re-enabled — otherwise the episode would have NO dense
+        # progress signal at all (hwm_alpha is force-zeroed under PBRS).
+        hwm_alpha = (
+            self.config.hwm_fallback_alpha
+            if self._pbrs_hwm_fallback
+            else self.config.hwm_alpha
+        )
+        hwm_reward = hwm_alpha * hwm_progress * beta_hwm
         reward += hwm_reward
 
         time_penalty = self.config.time_penalty_per_step * frames_executed
@@ -442,7 +601,7 @@ class RewardCalculator:
         # enabled (hwm_alpha is forced to 0 in the config and the backtrack penalty
         # below is skipped). Telescopes to w*(Phi_T - Phi_0) over the episode.
         pbrs_reward = 0.0
-        if self.config.enable_lattice_pbrs:
+        if self.config.enable_lattice_pbrs and not self._pbrs_hwm_fallback:
             phi_curr = self._potential(current_goal_dist)
             # Expose the normalized cost-to-go (-Phi in [0,1]) as the aux-task
             # target; mask (-1) when the cost is non-finite (no usable signal).
@@ -454,18 +613,44 @@ class RewardCalculator:
             prev_phi = (
                 self._prev_potential if self._prev_potential is not None else phi_curr
             )
+            # Continuity guard: switch activation must NOT flip the potential
+            # basis (composed cost-to-completion is continuous there). A large
+            # jump means an unsubstituted/inconsistent basis slipped through —
+            # warn once per episode with the level name so it is debuggable.
+            if (
+                switch_just_activated
+                and not self._phi_flip_warned
+                and abs(phi_curr - prev_phi) > 0.25
+            ):
+                self._phi_flip_warned = True
+                logger.warning(
+                    "PBRS potential discontinuity at switch activation: "
+                    "|Phi_post - Phi_pre| = %.3f (level=%s, dist_switch=%.1f, "
+                    "dist_exit=%.1f, substituted=%s)",
+                    abs(phi_curr - prev_phi),
+                    obs.get("map_name"),
+                    dist_switch,
+                    dist_exit,
+                    obs.get("_potential_substituted"),
+                )
             pbrs_reward = self.config.pbrs_weight * (
                 self.config.pbrs_gamma * phi_curr - prev_phi
             )
             self._prev_potential = phi_curr
             reward += pbrs_reward
             self.episode_pbrs_rewards.append(pbrs_reward)
+        elif self._pbrs_hwm_fallback:
+            # Degraded episode: no PBRS potential -> mask the aux-task target.
+            self._last_cost_to_go_norm = -1.0
 
         # Per-leg waypoint PBRS: F = w*(gamma*Phi(s') - Phi(s)) with Phi toward the
         # CURRENT local waypoint, REBASED on each waypoint advance so every leg is
         # short and the per-step gradient is route-length-invariant. Decoupled from the
         # planner: reads waypoint_leg_distance + waypoint_index that the env's
         # WaypointTracker writes into obs (all-zeros/absent -> safe no-op).
+        # v19 R3: per-step waypoint reach bonus, surfaced to the env for telemetry
+        # (waypoint/reach_bonus_mean). Reset each step; set in the reach branch.
+        self.step_waypoint_reach_bonus = 0.0
         if self.config.enable_waypoint_pbrs:
             leg_d = obs.get("waypoint_leg_distance")
             wp_idx = obs.get("waypoint_index")
@@ -485,6 +670,7 @@ class RewardCalculator:
                     reach = reach_w * float(wp_idx - self._prev_waypoint_index)
                     reward += reach
                     self.episode_waypoint_reach_reward += reach
+                    self.step_waypoint_reach_bonus = float(reach)
                 if wp_idx != self._prev_waypoint_index:
                     # New leg (or first step): hand-off pays 0; rebase the basis.
                     self._prev_waypoint_index = wp_idx
@@ -494,7 +680,13 @@ class RewardCalculator:
                     if self._prev_waypoint_potential is not None
                     else phi_wp
                 )
-                wp_pbrs = self.config.pbrs_weight * (
+                # Decoupled leg weight (Audit II P0-5c): reusing pbrs_weight (2.0)
+                # banks ~+19.5 per 1000 px of route — ~2x R_EXIT, drowning every
+                # precision-sized dense term. None = legacy (reuse pbrs_weight).
+                wp_weight = getattr(self.config, "waypoint_pbrs_weight", None)
+                if wp_weight is None:
+                    wp_weight = self.config.pbrs_weight
+                wp_pbrs = float(wp_weight) * (
                     self.config.pbrs_gamma * phi_wp - prev_phi_wp
                 )
                 self._prev_waypoint_potential = phi_wp
@@ -520,20 +712,95 @@ class RewardCalculator:
                 except (TypeError, IndexError):
                     d_mine = None
             if d_mine is not None and d_mine == d_mine:  # finite, not NaN
-                phi_haz = min(max(d_mine, 0.0), 1.0)
+                # Short-range rescale: recover raw px (obs was divided by
+                # obs_norm_px) and re-normalize to range_px so the potential
+                # saturates at 1.0 beyond range_px -> the gradient is LOCAL.
+                range_px = float(getattr(self.config, "hazard_pbrs_range_px", 168.0))
+                obs_norm = float(getattr(self.config, "hazard_pbrs_obs_norm_px", 168.0))
+                raw_px = min(max(d_mine, 0.0), 1.0) * obs_norm
+                phi_haz = min(raw_px / range_px, 1.0) if range_px > 0 else 1.0
                 prev_phi_haz = (
                     self._prev_hazard_potential
                     if self._prev_hazard_potential is not None
                     else phi_haz
                 )
-                haz_pbrs = float(self.config.hazard_pbrs_weight) * (
-                    phi_haz - prev_phi_haz
-                )
+                d_phi = phi_haz - prev_phi_haz
+                # One-sided: keep only the approach penalty (dPhi < 0). Dropping the
+                # retreat reward removes the incentive to back away from mines.
+                if getattr(self.config, "hazard_pbrs_one_sided", False):
+                    d_phi = min(0.0, d_phi)
+                # Progress gate (Audit II P0-5b): a NECESSARY mine-adjacent
+                # approach — one that strictly decreases the goal cost-to-go this
+                # step — pays no penalty; only unproductive drift toward a mine is
+                # taxed. ``_prev_goal_dist`` is updated at the end of this method,
+                # so here it still holds the previous step's value.
+                if (
+                    d_phi < 0.0
+                    and getattr(self.config, "hazard_pbrs_progress_gated", False)
+                    and self._prev_goal_dist is not None
+                    and self._prev_goal_dist < float("inf")
+                    and current_goal_dist < float("inf")
+                    and current_goal_dist < self._prev_goal_dist - 1e-6
+                ):
+                    d_phi = 0.0
+                haz_pbrs = float(self.config.hazard_pbrs_weight) * d_phi
                 self._prev_hazard_potential = phi_haz
                 reward += haz_pbrs
                 pbrs_reward += haz_pbrs
                 self.episode_hazard_pbrs_reward += haz_pbrs
                 self.episode_pbrs_rewards.append(haz_pbrs)
+
+        # Impact-survivability PBRS: shape the SAFETY potential Phi = 1 - impact_risk
+        # (impact_risk in [0,1] = speed into the look-ahead landing surface vs its
+        # survivable threshold; computed in npp_environment). Rewards reducing impact
+        # risk, penalizes building it; gamma=1 telescoping -> policy-invariant. No-op
+        # at safe speeds / no surface (risk==0 -> Phi==1 constant).
+        if self.config.enable_impact_pbrs:
+            risk = obs.get("_impact_risk")
+            if risk is not None and risk == risk:  # finite, not NaN
+                phi_imp = 1.0 - min(max(float(risk), 0.0), 1.0)
+                prev_phi_imp = (
+                    self._prev_impact_potential
+                    if self._prev_impact_potential is not None
+                    else phi_imp
+                )
+                imp_pbrs = float(self.config.impact_pbrs_weight) * (
+                    phi_imp - prev_phi_imp
+                )
+                self._prev_impact_potential = phi_imp
+                reward += imp_pbrs
+                pbrs_reward += imp_pbrs
+                self.episode_impact_pbrs_reward += imp_pbrs
+                self.episode_pbrs_rewards.append(imp_pbrs)
+
+        # Doomed-arc risk PBRS (v13): shape the binary flight-recoverability
+        # potential Phi = 0 if obs["_arc_doomed"] (airborne with ALL THREE
+        # steering arcs ending in a deadly mine / lethal impact) else 1. The
+        # penalty telescopes onto the STEP THE FLIGHT BECAME UNRECOVERABLE —
+        # the bad takeoff/steer frame, 30-60 frames before the death the
+        # terminal penalty would otherwise be the first signal of (the
+        # credit-assignment fix for landing-miss mine deaths). Recovering
+        # (an arc opening back up, e.g. via a hold change re-projecting the
+        # bundle) pays the penalty back; death while doomed keeps it — the
+        # standard PBRS terminal asymmetry. Policy-invariant (gamma=1
+        # telescoping of a pure state potential).
+        if getattr(self.config, "enable_arc_risk_pbrs", False):
+            doomed = obs.get("_arc_doomed")
+            if doomed is not None:
+                phi_arc = 0.0 if doomed else 1.0
+                prev_phi_arc = (
+                    self._prev_arc_risk_potential
+                    if self._prev_arc_risk_potential is not None
+                    else phi_arc
+                )
+                arc_pbrs = float(
+                    getattr(self.config, "arc_risk_pbrs_weight", 0.5)
+                ) * (phi_arc - prev_phi_arc)
+                self._prev_arc_risk_potential = phi_arc
+                reward += arc_pbrs
+                pbrs_reward += arc_pbrs
+                self.episode_arc_risk_pbrs_reward += arc_pbrs
+                self.episode_pbrs_rewards.append(arc_pbrs)
 
         # Frontier watermark bonus: pay a small bonus ONLY on a strictly-new
         # closest-approach (new minimum cost-to-go) to the current live objective
@@ -564,18 +831,99 @@ class RewardCalculator:
                     # not complete (completion-preference dilution). Normalized, the
                     # whole-route bonus is bounded by ~frontier_bonus_weight (a small
                     # commitment carrot that can never out-weigh the win).
-                    d0 = max(float(getattr(self, "_pbrs_d0", 1.0) or 1.0), 1e-6)
-                    frontier_bonus = self.config.frontier_bonus_weight * (
-                        (self._frontier_best_dist - current_goal_dist) / d0
+                    # Normalize by the per-episode ROUTE LENGTH (_shaping_d0), NOT
+                    # the PBRS fixed reference, so the whole-route bonus is bounded
+                    # by ~frontier_bonus_weight on every level size. Clamp the
+                    # per-step improvement to [0, 1] as a hard safety net.
+                    d0 = max(float(self._shaping_d0 or self._pbrs_d0 or 1.0), 1e-6)
+                    frontier_bonus = self.config.frontier_bonus_weight * min(
+                        1.0, (self._frontier_best_dist - current_goal_dist) / d0
                     )
                     self._frontier_best_dist = current_goal_dist
                     reward += frontier_bonus
                     self.episode_frontier_bonus_total += frontier_bonus
 
+        # Grounded-landing high-water-mark bonus: the SAME monotone-progress idea as
+        # the frontier bonus, but gated on the ninja being on SOLID GROUND -- it pays
+        # only for a new closest-ever SAFE LANDING, not mid-air proximity. The
+        # per-step free-space/jump PBRS already rewards airborne approach (weighting a
+        # drift toward a gap the same as a completed jump); this term specifically
+        # up-weights STICKING the landing on precision buckets (single-tile platforms,
+        # mines under every gap, zero recovery). Because landing on a mine is death
+        # (not a surface contact), it rewards only safe landings. Monotone HWM (never
+        # re-paid) so it cannot be farmed by oscillating (jump forward, fall back,
+        # jump forward); D0-normalized so it is in PBRS units and bounded by
+        # landing_pbrs_weight over the whole episode; rebased on the switch->exit flip
+        # so the basis change is not paid. Off unless config.enable_landing_pbrs.
+        #
+        # A "safe progress contact" is EITHER grounded (a landing) OR a WALL contact
+        # while moving toward the goal along the geometric path -- the wall branch
+        # extends the bonus to WALL-JUMPS (the ninja clings/slides a wall and pushes
+        # off toward the goal, so a wall touch at a new closest-approach is real
+        # progress worth reinforcing). "Velocity in the direction of the goal
+        # geometric path" is evaluated ON the cost-to-go field itself (a strict
+        # cost-to-go DECREASE this step) rather than a straight-line velocity·(goal-
+        # pos) dot, which is WRONG on wall-jump geometry: the goal typically sits
+        # BEYOND the wall, so straight-line points into it while the productive
+        # wall-jump motion is up-and-away. The cost-to-go field is jump- and
+        # wall-jump-aware under --use-jump-potential, so its descent is exactly "the
+        # geometric path toward the goal". The shared HWM keeps the wall branch
+        # non-farmable too (only a strictly-new closest wall/ground contact pays).
+        #
+        # TRANSITION-GATED: the bonus fires ONLY on the airborne->contact edge (an
+        # actual landing or wall-catch this step), never while the ninja is already
+        # grounded. This restricts it to precision jumps that STICK a landing closer
+        # to the goal -- flat/continuous ground running is not a landing and earns
+        # nothing here -- which is the only situation the term was introduced for.
+        landing_bonus = 0.0
+        if self.config.enable_landing_pbrs:
+            airborne = bool(obs.get("player_airborn", True))
+            grounded = not airborne
+            walled = bool(obs.get("player_walled", False))
+            moving_toward_goal = (
+                self._prev_goal_dist is not None
+                and current_goal_dist < float("inf")
+                and current_goal_dist < self._prev_goal_dist - 1e-6
+            )
+            wall_progress = walled and moving_toward_goal
+            # Only the airborne->contact transition qualifies (a genuine landing /
+            # wall-catch), so continuous ground contact never pays.
+            just_contacted = (self._prev_airborne is True) and (grounded or walled)
+            if (
+                just_contacted
+                and (grounded or wall_progress)
+                and current_goal_dist < float("inf")
+            ):
+                phase = bool(switch_activated)
+                if self._landing_best_dist is None or phase != self._landing_phase:
+                    # First safe contact or objective change: rebase (no bonus).
+                    self._landing_best_dist = current_goal_dist
+                    self._landing_phase = phase
+                elif current_goal_dist < self._landing_best_dist - 1e-6:
+                    # Landed strictly closer to the goal than any prior safe contact
+                    # (the "resulting position is closer to the goal" gate). Normalize
+                    # by the per-episode ROUTE LENGTH (_shaping_d0), NOT the PBRS fixed
+                    # reference, so the whole-route landing total is bounded by ~weight
+                    # on every level size; clamp per landing to [0, 1] as a safety net.
+                    d0 = max(float(self._shaping_d0 or self._pbrs_d0 or 1.0), 1e-6)
+                    landing_bonus = self.config.landing_pbrs_weight * min(
+                        1.0, (self._landing_best_dist - current_goal_dist) / d0
+                    )
+                    self._landing_best_dist = current_goal_dist
+                    reward += landing_bonus
+                    self.episode_landing_bonus_total += landing_bonus
+            self._prev_airborne = airborne
+
         # Forward/backtrack bookkeeping. The backtrack PENALTY applies only in the
         # HWM pipeline — PBRS already penalizes regress symmetrically — but the
         # step counters stay populated for observability in both modes.
         backtrack_penalty = 0.0
+        # The lattice/free-space PBRS term counts as active only when it is not
+        # degraded to the HWM ratchet this episode (the ratchet pipeline keeps
+        # its backtrack penalty).
+        lattice_pbrs_active = (
+            self.config.enable_lattice_pbrs and not self._pbrs_hwm_fallback
+        )
         regressed = (
             self._prev_goal_dist is not None
             and current_goal_dist < float("inf")
@@ -583,14 +931,14 @@ class RewardCalculator:
             and current_goal_dist > self._prev_goal_dist
         )
         if regressed:
-            if not (self.config.enable_lattice_pbrs or self.config.enable_waypoint_pbrs):
+            if not (lattice_pbrs_active or self.config.enable_waypoint_pbrs):
                 backtrack_penalty = BACKTRACK_PENALTY * frames_executed
                 reward += backtrack_penalty
                 self.episode_backtrack_penalty_total += backtrack_penalty
             self.episode_backtrack_steps += 1
         elif (
             hwm_progress > 0
-            or self.config.enable_lattice_pbrs
+            or lattice_pbrs_active
             or self.config.enable_waypoint_pbrs
         ):
             self.episode_forward_steps += 1
@@ -610,6 +958,49 @@ class RewardCalculator:
 
         if current_goal_dist < self.closest_distance_this_episode:
             self.closest_distance_this_episode = current_goal_dist
+
+        # Progress-stall (dither) penalty [v22, §3-A]. See RewardConfig.enable_stall_penalty.
+        if self.config.enable_stall_penalty and current_goal_dist < float("inf"):
+            phase = bool(switch_activated)
+            if self._stall_best_cost is None or phase != self._stall_phase:
+                # First finite cost, or the objective flipped (switch->exit): rebase,
+                # never counting the basis change as a stall.
+                self._stall_best_cost = current_goal_dist
+                self._stall_phase = phase
+                self._stall_no_improve_frames = 0
+                self._stall_anchor_pos = current_pos
+            elif current_goal_dist < self._stall_best_cost - 1e-6:
+                # Strict cost-to-go improvement: reset the stall clock and anchor.
+                self._stall_best_cost = current_goal_dist
+                self._stall_no_improve_frames = 0
+                self._stall_anchor_pos = current_pos
+            else:
+                # No improvement this step. Only accrue the stall clock while the
+                # ninja stays within stall_radius_px of the last-improvement anchor
+                # (low position variance): a real jump / traverse moves far and
+                # resets the anchor, so it never triggers -- only tight oscillation
+                # in a pocket does. Drift beyond the radius without improving (e.g.
+                # slowly wandering away) also resets the anchor so we measure a
+                # fresh dwell rather than penalizing transit.
+                anchor = self._stall_anchor_pos or current_pos
+                adx = current_pos[0] - anchor[0]
+                ady = current_pos[1] - anchor[1]
+                within = (adx * adx + ady * ady) ** 0.5 <= self.config.stall_radius_px
+                if within:
+                    self._stall_no_improve_frames += frames_executed
+                    over = self._stall_no_improve_frames - self.config.stall_patience_frames
+                    if over > 0:
+                        # Escalating with dwell time past patience, normalized by the
+                        # patience window and per-step frames, capped.
+                        mag = self.config.stall_penalty_weight * (
+                            over / max(1, self.config.stall_patience_frames)
+                        ) * frames_executed
+                        stall_penalty = -min(mag, self.config.stall_penalty_cap)
+                        reward += stall_penalty
+                        self.episode_stall_penalty_total += stall_penalty
+                else:
+                    self._stall_no_improve_frames = 0
+                    self._stall_anchor_pos = current_pos
 
         from ..util.util import calculate_distance
 
@@ -646,6 +1037,7 @@ class RewardCalculator:
             "time_penalty": time_penalty,
             "backtrack_penalty": backtrack_penalty,
             "frontier_bonus": frontier_bonus,
+            "landing_bonus": landing_bonus,
             "total_reward": reward,
             "scaled_reward": scaled,
             "is_terminal": truncated,
@@ -673,6 +1065,62 @@ class RewardCalculator:
         if d0 is None or not (completion_cost < float("inf")):
             return -1.0
         return -min(max(completion_cost / d0, 0.0), 1.0)
+
+    def _completion_cost(
+        self, dist_switch: float, dist_exit: float, switch_activated: bool
+    ) -> float:
+        """Phase-aware cost-to-completion for the potential basis.
+
+        Post-switch this is the exit distance. Pre-switch it is the switch
+        distance, PLUS the constant switch->exit tail when the composed
+        geometric fallback is active (``_pbrs_exit_leg`` set at episode init) —
+        under the env's substitution the switch distance is already composed
+        and the tail is None, so this is a pass-through there.
+        """
+        if switch_activated:
+            return dist_exit
+        if self._pbrs_exit_leg is not None and dist_switch < float("inf"):
+            return dist_switch + self._pbrs_exit_leg
+        return dist_switch
+
+    def _switch_to_exit_distance(self, obs: Dict[str, Any]) -> Optional[float]:
+        """A* path distance from the exit switch to the exit door.
+
+        The constant exit-leg tail used to compose the raw per-phase fallback
+        distances into one continuous cost-to-completion basis (computed once
+        per episode at PBRS init). Returns None when not computable (missing
+        adjacency, unreachable, or any error) — the caller then degrades the
+        episode to the HWM ratchet.
+        """
+        try:
+            adjacency = obs.get("_adjacency_graph")
+            if not adjacency:
+                return None
+            level_data = obs.get("level_data")
+            graph_data = obs.get("_graph_data")
+            switch_pos = (int(obs["switch_x"]), int(obs["switch_y"]))
+            exit_pos = (int(obs["exit_door_x"]), int(obs["exit_door_y"]))
+            base_adjacency = (
+                graph_data.get("base_adjacency", adjacency)
+                if graph_data
+                else adjacency
+            )
+            d = self.path_calculator.get_path_cost(
+                switch_pos,
+                exit_pos,
+                adjacency,
+                base_adjacency,
+                cache_key="switch_exit_leg",
+                level_data=level_data,
+                graph_data=graph_data,
+                entity_radius=EXIT_DOOR_RADIUS,
+                ninja_radius=NINJA_RADIUS,
+            )
+            if d is None or d != d or d == float("inf"):
+                return None
+            return float(d)
+        except Exception:
+            return None
 
     def _get_distances(
         self,
@@ -820,6 +1268,7 @@ class RewardCalculator:
         self.episode_forward_steps = 0
         self.episode_backtrack_steps = 0
         self.episode_frontier_bonus_total = 0.0
+        self.episode_landing_bonus_total = 0.0
 
         self.episode_path_length = 0.0
         self.optimal_path_length = None
@@ -828,13 +1277,30 @@ class RewardCalculator:
         self._prev_goal_dist = None
         self._prev_potential = None
         self._pbrs_d0 = None
+        self._shaping_d0 = None
+        self._pbrs_exit_leg = None
+        self._pbrs_hwm_fallback = False
+        self._phi_flip_warned = False
+        self._last_cost_to_go_norm = -1.0
         self._prev_waypoint_potential = None
         self._prev_waypoint_index = None
         self.episode_waypoint_reach_reward = 0.0
         self._frontier_best_dist = None
         self._frontier_phase = None
+        self._landing_best_dist = None
+        self._landing_phase = None
+        self._prev_airborne = None
+        self._stall_best_cost = None
+        self._stall_phase = None
+        self._stall_no_improve_frames = 0
+        self._stall_anchor_pos = None
+        self.episode_stall_penalty_total = 0.0
         self._prev_hazard_potential = None
         self.episode_hazard_pbrs_reward = 0.0
+        self._prev_impact_potential = None
+        self.episode_impact_pbrs_reward = 0.0
+        self._prev_arc_risk_potential = None
+        self.episode_arc_risk_pbrs_reward = 0.0
         self.episode_speed_bonus_reward = 0.0
         self._prev_gold_collected = None
         self._all_gold_bonus_paid = False
@@ -915,6 +1381,10 @@ class RewardCalculator:
             + self.episode_truncation_penalty
             + self.episode_backtrack_penalty_total
             + self.episode_frontier_bonus_total
+            + self.episode_landing_bonus_total
+            + self.episode_stall_penalty_total
+            + self.episode_speed_bonus_reward
+            + self.episode_waypoint_reach_reward
         ) * GLOBAL_REWARD_SCALE
         # residual ~ 0 proves the decomposition is complete (no unaccounted reward).
         reconciliation_residual = components_sum - self.episode_total_scaled
@@ -930,6 +1400,10 @@ class RewardCalculator:
             "truncation_penalty_total": self.episode_truncation_penalty,
             "backtrack_penalty_total": self.episode_backtrack_penalty_total,
             "frontier_bonus_total": self.episode_frontier_bonus_total,
+            "landing_bonus_total": self.episode_landing_bonus_total,
+            "stall_penalty_total": self.episode_stall_penalty_total,
+            "speed_bonus_total": self.episode_speed_bonus_reward,
+            "waypoint_reach_bonus_total": self.episode_waypoint_reach_reward,
             # The TRUE sum of every scaled reward returned this episode. Equals the
             # VecMonitor episode return; components_sum equals this too (residual~0).
             "episode_return_internal": self.episode_total_scaled,

@@ -14,6 +14,10 @@ pub const GOLD_RADIUS: f64 = 6.0;
 pub const LOCKED_DOOR_RADIUS: f64 = 12.0;
 pub const LOCKED_DOOR_SWITCH_RADIUS: f64 = 5.0;
 
+// One-way platform (type 11): directional 24px barrier (semi-side 12). Mirrors
+// nclone/constants/physics_constants.py:ONE_WAY_PLATFORM_SEMI_SIDE.
+pub const ONE_WAY_PLATFORM_SEMI_SIDE: f64 = 12.0;
+
 // Toggle mine radii by state: 0=toggled(deadly), 1=untoggled(safe), 2=toggling
 pub const TOGGLE_MINE_RADIUS_TOGGLED: f64 = 4.0;
 pub const TOGGLE_MINE_RADIUS_UNTOGGLED: f64 = 3.5;

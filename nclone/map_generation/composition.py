@@ -69,11 +69,22 @@ def seg_gap(m, x, floor_row, base_row, width, rng) -> SegmentResult:
     for xx in range(x, x + width):
         m.set_tile(xx, floor_row, SOLID)
     _fill_support(m, x, x + width, floor_row + 1, base_row)
-    gap_w = min(3, max(2, width - 4))
+    # Carved gap width; the host generator may cap it (m.MAX_GAP_W) to make an
+    # easier on-ramp -- a 2-tile gap is a comfortable hop, a 3-tile gap a much
+    # harder running long-jump.
+    gap_w = min(int(getattr(m, "MAX_GAP_W", 3)), max(2, width - 4))
     gap_start = x + (width - gap_w) // 2
     for xx in range(gap_start, gap_start + gap_w):
         for y in range(floor_row, base_row + 1):
             m.set_tile(xx, y, EMPTY)
+    # Lethal pit floor: a missed jump falls to the bottom and dies cleanly
+    # instead of wandering the pit until timeout. Mines sit at the pit floor
+    # (12px == 0.5-tile spacing) so a fall always contacts one; a successful
+    # jump arcs over the gap at the walking surface and never reaches them.
+    mx = float(gap_start)
+    while mx < gap_start + gap_w:
+        m.add_entity(1, mx, base_row, 0, 1)  # type 1 = toggle mine
+        mx += 0.5
     return SegmentResult(x + width, floor_row, [], "gap")
 
 

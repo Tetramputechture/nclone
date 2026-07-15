@@ -32,6 +32,10 @@ VALID_RANDOM_ENTITIES = [
 class Map:
     """Class for manually constructing simulator maps."""
 
+    # Legacy outside-playspace entity decoys: OFF by default (they bury entities in
+    # the solid border). See add_random_entities_outside_playspace / clean_placement.
+    ADD_OUTSIDE_DECOYS = False
+
     def __init__(self, seed: Optional[int] = None):
         # Initialize empty tile data (all tiles are empty, type 0)
         self.tile_data = [0] * (MAP_TILE_WIDTH * MAP_TILE_HEIGHT)
@@ -472,6 +476,107 @@ class Map:
             if 0 <= mine_x < MAP_TILE_WIDTH:
                 self.add_entity(1, float(mine_x), float(mine_y + height))
 
+    def clean_placement(self) -> None:
+        """Post-generation cleaner for transformer-dataset purity (call after generate).
+
+        1. Lifts every subset entity (toggle mine 1/21, gold 2, exit door 3, exit
+           switch 4) out of a solid tile UP onto the surface it rests on, so nothing
+           is buried inside geometry. Entity records are clean 5-byte slots and entity
+           coords are on the 6px (1-unit) grid by construction, so this stays aligned.
+        2. Flattens random tile geometry buried in the solid border (slope/curve tiles
+           with no open neighbour) to plain solid (type 1), so the level carries no
+           non-functional geometry outside the playspace.
+        """
+        W, H = MAP_TILE_WIDTH, MAP_TILE_HEIGHT
+        gf = int(GRID_SIZE_FACTOR)  # units per tile (4)
+        td = self.tile_data
+
+        def eidx(tx, ty):
+            return ty * W + tx
+
+        # 1. de-randomize OUTSIDE the playspace FIRST (so the lift below targets the
+        #    final geometry). The playspace is the connected AIR (type-0) region the
+        #    ninja moves through; its 1-tile border is the playable surface (floors /
+        #    slopes / half-tiles to keep). Random geometry decorating the solid wall
+        #    does not touch that air. Find the largest air component (robust to where
+        #    the spawn lands), keep it + its bordering surfaces, collapse the rest.
+        empty = [td[i] == 0 for i in range(W * H)]
+        comp = [-1] * (W * H)
+        best_comp, best_size, cid = -1, 0, 0
+        for sy0 in range(H):
+            for sx0 in range(W):
+                if not empty[eidx(sx0, sy0)] or comp[eidx(sx0, sy0)] != -1:
+                    continue
+                stack, size = [(sx0, sy0)], 0
+                comp[eidx(sx0, sy0)] = cid
+                while stack:
+                    cx, cy = stack.pop()
+                    size += 1
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        nx, ny = cx + dx, cy + dy
+                        if 0 <= nx < W and 0 <= ny < H and empty[eidx(nx, ny)] and comp[eidx(nx, ny)] == -1:
+                            comp[eidx(nx, ny)] = cid
+                            stack.append((nx, ny))
+                if size > best_size:
+                    best_size, best_comp = size, cid
+                cid += 1
+
+        if best_size >= 12:  # safety: only de-randomize when a real playspace exists
+            in_play = [comp[i] == best_comp for i in range(W * H)]
+            for ty in range(H):
+                for tx in range(W):
+                    i = eidx(tx, ty)
+                    if in_play[i] or td[i] == 1:
+                        continue
+                    borders_play = any(
+                        0 <= tx + dx < W and 0 <= ty + dy < H and in_play[eidx(tx + dx, ty + dy)]
+                        for dx in (-1, 0, 1)
+                        for dy in (-1, 0, 1)
+                        if not (dx == 0 and dy == 0)
+                    )
+                    if not borders_play:
+                        td[i] = 1
+
+        # 2. lift entities out of solid onto the (now-cleaned) surface they rest on.
+        def solid(tx: int, ty: int) -> bool:
+            # Out-of-bounds is WALL, not empty: otherwise the "nearest empty" lift
+            # below can relocate an entity to a negative/out-of-bounds tile (a byte
+            # < 0 in the entity record), which corrupts the map_data byte stream.
+            if not (0 <= tx < W and 0 <= ty < H):
+                return True
+            return td[tx + ty * W] != 0
+
+        ed = self.entity_data
+        for i in range(0, len(ed) - 4, 5):
+            etype, ux, uy = ed[i], ed[i + 1], ed[i + 2]
+            if etype not in (1, 21, 2, 3, 4):
+                continue
+            tx, ty = int(ux) // gf, int(uy) // gf
+            if not solid(tx, ty):
+                continue
+            # prefer straight up (rest on the surface the entity sits in)
+            nty = ty
+            while nty > 0 and solid(tx, nty):
+                nty -= 1
+            if not solid(tx, nty):
+                ed[i + 2] = nty * gf + gf // 2
+                continue
+            # else nearest empty tile in any direction (solid column above)
+            for r in range(1, 12):
+                found = False
+                for dx in range(-r, r + 1):
+                    for dy in range(-r, r + 1):
+                        if max(abs(dx), abs(dy)) != r or solid(tx + dx, ty + dy):
+                            continue
+                        ed[i + 1] = (tx + dx) * gf + gf // 2
+                        ed[i + 2] = (ty + dy) * gf + gf // 2
+                        found = True
+                        break
+                    if found:
+                        break
+                if found:
+                    break
+
     def map_data(self):
         """Generate the map data in the format expected by the simulator."""
         # Create the map data array
@@ -649,6 +754,13 @@ class Map:
             playspace_x2: Right bound of playspace
             playspace_y2: Bottom bound of playspace
         """
+        # Outside-playspace decoys are placed in the SOLID border, so they end up
+        # buried in geometry (the dominant cause of entities-inside-tiles). They serve
+        # no gameplay purpose. Disabled by default for clean transformer datasets;
+        # set Map.ADD_OUTSIDE_DECOYS=True to restore the legacy behavior.
+        if not getattr(self, "ADD_OUTSIDE_DECOYS", False):
+            return
+
         # Get number of entities to add (0-128)
         num_entities = self.rng.randint(0, 128)
 

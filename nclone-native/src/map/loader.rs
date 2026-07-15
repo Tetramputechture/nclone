@@ -6,6 +6,7 @@ use crate::entities::exit_door::ExitDoor;
 use crate::entities::exit_switch::ExitSwitch;
 use crate::entities::gold::Gold;
 use crate::entities::locked_door::LockedDoor;
+use crate::entities::one_way_platform::OneWayPlatform;
 use crate::entities::toggle_mine::ToggleMine;
 use crate::entities::Entity;
 use crate::map::tiles::{TILE_SEGMENT_CIRCULAR_MAP, TILE_SEGMENT_DIAG_MAP, TILE_SEGMENT_ORTHO_MAP};
@@ -319,6 +320,13 @@ fn load_entities(map_data: &[i32], data: &mut MapData) {
                     );
                     data.entities.push(Entity::LockedDoor(door));
                 }
+            }
+            Some(EntityType::OneWay) => {
+                // [11, x, y, orientation, mode]; mode unused. Static directional
+                // barrier — physically collidable (depenetrates the ninja).
+                let orientation = map_data[index + 3] as u8;
+                let one_way = OneWayPlatform::new(xcoord, ycoord, orientation);
+                data.entities.push(Entity::OneWay(one_way));
             }
             Some(EntityType::LockedDoorSwitch) => {
                 // Phantom in the Python model -- the switch lives on the type-6

@@ -69,6 +69,12 @@ class NativePlayHeadless:
         self._map_just_loaded = True
         self.current_tick = 0
         self.sim._tile_dic_cache_valid = False
+        # A NEW level invalidates any relevant-mine cull installed for the
+        # previous one. Without this, a cull leaked from a mine-dense level
+        # silently drops the new level's mines from every derived view (obs
+        # overlays, hazard map, graph) while the sim still kills on them.
+        # Also resets the cached entity-build index plan.
+        self.sim.set_relevant_mine_keys(None)
         self._sync_proxy()
 
     def load_map(self, map_path: str):
@@ -180,11 +186,13 @@ class NativePlayHeadless:
         # Airborne (1)
         state.append(1.0 if n.airborn else -1.0)
 
-        # Buffers (4)
+        # Buffers (4). (b + 1)/(window + 1) so INACTIVE (-1) -> -1.0 and every
+        # ACTIVE value 0..window is distinct in (-1, 1] (b=0 "just armed" no
+        # longer aliases inactive). Must match nplay_headless exactly.
         buffer_window = 5.0
-        state.append((max(n.jump_buffer, 0) / buffer_window) * 2 - 1)
-        state.append((max(n.floor_buffer, 0) / buffer_window) * 2 - 1)
-        state.append((max(n.wall_buffer, 0) / buffer_window) * 2 - 1)
+        state.append(((max(n.jump_buffer, -1) + 1) / (buffer_window + 1)) * 2 - 1)
+        state.append(((max(n.floor_buffer, -1) + 1) / (buffer_window + 1)) * 2 - 1)
+        state.append(((max(n.wall_buffer, -1) + 1) / (buffer_window + 1)) * 2 - 1)
 
         # Jump duration remaining (1)
         if n.state == 3:
@@ -193,15 +201,17 @@ class NativePlayHeadless:
             jdr = 0.0
         state.append(jdr)
 
-        # Surface contact (3)
+        # Surface contact (3). Wall contact gates on the live ``walled`` flag —
+        # ``wall_count`` is never incremented during simulation (matches
+        # nplay_headless).
         state.append((min(n.floor_count, 1) * 2) - 1)
-        state.append((min(n.wall_count, 1) * 2) - 1)
+        state.append(1.0 if n.walled else -1.0)
         state.append((min(n.ceiling_count, 1) * 2) - 1)
 
-        # Surface normals (3)
+        # Surface normals (3). wall_normal gated on ``walled`` (see above).
         state.append(n.floor_normalized_x)
         state.append(n.floor_normalized_y)
-        state.append(float(n.wall_normal) if n.wall_count > 0 else 0.0)
+        state.append(float(n.wall_normal) if n.walled else 0.0)
 
         # Walled (1)
         state.append(1.0 if n.walled else -1.0)
@@ -347,6 +357,16 @@ class NativePlayHeadless:
             self.sim.entity_dic.get(21, []),
         )
 
+    def set_relevant_mine_keys(self, keys):
+        """Install the relevant-mine cull at the entity_dic source so every
+        downstream consumer (entity proxies, mine-state scan, obs, graph) sees
+        only the relevant subset on mine-dense levels."""
+        self.sim.set_relevant_mine_keys(keys)
+
+    def get_all_mine_positions(self):
+        """Raw (x, y, state, type) for every toggle mine (bypasses the cull)."""
+        return self.sim.get_all_mine_positions()
+
     def get_all_mine_data_for_visualization(self) -> List[dict]:
         """Get all mine data for route visualization.
 
@@ -476,11 +496,32 @@ class _EntityDoorLockedProxy(_EntityProxy):
 _EntityDoorLockedProxy.__name__ = "EntityDoorLocked"
 
 
+class _EntityOneWayProxy(_EntityProxy):
+    """Proxy for a one-way platform (type 11).
+
+    Mirrors the Python ``EntityOneWayPlatform`` attributes read downstream: xpos/
+    ypos plus the orientation-derived blocking normal (normal_x, normal_y). The
+    normal is computed via the same ``map_orientation_to_vector`` as Python so the
+    shared entity-overlay builder is byte-identical across backends.
+    """
+
+    def __init__(self, x: float, y: float, orientation: int):
+        super().__init__(x, y, True, 0, 11)
+        from .physics import map_orientation_to_vector
+
+        self.orientation = orientation
+        self.normal_x, self.normal_y = map_orientation_to_vector(orientation)
+
+
+_EntityOneWayProxy.__name__ = "EntityOneWayPlatform"
+
+
 # Entity type constants from nclone
 _ENTITY_TOGGLE_MINE = 1
 _ENTITY_EXIT_DOOR = 3
 _ENTITY_EXIT_SWITCH = 4
 _ENTITY_LOCKED_DOOR = 6
+_ENTITY_ONE_WAY = 11
 _ENTITY_TOGGLE_MINE_TOGGLED = 21
 
 
@@ -504,8 +545,12 @@ def _get_switch_door_from_entities(entities) -> tuple:
 def _build_entity_dic(entities) -> dict:
     """Build entity_dic from Rust EntitySnapshot list. Matches Python entity_dic layout.
     entity_dic[3] contains BOTH EntityExitSwitch and EntityExit (door) per Python convention.
+
+    ``entities`` may be the full snapshot list or a pre-selected subset (the
+    relevant-mine cull is applied upstream via the cached index plan in
+    ``_ensure_entity_dic`` so this hot path never re-scans culled mines).
     """
-    entity_dic = {1: [], 3: [], 4: [], 6: [], 7: [], 21: []}
+    entity_dic = {1: [], 3: [], 4: [], 6: [], 7: [], 11: [], 21: []}
     exit_switches = []
     exit_doors = []
 
@@ -515,6 +560,8 @@ def _build_entity_dic(entities) -> dict:
             entity_dic[1].append(_EntityProxy(e.x, e.y, e.active, e.state, t))
         elif t == 21:  # ToggleMineToggled
             entity_dic[21].append(_EntityProxy(e.x, e.y, e.active, e.state, t))
+        elif t == 11:  # OneWay: static directional barrier; orientation -> normal.
+            entity_dic[11].append(_EntityOneWayProxy(e.x, e.y, e.orientation))
         elif t == 4:  # ExitSwitch
             proxy = _EntityExitSwitchProxy(e.x, e.y, e.active, e.state, t)
             exit_switches.append(proxy)
@@ -589,12 +636,40 @@ class _SimProxy:
         self._tile_dic_cache_valid = False
         # Entity dic built lazily on first access (after frame loop)
         self._entity_dic_valid = False
+        # Optional relevant-mine cull: set of (round(x), round(y)) for mines that
+        # border reachable space. When set, _build_entity_dic skips the rest.
+        self._relevant_mine_keys = None
+        # Cached entity-build plan: (snapshot_len, [indices to build]). Entity
+        # positions/types are static per level, so the set of indices we keep
+        # (all non-mine entities + relevant mines) is invariant — computed once
+        # rather than re-scanning all entities (and round()-checking each) every
+        # tick. Only mutable state (read fresh from the snapshot) changes.
+        self._entity_build_plan = None
 
     @property
     def entity_dic(self):
         """Lazy-load entity_dic on first access (e.g. during observation build)."""
         self._ensure_entity_dic()
         return self._entity_dic
+
+    def set_relevant_mine_keys(self, keys):
+        """Install (or clear, with ``None``) the relevant-mine key set and force a
+        rebuild so the next entity_dic reflects the cull."""
+        self._relevant_mine_keys = keys
+        self._entity_build_plan = None  # recompute the index plan against new keys
+        self._entity_dic_valid = False
+
+    def get_all_mine_positions(self):
+        """Raw (x, y, state, type) for EVERY toggle mine in the snapshot, bypassing
+        the relevant-mine cull. The env uses this to compute the relevant set from
+        the full mine population (avoids a circular dependency on the filtered dic)."""
+        if self._snapshot is None:
+            return []
+        return [
+            (e.x, e.y, e.state, e.entity_type)
+            for e in self._snapshot.entities
+            if e.entity_type in (1, 21)
+        ]
 
     def get_tile_grid(self):
         """Return the 966-element flat tile slice (map_data[184:1150]).
@@ -640,7 +715,26 @@ class _SimProxy:
         if self._snapshot is None:
             self._entity_dic = {}
             return
-        self._entity_dic = _build_entity_dic(self._snapshot.entities)
+        entities = self._snapshot.entities
+        if self._relevant_mine_keys is not None:
+            # Build (once) the static index plan: every non-mine entity plus the
+            # relevant mines. Reused across ticks since entity positions/types
+            # don't change — avoids re-scanning all entities + round()-checking
+            # each mine on the per-tick hot path.
+            plan = self._entity_build_plan
+            if plan is None or plan[0] != len(entities):
+                keys = self._relevant_mine_keys
+                idxs = [
+                    i
+                    for i, e in enumerate(entities)
+                    if e.entity_type not in (1, 21)
+                    or (round(e.x), round(e.y)) in keys
+                ]
+                self._entity_build_plan = (len(entities), idxs)
+                plan = self._entity_build_plan
+            self._entity_dic = _build_entity_dic([entities[i] for i in plan[1]])
+        else:
+            self._entity_dic = _build_entity_dic(entities)
         self._entity_dic_valid = True
 
 

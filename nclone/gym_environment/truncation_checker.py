@@ -25,7 +25,10 @@ class TruncationChecker:
         self.verbose = verbose
 
     def set_level_truncation_limit(
-        self, surface_area: float, reachable_mine_count: int
+        self,
+        surface_area: float,
+        reachable_mine_count: int,
+        cost_to_completion: float | None = None,
     ) -> int:
         """
         Set truncation limit for current level based on complexity.
@@ -34,12 +37,14 @@ class TruncationChecker:
         Args:
             surface_area: PBRS surface area (number of reachable nodes)
             reachable_mine_count: Number of reachable toggle mines
+            cost_to_completion: Free-space cost-to-completion at spawn (~pixels);
+                lets long, winding levels get proportional time. Optional.
 
         Returns:
             Computed truncation limit in frames
         """
         self.current_truncation_limit = calculate_truncation_limit(
-            surface_area, reachable_mine_count
+            surface_area, reachable_mine_count, cost_to_completion
         )
         return self.current_truncation_limit
 

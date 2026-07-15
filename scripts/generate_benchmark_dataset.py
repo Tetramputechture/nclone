@@ -50,6 +50,7 @@ from nclone.map_generation.generator_configs import (
     validate_bucket_catalog,
 )
 from nclone.map_generation.generator_factory import GeneratorFactory
+from nclone.levelgen.labeling import subset_ok
 
 
 DEFAULT_OUTPUT_DIR = "./datasets/mechanic_benchmark"
@@ -125,7 +126,8 @@ class BenchmarkGenerator:
         seed_base_train: int,
         seed_base_test: int,
         max_retry: int = MAX_RETRY,
-        check_solvable: bool = False,
+        check_solvable: bool = True,
+        enforce_subset_entities: bool = False,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.buckets = buckets
@@ -136,6 +138,13 @@ class BenchmarkGenerator:
         self.seed_base_test = seed_base_test
         self.max_retry = max_retry
         self.check_solvable = check_solvable
+        # When True, reject any generated level whose entities fall outside the
+        # RL training subset ({toggle mine, gold, exactly 1 exit door + 1 exit
+        # switch}); a failing seed is retried like an unsolvable one. Off by
+        # default so intentional-hazard datasets (full-mechanic, locked-door
+        # curricula) are unaffected; pack_benchmark turns it on for the
+        # official+attracts subset benchmark.
+        self.enforce_subset_entities = enforce_subset_entities
 
         self._seen_hashes: set = set()
         self._duplicates = 0
@@ -179,6 +188,12 @@ class BenchmarkGenerator:
 
                 if not is_map_solvable(map_data):
                     continue
+
+            # Entity-subset contract gate: reject any level whose instantiated
+            # entities leave the RL training subset (e.g. an incidental locked
+            # door from a corridor preset). Retried like an unsolvable seed.
+            if self.enforce_subset_entities and not subset_ok(map_data):
+                continue
 
             map_hash = _hash_map_data(map_data)
             if map_hash in self._seen_hashes:
@@ -394,7 +409,54 @@ class BenchmarkGenerator:
                 f"  Skipped {len(self._skipped)} levels after {self.max_retry} retries"
             )
         print(f"  Duplicates retried: {self._duplicates}")
+
+        # Post-generation solvability guarantee. The per-seed gate above already
+        # rejects unsolvable seeds, but a whole-dataset re-audit is the invariant
+        # that no unsolvable level can EVER ship: it catches any generator path
+        # that skips the per-seed check and makes the guarantee explicit and
+        # testable. Only meaningful when the per-seed gate is on.
+        if self.check_solvable:
+            unsolvable = self._audit_output_solvable()
+            if unsolvable:
+                print(
+                    f"\nERROR: {len(unsolvable)} generated levels are UNSOLVABLE "
+                    f"despite check_solvable=True (per-seed gate bypass or "
+                    f"non-determinism). Dataset is INVALID.",
+                    file=sys.stderr,
+                )
+                for split, bucket, tier, lid in unsolvable[:20]:
+                    print(f"  - {split}/{bucket}/T{tier}/{lid}", file=sys.stderr)
+                return 3
+            print("  Solvability guarantee: all levels solvable ✓")
         return 0
+
+    def _audit_output_solvable(self):
+        """Re-check every emitted level with the CURRENT is_map_solvable.
+
+        Returns a list of (split, bucket, tier, level_id) for any unsolvable
+        level. Guards against a code path emitting a level the reachability
+        model cannot solve (which would break PBRS / goal curriculum at train
+        time and flood logs with out-of-bounds warnings).
+        """
+        from nclone.map_generation.solvability import is_map_solvable
+
+        bad = []
+        for split in ("train", "test"):
+            split_dir = self.output_dir / split
+            if not split_dir.exists():
+                continue
+            for pkl in split_dir.rglob("*.pkl"):
+                try:
+                    with open(pkl, "rb") as f:
+                        payload = pickle.load(f)
+                    ok = is_map_solvable(list(payload["map_data"]))
+                except Exception:  # noqa: BLE001 - treat as unsolvable
+                    ok = False
+                if not ok:
+                    bad.append(
+                        (split, pkl.parts[-3], pkl.parts[-2], pkl.stem)
+                    )
+        return bad
 
 
 def _parse_buckets(arg: str) -> List[str]:
@@ -462,11 +524,21 @@ def main() -> int:
         help=f"Max dedup retries per level (default: {MAX_RETRY})",
     )
     parser.add_argument(
-        "--check_solvable", action="store_true",
-        help="Reject maps whose switch/exit is unreachable from spawn via the "
-        "grid reachability graph (slower; reseeds within --max_retry). The "
-        "procedural generators are solvable-by-construction, so this is a "
-        "safety net -- recommended when adding/tuning generators.",
+        "--no_check_solvable", dest="check_solvable", action="store_false",
+        help="DISABLE the solvability gate (default ON). The gate rejects maps "
+        "whose switch/exit is unreachable from spawn via the grid reachability "
+        "graph and reseeds within --max_retry, guaranteeing every dataset level "
+        "has a valid spawn + reachable goals. Most generators are "
+        "solvable-by-construction, but a few (e.g. composite/long_chain_t4) "
+        "produce the occasional walled-off goal; keep the gate ON.",
+    )
+    parser.set_defaults(check_solvable=True)
+    parser.add_argument(
+        "--subset_entities_only", action="store_true",
+        help="Reject any generated level whose entities leave the RL training "
+        "subset (toggle mines, gold, exactly 1 exit door + 1 exit switch); a "
+        "failing seed is reseeded within --max_retry. Use for subset benchmarks "
+        "that must not contain locked doors, drones, thwumps, etc.",
     )
     args = parser.parse_args()
 
@@ -480,6 +552,7 @@ def main() -> int:
         seed_base_test=args.seed_base_test,
         max_retry=args.max_retry,
         check_solvable=args.check_solvable,
+        enforce_subset_entities=args.subset_entities_only,
     )
     return generator.run(args.mode)
 

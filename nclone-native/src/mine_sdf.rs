@@ -16,6 +16,12 @@ const THREAT_WIDTH: usize = 168;
 const THREAT_HEIGHT: usize = 92;
 const MINE_KILL_RADIUS_PX: f64 = 14.0;
 const SDF_SCALE_PX: f64 = 24.0;
+/// Raw sim coordinates include a 1-tile (24 px) solid border; the playable
+/// area is [24, 1032) x [24, 576). The 168x92 grid covers exactly the playable
+/// region, so cell (col, row) centers at `24 + (i + 0.5) * 6` in raw sim px —
+/// co-registered with `tile_grid` / `entity_overlays` (which use the
+/// border-stripped frame). Mine/ninja inputs stay in raw sim px.
+const PLAYFIELD_OFFSET_PX: f64 = 24.0;
 
 /// 3-channel mine threat map: deadly SDF, safe SDF, passability (sigmoid of deadly).
 ///
@@ -102,8 +108,8 @@ impl MineThreatMap {
 
         for row in 0..THREAT_HEIGHT {
             for col in 0..THREAT_WIDTH {
-                let cx = (col as f64 + 0.5) * THREAT_CELL_SIZE;
-                let cy = (row as f64 + 0.5) * THREAT_CELL_SIZE;
+                let cx = PLAYFIELD_OFFSET_PX + (col as f64 + 0.5) * THREAT_CELL_SIZE;
+                let cy = PLAYFIELD_OFFSET_PX + (row as f64 + 0.5) * THREAT_CELL_SIZE;
                 let idx = row * THREAT_WIDTH + col;
 
                 let d_sq = Self::nearest_dist_sq(cx, cy, &deadly_tree);
@@ -125,8 +131,8 @@ impl MineThreatMap {
 
         for row in 0..THREAT_HEIGHT {
             for col in 0..THREAT_WIDTH {
-                let cx = (col as f64 + 0.5) * THREAT_CELL_SIZE;
-                let cy = (row as f64 + 0.5) * THREAT_CELL_SIZE;
+                let cx = PLAYFIELD_OFFSET_PX + (col as f64 + 0.5) * THREAT_CELL_SIZE;
+                let cy = PLAYFIELD_OFFSET_PX + (row as f64 + 0.5) * THREAT_CELL_SIZE;
                 let idx = row * THREAT_WIDTH + col;
 
                 let d_sq = Self::nearest_dist_sq(cx, cy, &deadly_tree);
@@ -274,10 +280,14 @@ impl MineThreatMap {
         let mut cells_recomputed: usize = 0;
 
         for &(mx, my) in &changed_mines {
-            let col_lo = ((mx - effect_radius) / THREAT_CELL_SIZE - 0.5).floor();
-            let col_hi = ((mx + effect_radius) / THREAT_CELL_SIZE - 0.5).ceil();
-            let row_lo = ((my - effect_radius) / THREAT_CELL_SIZE - 0.5).floor();
-            let row_hi = ((my + effect_radius) / THREAT_CELL_SIZE - 0.5).ceil();
+            let col_lo =
+                ((mx - PLAYFIELD_OFFSET_PX - effect_radius) / THREAT_CELL_SIZE - 0.5).floor();
+            let col_hi =
+                ((mx - PLAYFIELD_OFFSET_PX + effect_radius) / THREAT_CELL_SIZE - 0.5).ceil();
+            let row_lo =
+                ((my - PLAYFIELD_OFFSET_PX - effect_radius) / THREAT_CELL_SIZE - 0.5).floor();
+            let row_hi =
+                ((my - PLAYFIELD_OFFSET_PX + effect_radius) / THREAT_CELL_SIZE - 0.5).ceil();
             let col_min = col_lo.max(0.0) as usize;
             let col_max = col_hi.min((THREAT_WIDTH - 1) as f64).max(0.0) as usize;
             let row_min = row_lo.max(0.0) as usize;
@@ -285,8 +295,8 @@ impl MineThreatMap {
 
             for row in row_min..=row_max {
                 for col in col_min..=col_max {
-                    let cx = (col as f64 + 0.5) * THREAT_CELL_SIZE;
-                    let cy = (row as f64 + 0.5) * THREAT_CELL_SIZE;
+                    let cx = PLAYFIELD_OFFSET_PX + (col as f64 + 0.5) * THREAT_CELL_SIZE;
+                    let cy = PLAYFIELD_OFFSET_PX + (row as f64 + 0.5) * THREAT_CELL_SIZE;
                     let dx = cx - mx;
                     let dy = cy - my;
                     if dx * dx + dy * dy > effect_radius_sq {
@@ -363,5 +373,13 @@ impl MineThreatMap {
     #[staticmethod]
     fn hazard_cell_size() -> f64 {
         THREAT_CELL_SIZE
+    }
+
+    /// Raw-sim-px offset of hazard cell (0, 0): the playable area starts at
+    /// 24 px (the sim's 1-tile solid border). Cell (col, row) center =
+    /// `offset + (i + 0.5) * cell_size` in raw sim px.
+    #[staticmethod]
+    fn hazard_playfield_offset() -> f64 {
+        PLAYFIELD_OFFSET_PX
     }
 }

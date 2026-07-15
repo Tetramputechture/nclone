@@ -79,7 +79,11 @@ class EntityDroneBase(Entity):
         self.dir = None
         self.turn(orientation // 2)
         self.orientation = orientation
-        self.mode = mode
+        # Only patrol modes 0-3 are defined (DIR_LIST). A malformed level (e.g. a
+        # procgen drone with mode >= 4) would otherwise KeyError in move() and crash
+        # the whole sim/training run. Wrap into the valid range: identity for valid
+        # 0-3 (no parity change on good levels), deterministic for out-of-spec.
+        self.mode = mode if mode in self.DIR_LIST else (mode % len(self.DIR_LIST))
         self.xtarget, self.ytarget = self.xpos, self.ypos
         self.xpos2, self.ypos2 = self.xpos, self.ypos
 

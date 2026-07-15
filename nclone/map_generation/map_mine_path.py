@@ -141,6 +141,13 @@ class MapMinePath(Map):
         mine_columns = self._sample_mine_positions(x1, x2, ninja_x, reserved)
         for mx in mine_columns:
             my = self._ground_y_for(mx, x1, x2, y1, y2)
-            self.add_entity(1, mx, my)
+            # Ground-level placement (the point of this bucket: the ninja must
+            # JUMP each mine). Raw tile coords anchor the entity at the tile's
+            # top-left corner and miss the sim's +1 border tile, leaving the
+            # mine floating 48px above the floor — walkable-under. +1.5/+2.0
+            # is the border-corrected floor convention (x centered in the
+            # tile, mine center on the floor line; kill radius 14px reaches
+            # standing-ninja height), same as map_long_jump's edge mines.
+            self.add_entity(1, mx + 1.5, my + 2.0)
 
         return self

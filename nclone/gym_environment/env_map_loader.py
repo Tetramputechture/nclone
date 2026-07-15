@@ -5,7 +5,6 @@ This module handles map loading for training and evaluation, with support for
 curriculum learning and procedural generation.
 """
 
-import json
 import logging
 import os
 import uuid
@@ -125,9 +124,11 @@ class EnvMapLoader:
             self.current_map_name = map_name
             self.random_map_type = None
 
-            # Add logging to make custom map usage clear
-            import logging
-
+            # Add logging to make custom map usage clear.
+            # NOTE: do NOT re-import logging here — a function-local ``import
+            # logging`` shadows the module-level import for the WHOLE function,
+            # making the ``logging.getLogger(...)`` call in the eval branch below
+            # raise UnboundLocalError when custom_map_path is unset.
             logger = logging.getLogger(__name__)
             logger.info(f"Custom map path set: {self.custom_map_path}")
             logger.info("  → Bypassing ALL dataset selection (train/test/curriculum)")
@@ -269,30 +270,21 @@ class EnvMapLoader:
                 )
             return []
 
-        # self.test_dataset_path is already resolved to absolute path in __init__
-        metadata_path = Path(self.test_dataset_path) / "test_metadata.json"
-
-        if not metadata_path.exists():
-            logger = logging.getLogger(__name__)
-            logger.warning(
-                f"Test suite metadata not found at {metadata_path} "
-                f"(resolved from: {self.test_dataset_path}). "
+        # Load (and order) the eval level IDs via TestSuiteLoader, which is
+        # schema-agnostic: it reads both the legacy difficulty-category dataset
+        # and the current mechanic-primary benchmark (``<BUCKET>/T<tier>/``). On
+        # any failure (missing/empty metadata) we fall back to random maps.
+        try:
+            loader = TestSuiteLoader(self.test_dataset_path)
+        except ValueError as exc:
+            logging.getLogger(__name__).warning(
+                f"Test suite not loadable at {self.test_dataset_path}: {exc}. "
                 f"Evaluation mode will fall back to random maps."
             )
             return []
 
-        with open(metadata_path, "r", encoding="utf-8") as f:
-            metadata = json.load(f)
-
-        # Extract levels in order: simple, medium, complex, mine_heavy, exploration
-        ordered_levels = []
-        category_order = TestSuiteLoader.CATEGORIES
-
-        for category in category_order:
-            if category in metadata.get("categories", {}):
-                ordered_levels.extend(metadata["categories"][category]["level_ids"])
-
-        return ordered_levels
+        # Ordered by category/bucket (already in canonical order in the loader).
+        return loader.get_level_ids()
 
     def set_curriculum_stage(self, stage: str) -> None:
         """Set the current curriculum stage for map selection.

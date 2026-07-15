@@ -270,7 +270,10 @@ class TestCDJChain(unittest.TestCase):
         import nclone_native as N
 
         md = build_cdj_chain_map()
-        audit = LatticeAudit(map_data=md, name="cdj-chain")
+        # CDJ enumeration is opt-in (default off); this test exercises the
+        # floor-jump CDJ chain, so request it explicitly.
+        audit = LatticeAudit(map_data=md, name="cdj-chain",
+                             cdj_launch_modes="floor_jump")
 
         # (1) The jointly-optimal spawn route must compose TWO trick (CDJ) arcs.
         pc = audit.precompute(use_cache=True)
@@ -309,7 +312,9 @@ class TestCDJChain(unittest.TestCase):
         import nclone_native as N
 
         md = build_cdj_chain_map_mirrored()
-        audit = LatticeAudit(map_data=md, name="cdj-chain-mirror")
+        # CDJ enumeration is opt-in (default off); request the floor-jump chain.
+        audit = LatticeAudit(map_data=md, name="cdj-chain-mirror",
+                             cdj_launch_modes="floor_jump")
         pc = audit.precompute(use_cache=True)
         phase0, phase1, _info = audit.build_route(pc)
         route = phase0 + phase1

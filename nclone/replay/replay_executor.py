@@ -56,12 +56,42 @@ def decode_input_to_controls(input_byte: int) -> tuple:
 class ReplayExecutor:
     """Executes replays deterministically to regenerate Layer 1 observations."""
 
+    # Reachability obs-exposure fields a caller may set so the replayed BC obs
+    # MATCH the training/policy obs exactly. Defaults (all False) reproduce the
+    # strict Layer-1 contract, so existing callers are unaffected.
+    _OBS_EXPOSURE_FIELDS = (
+        "use_jump_potential",
+        "expose_cost_to_go_map",
+        "expose_visitation_map",
+        "expose_frontier_map",
+        "expose_waypoint_features",
+        "use_free_space_potential",
+        "enable_ego_crop",
+        "ego_crop_size",
+        "enable_ego_crop_coarse",
+        "ego_crop_coarse_route",
+        "cost_map_norm",
+        # v22 §3-B/C: obs-dim-growing exposures — demos MUST re-simulate with these
+        # or the cached demo obs (game_state -1 dim / missing fine-route key) crash
+        # the first DAPG minibatch against the live 262-dim policy space.
+        "expose_blocked_goal",
+        "expose_ego_crop_route_fine",
+    )
+    # Non-boolean exposure fields whose value is applied verbatim (NOT bool-coerced)
+    # so a demo re-simulates the ego-crop at the SAME size as the live policy space
+    # (bool-coercing the size would force it to 1 and desync the obs shape).
+    # cost_map_norm (v18 C3) is a mode string: it changes cost_to_go_map VALUES,
+    # so demos must re-simulate under the run's normalization. A False/None value
+    # (the trainer's "default fixed_k" sentinel) is skipped, keeping the default.
+    _OBS_EXPOSURE_NONBOOL = ("ego_crop_size", "cost_map_norm")
+
     def __init__(
         self,
         observation_config: Optional[Dict[str, Any]] = None,
         render_mode: str = "rgb_array",
         enable_rendering: bool = False,
         frame_skip: int = 1,
+        obs_exposure: Optional[Dict[str, bool]] = None,
     ):
         """Initialize replay executor.
 
@@ -72,6 +102,12 @@ class ReplayExecutor:
             enable_rendering: If True, creates the env in ``human``-style render
                 mode so callers can grab raw frames via ``env.render()``.
             frame_skip: Number of physics ticks per emitted observation.
+            obs_exposure: Optional dict of ``ReachabilityConfig`` obs-exposure
+                flags to enable so the replayed observation MATCHES the policy obs
+                the training run was built with. Recognized keys:
+                ``use_jump_potential``, ``expose_cost_to_go_map``,
+                ``expose_waypoint_features``, ``use_free_space_potential``. Unknown
+                keys are ignored; default (None) keeps the strict Layer-1 contract.
         """
         del observation_config  # unused
         self.frame_skip = max(1, frame_skip)
@@ -83,10 +119,31 @@ class ReplayExecutor:
             render_kwargs["render"] = RenderConfig(render_mode=render_mode)
 
         cfg = EnvironmentConfig.for_training(**render_kwargs)
+        # Apply obs-exposure flags onto the reachability config BEFORE the env is
+        # built so the produced obs dict carries the same extra keys the policy
+        # was trained against (cost_to_go_map / waypoint_nav), and the jump/free-
+        # space potential source matches.
+        if obs_exposure:
+            for k in self._OBS_EXPOSURE_FIELDS:
+                if k in obs_exposure:
+                    v = obs_exposure[k]
+                    if k in self._OBS_EXPOSURE_NONBOOL:
+                        # Falsy (0 / False / None) = "keep the config default"
+                        # sentinel for value-carrying fields.
+                        if v:
+                            setattr(cfg.reachability, k, v)
+                    else:
+                        setattr(cfg.reachability, k, bool(v))
         # Faithful replay: one physics tick per emitted input byte. Without this
         # the env runs at the default frame_skip (4 ticks/step), repeating each
         # input 4x and diverging from the recorded demo.
         cfg.frame_skip = self.frame_skip
+        # Skip the throwaway init-time procedural map load: the real level is
+        # injected per replay in execute_replay (load_map_from_map_data + reset).
+        # Without this the env eagerly generates a map by its default category at
+        # construction, which crashes if that category name is stale in the
+        # generator registry — silently killing BC demo ingestion.
+        cfg.defer_initial_map_load = True
         self.env = NppEnvironment(cfg)
         # Skip PBRS/A* work during replay ingestion — we only need raw obs.
         self.env.skip_reward_calculation = True
@@ -132,6 +189,13 @@ class ReplayExecutor:
 
             if terminated or truncated:
                 break
+
+        # Actual simulated outcome of THIS tape on the CURRENT sim. Callers
+        # (BC/DAPG dataset builders) must gate on this, NOT on the replay
+        # file's ``success`` metadata flag — a stale or mis-encoded tape (e.g.
+        # the far_objective L/R-swap incident) carries success=True while the
+        # re-simulation dies, silently poisoning the demo set.
+        self.last_replay_won = bool(self.env.nplay_headless.ninja_has_won())
 
         return observations
 

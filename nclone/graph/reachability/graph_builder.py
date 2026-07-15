@@ -11,6 +11,7 @@ Improved implementation with sub-tile nodes:
 - More accurate pathfinding for 10px radius player, capturing slopes and curves
 """
 
+import os
 import logging
 import time
 import numpy as np
@@ -142,10 +143,12 @@ def _check_subnode_validity_simple(tile_type: int, pixel_x: int, pixel_y: int) -
         # Traversable is RIGHT of diagonal (x < y region)
         return pixel_x < pixel_y
     if tile_type == 8:  # Slope / inverted - Triangle vertices: (24,0), (0,24), (24,24)
-        # Fills bottom-right triangle. Line: y = 24 - x
-        # Solid is BELOW/RIGHT of diagonal (larger y values)
-        # Traversable is ABOVE/LEFT of diagonal (smaller y values) OR on the diagonal (y = x)
-        return pixel_y < (24 - pixel_x) or pixel_y == pixel_x
+        # Fills bottom-right triangle (solid where x + y > 24). Line: y = 24 - x.
+        # Traversable is ABOVE/LEFT of the diagonal only. The old code also OR'd
+        # ``pixel_y == pixel_x``, which wrongly marked the solid sub-cells (15,15)
+        # and (21,21) (x+y = 30, 42 > 24) as free -> the cost-to-go / paths leaked
+        # straight through the solid triangle (verified vs the pixel renderer).
+        return pixel_y < (24 - pixel_x)
     if tile_type == 9:  # Slope \ inverted - Triangle vertices: (24,24), (0,0), (0,24)
         # Fills left side except top-right corner. Line: y = x
         # Solid is LEFT of or ON diagonal (x <= y region)
@@ -706,8 +709,35 @@ class GraphBuilder:
         self._flood_fill_cache = (
             OrderedDict()
         )  # level_id -> (last_ninja_pos, reachable_set)
-        self._max_cache_size = 100  # Reasonable limit for level graphs
+        # Cap 100 -> 32 (v14 worker-RSS audit): these per-instance LRUs (base
+        # graphs / entity masks / core results / flood fills) each held up to
+        # 100 multi-MB entries PER ENV WORKER. A worker cycles one level at a
+        # time, so 32 recent levels is ample re-hit coverage; a miss costs the
+        # ~100ms rebuild, not a throughput cliff. NCLONE_GB_CACHE_SIZE overrides.
+        self._max_cache_size = int(os.environ.get("NCLONE_GB_CACHE_SIZE", "32"))
         self._current_level_id = None
+
+        # Entity-mask (blocked node/edge) cache keyed on (level_id, entity-state
+        # signature). The radius-based blocked-pixel scan is O(deadly mines) and
+        # dominates env reset on mine-dense levels (13k+ mines ~= 9s/reset); its
+        # result depends only on mine/door STATE, so it is identical across
+        # resets of a static level. Cache it so the cost is paid once per
+        # distinct entity-state, not once per reset.
+        self._entity_mask_cache = OrderedDict()  # (level_id, state_sig) -> (blocked_px, blocked_edges)
+        self.mask_cache_hits = 0
+        self.mask_cache_misses = 0
+
+        # Whole-graph "core" cache: the entire build_graph result EXCEPT the
+        # ninja-position-dependent "reachable" set is a pure function of
+        # (level_id, entity-state signature, reachability-filter flag). On a
+        # static level this lets a warm reset skip the full adjacency mask +
+        # spawn flood-fill + spatial-hash + node-physics rebuild (~400ms on a
+        # 13k-mine level) and just recompute the cheap (separately cached)
+        # ninja-reachable set. Keyed independently of ninja_pos so mid-episode
+        # rebuilds (different ninja_pos, same entity state) also hit.
+        self._core_result_cache = OrderedDict()  # (level_id, state_sig, filter) -> core result
+        self.core_cache_hits = 0
+        self.core_cache_misses = 0
 
         # Flood fill caching (per level)
         # Only recompute flood fill when player moves >= 6px from last cached position
@@ -848,6 +878,33 @@ class GraphBuilder:
         if level_id is None:
             level_id = f"level_{hash(tiles.tobytes())}"
 
+        # --- Whole-graph core cache --------------------------------------
+        # Build the entity mask once up front to derive the state signature.
+        # Everything in the returned result except the ninja-dependent
+        # "reachable" set is a pure function of (level_id, state signature,
+        # filter flag), so a warm same-state rebuild returns a shallow copy of
+        # the cached core and only recomputes "reachable" (which is itself
+        # flood-fill-cached). This collapses the ~400ms per-reset graph rebuild
+        # on mine-dense static levels to a dict lookup.
+        entity_mask = EntityMask(level_data_dict)
+        core_key = (level_id, entity_mask.state_signature(), filter_by_reachability)
+        cached_core = self._core_result_cache.get(core_key)
+        if cached_core is not None:
+            self._core_result_cache.move_to_end(core_key)
+            self.core_cache_hits += 1
+            result = dict(cached_core)  # shallow copy: per-ninja "reachable" must not pollute the cache
+            if ninja_pos is not None:
+                result["reachable"] = self._get_cached_flood_fill(
+                    level_id,
+                    ninja_pos,
+                    result["adjacency"],
+                    result["spatial_hash"],
+                    physics_cache=result.get("node_physics"),
+                    base_adjacency=result.get("base_adjacency"),
+                )
+            return result
+        self.core_cache_misses += 1
+
         # Check cache
         if level_id in self._level_graph_cache:
             # Use cached base graph
@@ -867,17 +924,37 @@ class GraphBuilder:
 
             self.cache_misses += 1
 
-        # Apply dynamic entity state mask
-        entity_mask = EntityMask(level_data_dict)
-
+        # Apply dynamic entity state mask (entity_mask was built above for the
+        # core-cache key; reuse it rather than re-extracting all entities).
         # Get all node positions from base graph for radius-based blocking
         all_nodes = set(base_graph["adjacency"].keys())
 
-        # Get blocked pixel positions (radius-based for mines, tile-based for doors)
-        blocked_pixel_positions = entity_mask.get_blocked_pixel_positions(all_nodes)
-
-        # Get blocked edges (currently none, but extensible)
-        blocked_edges = entity_mask.get_blocked_edges()
+        # The blocked-pixel scan is O(deadly mines) and dominates reset on
+        # mine-dense levels (13k mines ~= 9s). Its output is a pure function of
+        # the entity state (mines/doors) + the static node set (fixed per
+        # level_id), so memoize on (level_id, entity state signature). On a
+        # static single level the signature is constant -> computed once, reused
+        # every reset. A state change (e.g. a toggled mine) shifts the signature
+        # and forces a correct recompute.
+        mask_key = (level_id, entity_mask.state_signature())
+        cached_mask = self._entity_mask_cache.get(mask_key)
+        if cached_mask is not None:
+            blocked_pixel_positions, blocked_edges = cached_mask
+            self._entity_mask_cache.move_to_end(mask_key)
+            self.mask_cache_hits += 1
+        else:
+            # Get blocked pixel positions (radius-based for mines, tile-based for doors)
+            blocked_pixel_positions = entity_mask.get_blocked_pixel_positions(all_nodes)
+            # Get blocked edges (directional one-way platform crossings)
+            blocked_edges = entity_mask.get_blocked_edges(base_graph["adjacency"])
+            self._entity_mask_cache[mask_key] = (
+                blocked_pixel_positions,
+                blocked_edges,
+            )
+            self._entity_mask_cache.move_to_end(mask_key)
+            if len(self._entity_mask_cache) > self._max_cache_size:
+                self._entity_mask_cache.popitem(last=False)
+            self.mask_cache_misses += 1
 
         # Create final adjacency by filtering blocked positions/edges
         adjacency = self._apply_entity_mask(
@@ -960,6 +1037,16 @@ class GraphBuilder:
             "node_physics": node_physics_cache,  # Pre-computed physics properties (grounded, walled)
             "spawn_reachable_nodes": spawn_reachable_nodes,
         }
+
+        # Cache the ninja-INDEPENDENT core (no "reachable" yet) so future
+        # same-state builds skip everything above. Store before adding the
+        # per-ninja "reachable" set, and return a shallow copy, so the cached
+        # core stays free of ninja-specific state.
+        self._core_result_cache[core_key] = result
+        self._core_result_cache.move_to_end(core_key)
+        if len(self._core_result_cache) > self._max_cache_size:
+            self._core_result_cache.popitem(last=False)
+        result = dict(result)
 
         # If ninja position provided, compute reachable set for that position
         # Note: This may differ from initial_player_pos if ninja has moved
@@ -1981,6 +2068,8 @@ class GraphBuilder:
         """Clear level graph cache (call on environment reset)."""
         self._level_graph_cache.clear()
         self._flood_fill_cache.clear()
+        self._entity_mask_cache.clear()
+        self._core_result_cache.clear()
         self._current_level_id = None
 
     def get_statistics(self) -> Dict[str, Any]:

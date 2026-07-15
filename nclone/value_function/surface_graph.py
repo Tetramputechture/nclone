@@ -8,6 +8,7 @@ suitable for PBRS potential evaluation.
 
 import heapq
 import math
+import os
 from dataclasses import dataclass, field
 from typing import List, Dict, Set, Tuple, Optional
 
@@ -36,7 +37,41 @@ from .surface_extraction import (
 # so that bin-layout changes invalidate stale caches automatically.  Bump
 # this any time ``_FLOOR_BIN_CENTERS`` or ``_WALL_BIN_CENTERS`` or the new
 # slide / launch-pad schedules below change.
-BIN_SCHEDULE_VERSION: int = 3
+# Bumped 3->4 when the default velocity-bin stride changed 1->2 (see
+# _coarsen_bins): the effective schedule is now the stride-2 subsample, so any
+# tile cache built under the old full schedule must invalidate.
+BIN_SCHEDULE_VERSION: int = 4
+
+
+def _coarsen_bins(centers: np.ndarray) -> np.ndarray:
+    """Subsample a velocity-bin schedule (the enumerate_arcs speed knob).
+
+    ``NCLONE_VEL_BIN_STRIDE`` controls the stride; it keeps every Nth bin plus
+    the two endpoints and the stationary (nearest-zero) bin.  A larger stride
+    means fewer (surface_point, velocity_bin) launch nodes => proportionally
+    less native edge enumeration.
+
+    **Default is 2** — measured to cut lattice precompute ~40-46% with d* search
+    expansions byte-identical across flat/stairs/maze/wall-jump levels (the full
+    15/12/9 schedule was over-resolved for the heuristic).  Set stride 1 to
+    restore the legacy fine schedule, or 3 for ~60% (still benign on the tested
+    set).  The lattice pickle cache key hashes the bin centers, so it tracks the
+    stride automatically; the tile-cache shards key on BIN_SCHEDULE_VERSION
+    (bumped above), so changing the *default* stride does not silently reuse a
+    stale shard.  Do NOT, however, point a single cache dir at two different
+    NCLONE_VEL_BIN_STRIDE values without clearing it.
+    """
+    try:
+        stride = int(os.environ.get("NCLONE_VEL_BIN_STRIDE", "2"))
+    except ValueError:
+        stride = 2
+    if stride <= 1 or centers.shape[0] <= 3:
+        return centers
+    n = centers.shape[0]
+    keep = {0, n - 1, int(np.argmin(np.abs(centers)))}
+    keep.update(range(0, n, stride))
+    return centers[sorted(keep)].astype(centers.dtype).copy()
+
 
 FLOOR_VEL_MIN = -MAX_HOR_SPEED
 FLOOR_VEL_MAX = MAX_HOR_SPEED
@@ -60,7 +95,7 @@ WALL_VEL_MAX = 5.5     # approaching survivable impact limit
 # number of bins for each surface is preserved so existing .npz files keep
 # loading; increments to the schedule force a cache rebuild via
 # ``BIN_SCHEDULE_VERSION``.
-_FLOOR_BIN_CENTERS = np.array([
+_FLOOR_BIN_CENTERS = _coarsen_bins(np.array([
     -MAX_HOR_SPEED,           # full-speed leftward run
     -MAX_HOR_SPEED * 0.75,
     -MAX_HOR_SPEED * 0.5,
@@ -76,10 +111,10 @@ _FLOOR_BIN_CENTERS = np.array([
     MAX_HOR_SPEED * 0.9,
     MAX_HOR_SPEED * 0.98,
     MAX_HOR_SPEED,             # full-speed rightward run (saturated)
-], dtype=np.float32)
+], dtype=np.float32))
 NUM_VELOCITY_BINS_FLOOR: int = int(_FLOOR_BIN_CENTERS.shape[0])
 
-_WALL_BIN_CENTERS = np.array([
+_WALL_BIN_CENTERS = _coarsen_bins(np.array([
     WALL_VEL_MIN,              # wall-jump upward impulse
     -1.0,
     -0.4,
@@ -92,7 +127,7 @@ _WALL_BIN_CENTERS = np.array([
     4.2,
     5.0,
     WALL_VEL_MAX,              # saturated wall-slide terminal velocity
-], dtype=np.float32)
+], dtype=np.float32))
 NUM_VELOCITY_BINS_WALL: int = int(_WALL_BIN_CENTERS.shape[0])
 # Effective bin widths (mean spacing).  Kept for any legacy callers; code
 # that needs exact per-bin widths should use the ``_FLOOR_BIN_CENTERS``
@@ -111,7 +146,7 @@ _WALL_BIN_WIDTH = float(
 # schedule.  A slide node represents the ninja already wall-sliding, so the
 # zero / upward bins are dropped; 0.0 is retained so the "just entered
 # slide" state (vy ~= 0) remains expressible.
-_SLIDE_BIN_CENTERS = np.array([
+_SLIDE_BIN_CENTERS = _coarsen_bins(np.array([
     0.0,
     0.4,
     1.0,
@@ -121,7 +156,7 @@ _SLIDE_BIN_CENTERS = np.array([
     4.2,
     5.0,
     WALL_VEL_MAX,
-], dtype=np.float32)
+], dtype=np.float32))
 NUM_VELOCITY_BINS_SLIDE: int = int(_SLIDE_BIN_CENTERS.shape[0])
 
 # ---------------------------------------------------------------------------

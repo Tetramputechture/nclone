@@ -5,7 +5,88 @@ This module contains all debug overlay and visualization functionality that was
 previously integrated into the main NppEnvironment class.
 """
 
+import threading
+import time
 from typing import Dict, Any, Optional
+
+
+# ---------------------------------------------------------------------------
+# Async jump cost-to-go field build (keep the GUI responsive).
+#
+# Building a JumpDistanceSource is SLOW (6-11s/level: validating every trajectory
+# per support cell) AND pure-Python (jump-edge enumeration + Dijkstra), so it
+# HOLDS THE GIL the whole time. Running it on a background *thread* therefore
+# still starves the main pygame event loop -> the window freezes. We instead run
+# it in a SEPARATE PROCESS (spawn) whose only job is to populate the shared
+# on-disk jumpfield cache; the main process then reads that cache (a fast numpy/
+# pickle load) once the subprocess exits. Everything is keyed by a hash of
+# map_data:
+#   _JUMP_BUILD_RESULTS[hash] -> JumpDistanceSource (or None if build failed)
+#   _JUMP_BUILD_INFLIGHT[hash] -> build start time (frames show "computing… (Xs)")
+#   _JUMP_BUILD_PROCS[hash]    -> the live multiprocessing.Process building it
+# A hash present in RESULTS means "done" (value may be None = failed/unavailable).
+# A hash in INFLIGHT but not RESULTS means "still building". Module-level so the
+# work is shared across env instances; guarded by a single lock. Changing levels
+# just means a different hash, so stale in-flight builds are harmless (ignored).
+# spawn (not fork) so the child is a clean interpreter that never inherits/touches
+# the parent's pygame display (important on WSL2).
+# ---------------------------------------------------------------------------
+_JUMP_BUILD_LOCK = threading.Lock()
+_JUMP_BUILD_RESULTS: Dict[str, Any] = {}
+_JUMP_BUILD_INFLIGHT: Dict[str, float] = {}
+_JUMP_BUILD_PROCS: Dict[str, Any] = {}
+
+
+def _jump_build_subprocess(map_data: list) -> None:
+    """Subprocess (spawn) entry: build + disk-cache the jump field, then exit.
+
+    Runs in a SEPARATE PROCESS so the GIL-holding pure-Python build can't starve
+    the main pygame loop. No return value — the build's side effect is the shared
+    on-disk ``jumpfield`` cache, which the parent reads once we exit.
+    """
+    import os
+
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")  # never touch a display
+    os.environ.setdefault("MPLBACKEND", "Agg")
+    try:
+        from nclone.value_function.jump_distance import get_jump_distance_source
+
+        get_jump_distance_source(list(map_data))
+    except Exception:
+        pass
+
+
+def _load_jump_source_from_cache(map_data: list) -> Any:
+    """Load a JumpDistanceSource ONLY if its field is already cached (mem/disk).
+
+    Returns the source on a cache hit, or ``None`` when nothing is cached (e.g.
+    the subprocess build failed). Critically, this never triggers a synchronous
+    6-11s rebuild on the main thread — a cache miss simply yields ``None``.
+    """
+    import os as _os
+
+    try:
+        from ...value_function.jump_distance import (
+            _JUMP_MEM_CACHE,
+            _jump_cache_dir,
+            _jump_cache_key,
+            get_jump_distance_source,
+        )
+
+        key = _jump_cache_key(list(map_data))
+    except Exception:
+        return None
+
+    in_mem = key in _JUMP_MEM_CACHE
+    cache_dir = _jump_cache_dir()
+    path = _os.path.join(cache_dir, key + ".pkl") if cache_dir else None
+    on_disk = bool(path and _os.path.exists(path))
+    if not in_mem and not on_disk:
+        return None  # subprocess produced nothing -> don't rebuild synchronously
+    try:
+        return get_jump_distance_source(list(map_data))  # fast: hits the cache
+    except Exception:
+        return None
 
 
 class DebugMixin:
@@ -54,6 +135,12 @@ class DebugMixin:
         # Mine SDF (Signed Distance Field) debug visualization state
         self._mine_sdf_debug_enabled: bool = False
 
+        # Jump-aware cost-to-go (physics-faithful) heatmap state. The source build
+        # is SLOW (6-11s/level), so it is built OFF-THREAD (see the module-level
+        # _JUMP_BUILD_* caches) and keyed by a map_data hash; the main loop never
+        # blocks on it. While building, the overlay just shows a "computing" label.
+        self._jump_cost_to_go_debug_enabled: bool = False
+
         # Combined graph + mine SDF + path mine proximity (single toggle, test_environment H)
         self._hazard_debug_combo_enabled: bool = False
 
@@ -79,6 +166,15 @@ class DebugMixin:
         self._input_sequence_overlay_enabled: bool = False
         self._input_sequence_overlay_data: list = []
 
+        # Ghost-arc (Audit II P0-1) overlay state: draws the three ballistic
+        # projections (u = -1/0/+1) the obs bundle is computed from, with
+        # contact class / normal / clear-width / impact annotations.
+        self._ghost_arcs_debug_enabled: bool = False
+
+        # Cardinal-raycast overlay state: draws the 8 compass surface-distance
+        # rays (game_state RAYCAST block, [E,NE,N,NW,W,SW,S,SE]) the policy sees.
+        self._raycasts_debug_enabled: bool = False
+
     def set_input_sequence_overlay(self, sequence: list, enabled: bool):
         """Set input sequence overlay data for step-on-input mode.
 
@@ -91,6 +187,17 @@ class DebugMixin:
         """
         self._input_sequence_overlay_enabled = bool(enabled)
         self._input_sequence_overlay_data = list(sequence) if sequence else []
+
+    def set_tas_overlay(self, payload: Optional[dict], enabled: bool = True):
+        """Set TAS editor overlay data (trajectory + piano-roll HUD).
+
+        When enabled, the debug overlay renderer draws the ninja trajectory over
+        the level plus a frame-by-frame timeline panel. Used by the ``--tas``
+        editor in test_environment.py. ``payload`` is built by
+        :func:`nclone.tas_tool.overlay.build_tas_payload`.
+        """
+        self._tas_overlay_enabled = bool(enabled) and payload is not None
+        self._tas_overlay_data = payload
 
     def _debug_info(self) -> Optional[Dict[str, Any]]:
         """Returns a dictionary containing debug information to be displayed on the screen."""
@@ -159,11 +266,29 @@ class DebugMixin:
                 "mine_proximity_by_node": mine_proximity_by_node,
             }
 
+        # Add ghost-arc (ballistic projection) overlay payload if enabled
+        if getattr(self, "_ghost_arcs_debug_enabled", False):
+            ghost_data = self._get_ghost_arc_debug_data()
+            if ghost_data:
+                info["ghost_arcs"] = ghost_data
+
+        # Add cardinal-raycast overlay payload if enabled
+        if getattr(self, "_raycasts_debug_enabled", False):
+            raycast_data = self._get_raycasts_debug_data()
+            if raycast_data:
+                info["raycasts"] = raycast_data
+
         # Add mine SDF visualization payload if enabled
         if self._mine_sdf_debug_enabled or self._hazard_debug_combo_enabled:
             mine_sdf_data = self._get_mine_sdf_data()
             if mine_sdf_data:
                 info["mine_sdf"] = mine_sdf_data
+
+        # Add jump-aware cost-to-go heatmap payload if enabled
+        if self._jump_cost_to_go_debug_enabled:
+            jump_data = self._get_jump_cost_to_go_data()
+            if jump_data:
+                info["jump_cost_to_go"] = jump_data
 
         # Add demo checkpoint visualization payload if enabled
         if self._demo_checkpoints_debug_enabled and self._demo_checkpoints_data:
@@ -246,6 +371,10 @@ class DebugMixin:
                 "step_count": len(self._input_sequence_overlay_data),
                 "ninja_position": self.nplay_headless.ninja_position(),
             }
+
+        # TAS editor overlay (trajectory + piano-roll), gated independently.
+        if getattr(self, "_tas_overlay_enabled", False):
+            info["tas"] = self._tas_overlay_data
 
         # Mechanic benchmark HUD (e.g. test_environment sets _benchmark_hud_lines)
         bench = getattr(self, "_benchmark_hud_lines", None)
@@ -346,6 +475,211 @@ class DebugMixin:
         """Record the action taken for debug visualization."""
         self._last_action_taken = action
 
+    def set_ghost_arcs_debug_enabled(self, enabled: bool):
+        """Enable/disable the ghost-arc (Audit II P0-1) overlay.
+
+        Draws the three ballistic projections (u = -1 / 0 / +1) that the
+        27-dim game_state ghost-arc bundle is computed from: the exact native
+        polyline to first contact, the contact class (floor / wall / ceiling /
+        deadly mine / none), the surface normal, and per-arc annotations
+        (time-to-contact, impact-speed ratio vs survivable, clear surface
+        width). Faithful to the agent's obs: arcs are shown only while the
+        ninja is AIRBORNE (grounded frames feed the fast-path zeros bundle,
+        and the overlay says so instead).
+        """
+        self._ghost_arcs_debug_enabled = bool(enabled)
+
+    def set_raycasts_debug_enabled(self, enabled: bool):
+        """Enable/disable the cardinal-raycast overlay.
+
+        Draws the 8 compass surface-distance rays the policy sees in the
+        game_state RAYCAST block ([E, NE, N, NW, W, SW, S, SE]): each ray marches
+        the tile grid from the ninja to the first solid surface (or 500px), and
+        the overlay draws it to the SAME normalized distance the obs carries
+        (0 = adjacent surface, 1.0 = nothing within 500px), with the compass
+        label + normalized value. Hit rays are solid with a filled endpoint;
+        no-surface rays fade out to the 500px horizon with a hollow endpoint.
+        """
+        self._raycasts_debug_enabled = bool(enabled)
+
+    def _get_raycasts_debug_data(self) -> Optional[Dict[str, Any]]:
+        """Build the cardinal-raycast overlay payload.
+
+        Reads the SAME 8 normalized distances the obs carries
+        (``_compute_surface_raycasts``, order [E, NE, N, NW, W, SW, S, SE]) and
+        turns each into a draw segment: ninja -> ninja + unit(dir) * dist*NORM.
+        So the drawn ray length is literally the un-normalized obs value, and a
+        ray that saturates at 1.0 (no surface within NORM px) is flagged as a
+        miss. Direction vectors + normalizer come from the env constants so the
+        overlay can never drift from the feature.
+        """
+        try:
+            dirs = getattr(self, "_RAYCAST_DIRS", None)
+            norm = float(getattr(self, "_RAYCAST_NORM_PX", 500.0))
+            if dirs is None:
+                return None
+            dists = self._compute_surface_raycasts()
+            px, py = self.nplay_headless.ninja_position()
+            labels = ("E", "NE", "N", "NW", "W", "SW", "S", "SE")
+            rays = []
+            for i, (dtx, dty) in enumerate(dirs):
+                mag = (dtx * dtx + dty * dty) ** 0.5 or 1.0
+                ux, uy = dtx / mag, dty / mag
+                d = float(dists[i]) if i < len(dists) else 1.0
+                reach = d * norm
+                rays.append({
+                    "label": labels[i] if i < len(labels) else str(i),
+                    "start": (float(px), float(py)),
+                    "end": (float(px) + ux * reach, float(py) + uy * reach),
+                    "dist_norm": d,
+                    "hit": d < 0.999,  # <1.0 => a surface was found within NORM px
+                })
+            return {"ninja": (float(px), float(py)), "rays": rays, "norm_px": norm}
+        except Exception:
+            return None
+
+    def _get_ghost_arc_debug_data(self) -> Optional[Dict[str, Any]]:
+        """Build the per-frame ghost-arc overlay payload (see renderer).
+
+        Uses the SAME projector instance, jump-gravity derivation, and frame
+        horizon as the obs bundle (`_fill_ghost_arc_bundle`), so what is drawn
+        is exactly what the agent sees — plus the frame-by-frame polyline the
+        native kernel integrated (project_with_path).
+        """
+        try:
+            from ..constants import GHOST_ARC_MAX_FRAMES
+
+            ninja = self.nplay_headless.sim.ninja
+            airborne = bool(getattr(ninja, "airborn", False))
+            px, py = self.nplay_headless.ninja_position()
+            payload: Dict[str, Any] = {
+                "airborne": airborne,
+                "ninja": (float(px), float(py)),
+                "arcs": [],
+            }
+            get_proj = getattr(self, "_get_trajectory_projector", None)
+            proj = get_proj() if get_proj is not None else None
+            if proj is None or not hasattr(proj, "project_with_path"):
+                payload["unavailable"] = True
+                return payload
+            vx, vy = self.nplay_headless.ninja_velocity()
+
+            def _project_row(x0, y0, vx0, vy0, jf, key):
+                rows = payload.setdefault(key, [])
+                for u in (-1, 0, 1):
+                    contact, path = proj.project_with_path(
+                        float(x0), float(y0), float(vx0), float(vy0),
+                        int(u), int(jf), GHOST_ARC_MAX_FRAMES,
+                    )
+                    # v15: contact_vx, contact_vy, min_mine_clearance_px.
+                    # v16 (feature C): min_goal_clearance_px appended (inf/None
+                    # when no goal is set).
+                    (
+                        cls, cx, cy, nx, ny, tau, imp, thr, cw,
+                        cvx, cvy, mclr, gclr,
+                    ) = contact
+                    surface_class = (
+                        1 if int(cls) == 0 else -1 if int(cls) == 2 else 0
+                    )  # 0=floor->+1, 2=ceiling->-1, wall/mine/none->0
+                    rows.append(
+                        {
+                            "u": int(u),
+                            "path": path,
+                            "class": int(cls),
+                            "contact": (float(cx), float(cy)),
+                            "normal": (float(nx), float(ny)),
+                            "tau": float(tau),
+                            "impact_ratio": (
+                                float(imp) / float(thr) if thr > 1e-9 else 0.0
+                            ),
+                            "clear_width": int(cw),
+                            "contact_vel": (float(cvx), float(cvy)),
+                            "surface_class": surface_class,
+                            "mine_clearance": float(mclr),  # px, inf = clear
+                            "goal_clearance": float(gclr),  # v16 C: px, inf = no goal
+                        }
+                    )
+
+            if airborne:
+                # Committed arcs — same jump-hold gravity derivation as
+                # _fill_ghost_arc_bundle.
+                from ...constants.physics_constants import (
+                    JUMP_WALL_REGULAR_X_MULTIPLIER,
+                    JUMP_WALL_REGULAR_Y,
+                    MAX_JUMP_DURATION,
+                )
+
+                jf = 0
+                if (
+                    getattr(ninja, "state", 4) == 3
+                    and getattr(ninja, "jump_input_old", 0) != 0
+                ):
+                    jf = max(
+                        0,
+                        MAX_JUMP_DURATION - int(getattr(ninja, "jump_duration", 0)),
+                    )
+                _project_row(px, py, vx, vy, jf, "arcs")
+                # Passive-release arc (v16 batch A): "if I let go of everything
+                # NOW" -> u=0 (no steer), jf=0 (jump released). The single arc
+                # the game_state passive block is computed from; drawn distinct
+                # (white dashed) with an explicit fatal flag so over-jump /
+                # no-input-fall trajectories are legible.
+                pcontact, ppath = proj.project_with_path(
+                    float(px), float(py), float(vx), float(vy),
+                    0, 0, GHOST_ARC_MAX_FRAMES,
+                )
+                (
+                    pcls, pcx, pcy, pnx, pny, ptau, pimp, pthr, pcw,
+                    pcvx, pcvy, pmclr, pgclr,
+                ) = pcontact
+                p_fatal = int(pcls) == 3 or (
+                    int(pcls) in (0, 1, 2) and pthr > 1e-9 and pimp >= pthr
+                )
+                payload["passive_arc"] = {
+                    "path": ppath,
+                    "class": int(pcls),
+                    "contact": (float(pcx), float(pcy)),
+                    "contact_vel": (float(pcvx), float(pcvy)),
+                    "tau": float(ptau),
+                    "impact_ratio": (
+                        float(pimp) / float(pthr) if pthr > 1e-9 else 0.0
+                    ),
+                    "fatal": bool(p_fatal),
+                    "is_none": int(pcls) == 4,
+                    "mine_clearance": float(pmclr),
+                    "goal_clearance": float(pgclr),  # v16 C
+                }
+                # Wall-jump-now row (v14): counterfactual regular wall-jump
+                # kick while walled — same impulse as _fill_ghost_arc_bundle.
+                wn = float(getattr(ninja, "wall_normal", 0.0) or 0.0)
+                if getattr(ninja, "walled", False) and wn != 0.0:
+                    vxw = 0.0 if float(vx) * wn < 0 else float(vx)
+                    vyw = min(float(vy), 0.0)
+                    vxw += JUMP_WALL_REGULAR_X_MULTIPLIER * wn
+                    vyw += JUMP_WALL_REGULAR_Y
+                    _project_row(
+                        px + JUMP_WALL_REGULAR_X_MULTIPLIER * wn,
+                        py + JUMP_WALL_REGULAR_Y,
+                        vxw, vyw, MAX_JUMP_DURATION, "wall_arcs",
+                    )
+            else:
+                # Grounded: the two counterfactual takeoff rows the obs exposes
+                # (same flat-floor impulse as _fill_ghost_arc_bundle's grounded
+                # branch). jump_arcs = v13 full-hold (jf = MAX_JUMP_DURATION);
+                # tap_arcs = v14 B1 tap (jf = 0 -> full gravity after impulse).
+                from ...constants.physics_constants import (
+                    JUMP_FLOOR_Y,
+                    MAX_JUMP_DURATION,
+                )
+
+                vyj = min(float(vy), 0.0) + JUMP_FLOOR_Y
+                _project_row(px, py + JUMP_FLOOR_Y, vx, vyj,
+                             MAX_JUMP_DURATION, "jump_arcs")
+                _project_row(px, py + JUMP_FLOOR_Y, vx, vyj, 0, "tap_arcs")
+            return payload
+        except Exception:
+            return None
+
     def set_mine_sdf_debug_enabled(self, enabled: bool):
         """Enable/disable mine SDF (Signed Distance Field) debug visualization.
 
@@ -354,6 +688,19 @@ class DebugMixin:
         Also shows escape direction arrows at each tile.
         """
         self._mine_sdf_debug_enabled = bool(enabled)
+
+    def set_jump_cost_to_go_debug_enabled(self, enabled: bool):
+        """Enable/disable the jump-aware cost-to-go heatmap visualization.
+
+        Shows a heatmap of the physics-faithful cost-to-go field (in frames)
+        toward the current objective (pre-switch -> switch, post-switch -> exit).
+        Green = near goal (low cost), red = far (high cost), unreachable cells
+        are skipped. This is the field that feeds the agent's cost_to_go_map obs
+        + PBRS reward, so the overlay shows that the gradient routes over
+        platforms rather than through lethal gaps. The underlying JumpDistanceSource
+        is cached per-level (keyed by map_data hash) because its build is slow.
+        """
+        self._jump_cost_to_go_debug_enabled = bool(enabled)
 
     def set_hazard_debug_combo_enabled(self, enabled: bool):
         """Enable combined hazard overlay: adjacency graph, mine SDF, and path mine cost multipliers on nodes."""
@@ -687,6 +1034,107 @@ class DebugMixin:
             "sdf_cell_size": SDF_CELL_SIZE,
             "ninja_position": self.nplay_headless.ninja_position(),
             "deadly_mine_positions": deadly_mine_positions,
+        }
+
+    def _get_jump_cost_to_go_data(self) -> Optional[Dict[str, Any]]:
+        """Build the jump-aware cost-to-go heatmap payload for the renderer.
+
+        NON-BLOCKING: the JumpDistanceSource for the CURRENT level is built in a
+        daemon thread (keyed by a map_data hash) so the GUI never freezes on the
+        6-11s build. This method returns immediately every frame:
+        - build not started -> spawn the daemon thread, return a "computing" payload
+        - build in progress -> return a "computing" payload (with elapsed seconds)
+        - build done -> select the field toward the current objective (pre-switch
+          -> ``_d_switch``, post-switch -> ``_d_exit``) and return it for the heatmap.
+
+        The dense fields are ``(W, H)`` (x-major) float32 cost-to-go in FRAMES at
+        6px resolution, ``inf`` where unreachable. The per-level result is cached
+        (module-level), so toggling off/on or revisiting the level is instant.
+        """
+        import hashlib
+
+        import numpy as np
+
+        map_data = getattr(self.nplay_headless, "current_map_data", None)
+        if not map_data:
+            return None
+
+        try:
+            key = hashlib.md5(
+                np.asarray([int(v) for v in map_data], dtype=np.int64).tobytes()
+            ).hexdigest()
+        except Exception:
+            return None
+
+        switch_activated = self.nplay_headless.exit_switch_activated()
+        phase = "exit" if switch_activated else "switch"
+
+        with _JUMP_BUILD_LOCK:
+            done = key in _JUMP_BUILD_RESULTS
+            src = _JUMP_BUILD_RESULTS.get(key)
+            inflight_start = _JUMP_BUILD_INFLIGHT.get(key)
+            proc = _JUMP_BUILD_PROCS.get(key)
+
+            if not done and inflight_start is None:
+                # First time we've seen this level: kick off the OFF-PROCESS build
+                # (spawn) so the GIL-holding build can't freeze the GUI.
+                import multiprocessing as _mp
+
+                inflight_start = time.time()
+                try:
+                    ctx = _mp.get_context("spawn")
+                    proc = ctx.Process(
+                        target=_jump_build_subprocess,
+                        args=(list(map_data),),
+                        daemon=True,
+                    )
+                    proc.start()
+                    _JUMP_BUILD_INFLIGHT[key] = inflight_start
+                    _JUMP_BUILD_PROCS[key] = proc
+                except Exception:
+                    # Couldn't spawn -> mark as failed (None) rather than block.
+                    _JUMP_BUILD_RESULTS[key] = None
+                    done = True
+                    src = None
+            elif not done and proc is not None and not proc.is_alive():
+                # Subprocess finished: reap it and load the result from the cache
+                # it populated (fast). A cache miss means the build failed -> None.
+                try:
+                    proc.join(timeout=0)
+                except Exception:
+                    pass
+                src = _load_jump_source_from_cache(map_data)
+                _JUMP_BUILD_RESULTS[key] = src
+                _JUMP_BUILD_INFLIGHT.pop(key, None)
+                _JUMP_BUILD_PROCS.pop(key, None)
+                done = True
+
+        if not done:
+            # Still building -> draw only a lightweight "computing" indicator.
+            elapsed = time.time() - inflight_start if inflight_start else 0.0
+            return {
+                "computing": True,
+                "elapsed": elapsed,
+                "phase": phase,
+                "map_hash": key,
+                "cell_px": 6,
+            }
+
+        if src is None or not getattr(src, "available", False):
+            return None
+
+        # (W, H) x-major: pre-switch route to the switch, post-switch route to exit.
+        field = src._d_exit if switch_activated else src._d_switch
+        if field is None:
+            return None
+
+        return {
+            "field": field,
+            "switch_activated": switch_activated,
+            "phase": phase,
+            "map_hash": key,
+            "ninja_position": self.nplay_headless.ninja_position(),
+            "cell_px": 6,
         }
 
     def _get_pbrs_path_overlay_data(self) -> Optional[Dict[str, Any]]:

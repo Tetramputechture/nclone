@@ -180,6 +180,166 @@ def test_env_observation_parity_locked_door():
         nat_env.close()
 
 
+def _chamber_with_one_ways(one_ways: list[tuple[int, int, int]]) -> list[int]:
+    """A closed box (floor/ceiling/walls) with one-way platforms.
+
+    `one_ways` entries are `(grid_x, grid_y, orientation)`. Note the ninja spawn
+    carries a +6-unit offset (1.5 grid) so a one-way one grid column to the right
+    of the spawn column lands within the ~21px lateral capture zone.
+    """
+    from nclone.map_generation.map import Map
+
+    m = Map()
+    for x in range(2, 41):
+        m.set_tile(x, 18, 1)  # floor
+        m.set_tile(x, 4, 1)  # ceiling
+    for y in range(4, 19):
+        m.set_tile(2, y, 1)  # left wall
+        m.set_tile(40, y, 1)  # right wall
+    m.set_ninja_spawn(20, 16)
+    m.add_entity(3, 38, 17, 0, 0, switch_x=36, switch_y=17)  # exit + switch
+    for gx, gy, orient in one_ways:
+        m.add_entity(11, gx, gy, orient, 0)
+    return [int(v) for v in m.map_data()]
+
+
+def _ninja_state(headless):
+    """Full physics-relevant ninja state, rounded for exact comparison."""
+    n = headless.sim.ninja
+    return (
+        round(float(n.xpos), 9),
+        round(float(n.ypos), 9),
+        round(float(n.xspeed), 9),
+        round(float(n.yspeed), 9),
+        int(n.state),
+        int(getattr(n, "floor_count", 0)),
+        bool(getattr(n, "walled", False)),
+    )
+
+
+def _drop_onto_one_way_map() -> list[int]:
+    """Ninja spawned high above a one-way floor, with a solid catch-floor below it.
+
+    Spawn column is grid x=10 (carries the +6-unit ninja offset); the one-way at
+    grid (11, 10) sits one column right so its lateral capture zone (~21px) covers
+    the spawn column. Bottom solid floor at grid y=14 (~350px) is the fall-through
+    backstop if (and only if) the one-way fails to block.
+    """
+    from nclone.map_generation.map import Map
+
+    m = Map()
+    for x in range(2, 41):
+        m.set_tile(x, 14, 1)  # solid catch-floor
+    m.set_ninja_spawn(10, 5)
+    m.add_entity(3, 38, 13, 0, 0, switch_x=36, switch_y=13)  # exit + switch
+    m.add_entity(11, 11, 10, 6, 0)  # one-way floor (orientation 6, normal up)
+    return [int(v) for v in m.map_data()]
+
+
+def test_one_way_blocks_fall_and_parity():
+    """A one-way floor (orientation 6, normal up) stops a ninja dropping onto it
+    from the blocking side — and both backends agree byte-for-byte."""
+    from nclone.nplay_headless import NPlayHeadless
+    from nclone.native_headless import NativePlayHeadless
+
+    md = _drop_onto_one_way_map()
+
+    py = NPlayHeadless()
+    py.load_map_from_map_data(list(md))
+    py.reset()
+    nat = NativePlayHeadless()
+    nat.load_map_from_map_data(list(md))
+    nat.reset()
+
+    for t in range(200):  # NOOP: free-fall straight down
+        py.tick(0, 0)
+        nat.tick(0, 0)
+        assert _ninja_state(py) == _ninja_state(nat), f"ninja state diverged at step {t}"
+
+    # The ninja came to rest ON the one-way (well above the bottom floor at ~350),
+    # proving the platform physically blocked the fall.
+    _, ny = nat.ninja_position()
+    assert ny < 300.0, f"one-way did not block the fall; ninja at y={ny}"
+
+
+@pytest.mark.parametrize(
+    "name,one_ways",
+    [
+        ("floor_o6", [(21, 10, 6)]),
+        ("ceiling_o2", [(21, 7, 2)]),
+        ("wall_right_o0", [(12, 14, 0)]),
+        ("wall_left_o4", [(28, 14, 4)]),
+        ("diagonals", [(14, 10, 1), (26, 10, 3), (16, 14, 5), (24, 14, 7)]),
+        ("mixed", [(12, 10, 6), (28, 8, 2), (10, 14, 0), (30, 14, 4), (20, 9, 5)]),
+    ],
+)
+def test_one_way_orientations_parity(name: str, one_ways):
+    """Byte-identical ninja physics across all 8 one-way orientations (incl.
+    diagonals) under randomized control, exercising depenetration, the type-11
+    velocity projection, floor/ceiling accumulation, and the wall-normal path."""
+    from nclone.nplay_headless import NPlayHeadless
+    from nclone.native_headless import NativePlayHeadless
+
+    md = _chamber_with_one_ways(one_ways)
+    for seed in (1, 7, 42):
+        py = NPlayHeadless()
+        py.load_map_from_map_data(list(md))
+        py.reset()
+        nat = NativePlayHeadless()
+        nat.load_map_from_map_data(list(md))
+        nat.reset()
+        rng = random.Random(seed)
+        tape = [(rng.randint(-1, 1), rng.randint(0, 1)) for _ in range(250)]
+        for t, (h, j) in enumerate(tape):
+            py.tick(h, j)
+            nat.tick(h, j)
+            assert _ninja_state(py) == _ninja_state(nat), (
+                f"[{name} seed={seed}] ninja state diverged at step {t} "
+                f"(hor={h}, jump={j})"
+            )
+
+
+def test_env_observation_parity_one_way():
+    """Cross-backend full env obs parity on a level containing one-way platforms.
+
+    One-way platforms are out of the generalist observation scope (not encoded in
+    entity_overlays), but they ARE still simulated, so this exercises native<->python
+    physics parity: the 5-channel entity_overlays must stay byte-identical across
+    backends through a 120-step rollout."""
+    from nclone.gym_environment.entity_overlay_utils import ENTITY_OVERLAY_CHANNELS
+
+    md = _chamber_with_one_ways([(12, 10, 6), (28, 14, 4)])  # floor + left-wall
+    actions = _action_tape(120, seed=21)
+    py_env = _make_env("python")
+    nat_env = _make_env("native")
+    try:
+        opts = {"map_data": list(md), "map_name": "parity_one_way"}
+        py_o0, _ = py_env.reset(seed=0, options=opts)
+        nat_o0, _ = nat_env.reset(seed=0, options=dict(opts))
+
+        assert py_o0["entity_overlays"].shape[0] == ENTITY_OVERLAY_CHANNELS == 5
+        np.testing.assert_array_equal(
+            np.asarray(py_o0["entity_overlays"]),
+            np.asarray(nat_o0["entity_overlays"]),
+            err_msg="entity_overlays differ at reset",
+        )
+
+        for t, a in enumerate(actions):
+            py_o, py_r, py_term, py_trunc, _ = py_env.step(a)
+            nat_o, nat_r, nat_term, nat_trunc, _ = nat_env.step(a)
+            np.testing.assert_array_equal(
+                np.asarray(py_o["entity_overlays"]),
+                np.asarray(nat_o["entity_overlays"]),
+                err_msg=f"one-way entity_overlays diverged at step {t}",
+            )
+            assert py_term == nat_term and py_trunc == nat_trunc
+            if py_term or py_trunc:
+                break
+    finally:
+        py_env.close()
+        nat_env.close()
+
+
 def test_position_parity_across_episodes():
     """Ninja trajectory matches across a full episode + reset on both backends."""
     map_data = _gen_map_data("simple", seed=7)

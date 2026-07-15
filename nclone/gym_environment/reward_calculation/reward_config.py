@@ -138,6 +138,14 @@ class RewardConfig:
     # symmetrically). Reuses ``pbrs_weight`` / ``pbrs_gamma``.
     enable_waypoint_pbrs: bool = False
     waypoint_leg_scale: float = 96.0  # px; denominator for the per-leg potential
+    # Audit II P0-5c: DECOUPLED weight for the per-leg waypoint PBRS term. The leg
+    # term historically reused ``pbrs_weight`` (2.0), banking ~+0.93/leg =>
+    # ~+19.5 per 1000 px of route (~2x R_EXIT on long routes, 29x every other
+    # dense term, kept in full on death since the clawback touches only the main
+    # ``_prev_potential``) — drowning any precision-sized signal and unaccounted
+    # in the completion-dominance calibration. None = legacy (reuse pbrs_weight);
+    # set ~0.5 to bound the bank.
+    waypoint_pbrs_weight: Optional[float] = None
     # Explicit per-waypoint REACH BONUS: paid each time the WaypointTracker cursor
     # advances forward (monotonic; the tracker never retreats so it cannot be
     # farmed). Unlike the policy-invariant per-leg PBRS, this is a concrete dense
@@ -183,6 +191,54 @@ class RewardConfig:
     # locally (HazardEncoder spatial readout) to be exploitable. Off by default.
     enable_hazard_pbrs: bool = False
     hazard_pbrs_weight: float = 0.5
+    # v11: make the hazard gradient (a) ONE-SIDED and (b) SHORT-RANGE. The original
+    # symmetric telescoping paid the agent to back AWAY from mines as much as it
+    # penalized approaching, and its 168px range made the penalty field so wide the
+    # agent stayed timid across whole regions -> it under-commits mined jumps.
+    #   one_sided: keep only the approach PENALTY (min(0, dPhi)); dropping the
+    #     retreat reward removes the "farm by backing off" incentive.
+    #   range_px: rescale the potential to saturate at this distance so the
+    #     gradient is LOCAL (near-contact only), not a wide timidity field.
+    # The obs feature (game_state nearest-mine, /168px) is unchanged; this only
+    # reshapes the reward. Defaults preserve legacy behavior when unset.
+    hazard_pbrs_one_sided: bool = False
+    hazard_pbrs_range_px: float = 168.0
+    # Audit II P0-5b: suppress the hazard approach PENALTY on steps that strictly
+    # DECREASED the goal distance (cost-to-go). The one-sided tax otherwise re-taxes
+    # every NECESSARY mine-adjacent landing (~-0.35/attempt, 2.5-7x a stair rung's
+    # progress credit, re-paid on every retry) — a pure per-attempt tax exactly on
+    # the frontier's required maneuvers, with zero steering value when the target
+    # lies BETWEEN mines. Penalty-only term, so gating cannot create farming; the
+    # mine death penalty still polices contact. Off by default (legacy behavior).
+    hazard_pbrs_progress_gated: bool = False
+    # The norm the obs nearest-mine distance was divided by (NppEnvironment
+    # _NEAREST_MINE_NORM_PX); used to recover raw px for the short-range rescale.
+    hazard_pbrs_obs_norm_px: float = 168.0
+
+    # --- Impact-survivability PBRS (target the dominant failure mode) ---
+    # ~95% of deaths are impact/fall, not hazards. A dense PBRS on the SAFETY
+    # potential Phi = 1 - impact_risk, where impact_risk in [0,1] measures the
+    # ninja's speed INTO the look-ahead landing surface relative to that surface's
+    # survivable-impact threshold (computed in npp_environment, exposed as
+    # obs["_impact_risk"]). The agent is rewarded for REDUCING impact risk
+    # (slowing / re-orienting before a fast landing) and penalized for building
+    # it. gamma=1 telescoping -> policy-invariant within the episode; risk is 0 at
+    # safe speeds and with no surface ahead, so it is a no-op except near fast
+    # impacts. Helps slopes (steep-slope landings) AND all buckets (impact deaths).
+    enable_impact_pbrs: bool = False
+    impact_pbrs_weight: float = 0.5
+
+    # --- Doomed-arc risk PBRS (v13 ghost-arc reward) ---
+    # Phi_risk = -1 while AIRBORNE with ALL THREE committed ghost arcs ending in
+    # a deadly-mine contact or a lethal impact (no steering input can save the
+    # flight), else 0 (computed in npp_environment from the P0-1 bundle, exposed
+    # as obs["_arc_doomed"]). PBRS-shaped (gamma=1 telescoping -> policy-
+    # invariant): the penalty lands on the STEP THE STATE BECAME UNRECOVERABLE
+    # — typically the bad takeoff/steer frame 30-60 frames before the death the
+    # terminal penalty would otherwise be the first signal of. This is the
+    # credit-assignment fix for landing-miss mine deaths (PLATFORMING T2).
+    enable_arc_risk_pbrs: bool = False
+    arc_risk_pbrs_weight: float = 0.5
 
     # --- Completion SPEED bonus (encourage direct + fast successful routes) ---
     # A terminal bonus paid ONLY on a real WIN, scaling with the normalized time
@@ -195,6 +251,73 @@ class RewardConfig:
     # inversion). 0.0 = off. Complements the per-step time penalty (which discourages
     # dawdling) with a positive pull toward fast wins.
     completion_speed_bonus: float = 0.0
+    # v15: reference the speed bonus to a PER-LEVEL PAR (optimal route length)
+    # instead of the generous truncation budget. The budget form saturates near
+    # 1.0 on short levels (any competent win leaves ~full budget) -> no
+    # fast-vs-fastest gradient there; it is only learnable on long levels where
+    # the budget is tight. The par form gives a learnable gradient on EVERY level:
+    #   par_frames  = optimal_path_length(px) / completion_speed_par_speed_px
+    #   speed_bonus = completion_speed_bonus
+    #                 * clip(par_frames / max(frames_used, par_frames), 0, 1)
+    # Efficiency-ratio form => in (0, 1], = 1.0 at/under par, decaying as slower.
+    # Every safety property of the base bonus is preserved: terminal + win-gated
+    # (never farmed, never paid on death/timeout), bounded < R_EXIT, and the ratio
+    # CLAMPS at 1.0 so "beating par" cannot inflate it past completion_speed_bonus
+    # (no incentive for risky sub-par shortcuts). Falls back to the legacy
+    # budget/time_remaining form when optimal_path_length is unavailable. Off by
+    # default (legacy budget form) so it is A/B-able against the current behavior.
+    completion_speed_par_norm: bool = False
+    # Effective route speed (px/frame) converting optimal route px -> par frames.
+    # Conservative (< MAX_HOR_SPEED = 3.33) to account for jumps/turns/climbs;
+    # because the bonus is a RATIO this only sets where the gradient is steepest,
+    # not the ceiling, so mild misspecification is harmless.
+    completion_speed_par_speed_px: float = 2.5
+
+    # --- Grounded-landing high-water-mark bonus (safe precision-jump shaping) ---
+    # Rewards the ninja for reaching a NEW closest-ever *grounded* contact with the
+    # current sub-goal: safely landing (or standing) on a surface closer to the goal
+    # than any surface it has touched this episode. Motivation: the per-step
+    # free-space/jump PBRS rewards proximity to the goal even while AIRBORNE and
+    # drifting toward a gap -- it weights a mid-air drift the same as a completed
+    # jump. On stair/precision buckets (single-tile platforms, mines under every
+    # gap, zero recovery) that under-rewards the thing that actually matters:
+    # sticking the landing. This term pays ONLY on solid ground and ONLY for strict
+    # new-closest progress (a high-water-mark, never re-paid), so it CANNOT be
+    # farmed by oscillating (jump forward, fall back, jump forward again) -- each
+    # payment requires a landing strictly closer than EVERY prior landing this
+    # episode. Since landing on a mine is DEATH (not a surface contact), it
+    # exclusively rewards SAFE landings. It is a one-shot ratchet (gamma-free),
+    # bounded by the weight (telescopes to w*(D0 - min_landing_cost)/D0 <= w), so it
+    # does NOT touch the per-step PBRS telescoping / policy-invariance of
+    # enable_lattice_pbrs. Off by default; intended for the precision buckets
+    # (PLATFORM_STAIRS, PRECISION). Reuses the PBRS D0 spawn cost-to-completion as
+    # the normalizer so the magnitude is route-length-invariant.
+    #
+    # Fires ONLY on the airborne->contact TRANSITION (an actual landing / wall-catch)
+    # AND only when that contact is strictly closer to the goal than any prior safe
+    # contact -- continuous ground contact (flat running) earns nothing. Each landing
+    # is clamped to <= landing_pbrs_weight. Weight kept small so it is a subordinate
+    # precision nudge, never a term that can rival the sparse completion reward.
+    enable_landing_pbrs: bool = False
+    landing_pbrs_weight: float = 0.1
+
+    # Progress-stall (dither) penalty [v22, §3-A]. Under the active PBRS pipeline
+    # (waypoint/lattice) the backtrack penalty above is disabled and PBRS (gamma=1)
+    # telescopes to ~0 on net-zero oscillation, so DITHERING near an obstacle (the
+    # near-switch wall pocket) is effectively FREE. This term makes it cost
+    # something: it keeps a high-water-mark of the best (min) cost-to-go and, when
+    # cost-to-go has not improved for >= ``stall_patience_frames`` sim frames WHILE
+    # the ninja stays within ``stall_radius_px`` of where it was (low position
+    # variance -- so a real jump/traverse, which moves a lot, never triggers it),
+    # applies a small ESCALATING penalty that grows the longer the stall persists,
+    # capped at ``stall_penalty_cap`` per step. Rebased on the switch->exit flip
+    # (like the landing HWM) so the basis change is not counted as a stall.
+    # Off unless ``enable_stall_penalty``.
+    enable_stall_penalty: bool = False
+    stall_penalty_weight: float = 0.01
+    stall_patience_frames: int = 30
+    stall_radius_px: float = 24.0
+    stall_penalty_cap: float = 0.05
 
     SUCCESS_THRESHOLD_MID: float = 0.15
     SUCCESS_THRESHOLD_LATE: float = 0.40
@@ -299,6 +422,20 @@ class RewardConfig:
         """
         if self.enable_lattice_pbrs or self.enable_waypoint_pbrs:
             return 0.0
+        if self._hwm_alpha_override is not None:
+            return self._hwm_alpha_override
+        return HWM_ALPHA
+
+    @property
+    def hwm_fallback_alpha(self) -> float:
+        """HWM shaping weight WITHOUT the PBRS force-to-zero.
+
+        Used only for the per-episode degraded fallback in the reward
+        calculator: when PBRS is enabled but the potential could not be
+        substituted OR composed into a continuous basis, that episode
+        explicitly re-enables the HWM ratchet at this weight (otherwise it
+        would have no dense progress signal at all).
+        """
         if self._hwm_alpha_override is not None:
             return self._hwm_alpha_override
         return HWM_ALPHA
@@ -479,6 +616,8 @@ class RewardConfig:
             "enable_lattice_pbrs": self.enable_lattice_pbrs,
             "enable_waypoint_pbrs": self.enable_waypoint_pbrs,
             "waypoint_leg_scale": self.waypoint_leg_scale,
+            "waypoint_pbrs_weight": self.waypoint_pbrs_weight,
+            "hazard_pbrs_progress_gated": self.hazard_pbrs_progress_gated,
             "pbrs_weight": self.pbrs_weight,
             "pbrs_gamma": self.pbrs_gamma,
             # Fixed PBRS D0 reference (None = per-episode spawn D0). Surfaced so the

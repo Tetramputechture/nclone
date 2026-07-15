@@ -5,6 +5,7 @@ This module contains all graph-related functionality that was previously
 integrated into the main NppEnvironment class.
 """
 
+import os
 import time
 import logging
 import numpy as np
@@ -21,7 +22,89 @@ from ...graph.reachability.pathfinding_utils import (
     NODE_WORLD_COORD_OFFSET,
 )
 from ...constants.physics_constants import NINJA_RADIUS
-from collections import deque
+from collections import deque, OrderedDict
+
+
+class _GraphCache:
+    """Level-keyed reachability-graph cache: a BOUNDED in-memory LRU backed by an
+    optional SHARED on-disk cache.
+
+    The reachability graph is the dominant per-reset cost (~100ms build). In
+    multi-level (curriculum/pool) training the old behavior cleared the cache
+    every reset (0% hit -> every reset rebuilds) to avoid unbounded memory. This
+    instead caps memory with an LRU and, when ``NCLONE_GRAPH_CACHE_DIR`` is set,
+    persists each built graph to disk keyed by level id — so across N parallel env
+    workers each distinct level is built ONCE total and every later reset (any
+    worker) loads it in ~1ms. Dict-like API so call sites are unchanged.
+    """
+
+    _MISS = object()
+
+    def __init__(self, maxsize: int = 256, disk_dir: Optional[str] = None):
+        self._mem: "OrderedDict[str, GraphData]" = OrderedDict()
+        self._maxsize = max(1, int(maxsize))
+        import os as _os
+        self._disk = disk_dir or _os.environ.get("NCLONE_GRAPH_CACHE_DIR")
+        if self._disk:
+            from pathlib import Path as _Path
+            _Path(self._disk).mkdir(parents=True, exist_ok=True)
+
+    def _disk_path(self, key):
+        import hashlib
+        from pathlib import Path as _Path
+        h = hashlib.md5(str(key).encode("utf-8")).hexdigest()
+        return _Path(self._disk) / f"{h}.pkl"
+
+    def _put_mem(self, key, val):
+        self._mem[key] = val
+        self._mem.move_to_end(key)
+        while len(self._mem) > self._maxsize:
+            self._mem.popitem(last=False)
+
+    def get(self, key, default=None):
+        if key in self._mem:
+            self._mem.move_to_end(key)
+            return self._mem[key]
+        if self._disk:
+            p = self._disk_path(key)
+            if p.exists():
+                try:
+                    import pickle
+                    with open(p, "rb") as fh:
+                        g = pickle.load(fh)
+                    self._put_mem(key, g)
+                    return g
+                except Exception:
+                    pass
+        return default
+
+    def __contains__(self, key):
+        return self.get(key, _GraphCache._MISS) is not _GraphCache._MISS
+
+    def __getitem__(self, key):
+        v = self.get(key, _GraphCache._MISS)
+        if v is _GraphCache._MISS:
+            raise KeyError(key)
+        return v
+
+    def __setitem__(self, key, val):
+        self._put_mem(key, val)
+        if self._disk:
+            p = self._disk_path(key)
+            if not p.exists():
+                try:
+                    import os as _os
+                    import pickle
+                    tmp = str(p) + f".tmp{_os.getpid()}"
+                    with open(tmp, "wb") as fh:
+                        pickle.dump(val, fh, protocol=pickle.HIGHEST_PROTOCOL)
+                    _os.replace(tmp, p)
+                except Exception:
+                    pass
+
+    def clear(self):
+        # Only the in-memory tier; the on-disk tier is shared/persistent.
+        self._mem.clear()
 
 
 @dataclass
@@ -78,9 +161,17 @@ class GraphMixin:
         # Cache for reachable area scale (per level ID)
         self._reachable_area_scale_cache: Dict[str, float] = {}
 
-        # Cache for GraphData per level (static features only)
-        # Dynamic features (proximity, reachability) updated each step
-        self._graph_data_cache: Dict[str, GraphData] = {}
+        # Cache for GraphData per level (static features only). Bounded LRU +
+        # optional shared on-disk cache (NCLONE_GRAPH_CACHE_DIR) so multi-level
+        # curriculum training doesn't rebuild the ~100ms reachability graph every
+        # reset (the dominant throughput cost on a synchronous vec-env).
+        # Cap default 160 -> 48 (v14 worker-RSS audit: ~16MB per entry means the
+        # old cap alone held ~2.6GB per env worker across a 16-worker box; the
+        # shared DISK cache makes an eviction a cheap re-load, not a rebuild).
+        # NCLONE_GRAPH_MEM_LRU overrides for profiling/tuning.
+        self._graph_data_cache = _GraphCache(
+            maxsize=int(os.environ.get("NCLONE_GRAPH_MEM_LRU", "48"))
+        )
         self._current_level_id: Optional[str] = None
 
         # Initialize logging if debug is enabled
@@ -95,13 +186,22 @@ class GraphMixin:
         self.last_switch_states.clear()
         self.last_mine_states = {}  # Add mine state tracking
         self.last_update_time = time.time()
-        self.graph_builder.clear_cache()
-        self._current_level_id = None
 
-        # Clear per-level caches since we use random levels and won't reload the same level
-        # This prevents unbounded memory growth during training
-        self._reachable_area_scale_cache.clear()
-        self._graph_data_cache.clear()
+        # Single static level (custom_map_path): the geometry — and therefore the
+        # whole reachability graph — is invariant across resets, so KEEP the
+        # per-level caches. ``_update_graph_from_env_state`` then restores the
+        # cached graph in O(1) instead of rebuilding it (the dominant reset cost
+        # on mine-dense levels: ~430ms/reset). Only clear the level-keyed caches
+        # when levels actually vary between episodes (curriculum / pool / random),
+        # where keeping them would grow memory unbounded.
+        if getattr(self, "custom_map_path", None) is None:
+            self.graph_builder.clear_cache()
+            self._current_level_id = None
+            self._reachable_area_scale_cache.clear()
+            # NOTE: do NOT clear _graph_data_cache here. It is a bounded LRU (+
+            # shared on-disk) cache, so keeping it across resets is what gives the
+            # huge throughput win in curriculum training (a re-seen level skips the
+            # ~100ms rebuild); memory stays bounded by the LRU cap.
 
     def _get_reachable_area_scale(self) -> float:
         """Get reachable area scale for distance normalization.
@@ -350,8 +450,18 @@ class GraphMixin:
             return
 
         # OPTIMIZATION: Cache graph per level to skip expensive rebuilds
-        # For single-level training, this eliminates graph building on every reset
-        level_id = (
+        # For single-level training, this eliminates graph building on every reset.
+        #
+        # KEY BY LEVEL CONTENT, not by map_loader.current_map_name. The name is a
+        # mutable label that DIFFERENT levels can collide on (e.g. the benchmark
+        # eval reuses integer level ids / may not refresh the name per level), and
+        # a colliding name served a PREVIOUS level's graph for the current one —
+        # the ninja was then checked against a foreign graph's bounds and flagged
+        # "far outside graph bounds → inf" (an OOB flood during test-split eval).
+        # ``level_data.level_id`` is a content hash (tiles+entities+start+switch/
+        # exit, auto-set in LevelData.__post_init__) so the cache can never desync
+        # from the level actually loaded. Fall back to the name only if absent.
+        level_id = getattr(level_data, "level_id", None) or (
             self.map_loader.current_map_name if hasattr(self, "map_loader") else None
         )
 
@@ -359,6 +469,20 @@ class GraphMixin:
         # Note: This caches the base graph structure, not dynamic switch-dependent connectivity
         if level_id and level_id in self._graph_data_cache:
             self.current_graph_data = self._graph_data_cache[level_id]
+            # Keep the hit path complete (mirrors the build path below): the
+            # GraphData conversion and switch/mine bookkeeping otherwise only
+            # ran on a cache MISS, leaving ``current_graph`` None (breaks
+            # graph-tensor observations when enabled) and the state maps stale.
+            if self.use_graph_data_in_observation:
+                ninja_pos_tuple = self.nplay_headless.ninja_position()
+                ninja_pos = (int(ninja_pos_tuple[0]), int(ninja_pos_tuple[1]))
+                t_convert = self._profile_start("graph_convert")
+                self.current_graph = self._convert_graph_data_to_graphdata(
+                    self.current_graph_data, level_data, ninja_pos
+                )
+                self._profile_end("graph_convert", t_convert)
+            self.last_switch_states = self._get_switch_states_from_env()
+            self.last_mine_states = self._get_mine_states_from_env()
             return  # Skip expensive rebuild
 
         # Get ninja position for reachability analysis

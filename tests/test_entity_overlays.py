@@ -1,9 +1,8 @@
-"""entity_overlays: 6 channels (toggle-mines scope + remaining-gold density).
+"""entity_overlays: 5 channels (ninja + goals + toggle-mines).
 
-Verifies the channel layout, that dropped launch_pad / bounce_block / thwump
-channels are truly gone, that mine density semantics are preserved against the
-pre-rescope 8-channel reference on a mines-only fixture, and that the gold
-channel counts only remaining (uncollected) gold.
+Verifies the channel layout, that the switch/exit goal channels are bilinear
+sub-tile splats, that out-of-scope channels (gold / locked doors / one-ways) are
+gone, and that mine density semantics match an independent reference.
 """
 
 from __future__ import annotations
@@ -21,87 +20,17 @@ from nclone.constants.physics_constants import (
 )
 from nclone.gym_environment.entity_overlay_utils import (
     ENTITY_OVERLAY_CH_EXIT,
-    ENTITY_OVERLAY_CH_GOLD,
-    ENTITY_OVERLAY_CH_LOCKED_DOOR,
-    ENTITY_OVERLAY_CH_LOCKED_SWITCH,
     ENTITY_OVERLAY_CH_MINE_DEADLY,
     ENTITY_OVERLAY_CH_MINE_SAFE,
     ENTITY_OVERLAY_CH_NINJA,
     ENTITY_OVERLAY_CH_SWITCH,
     ENTITY_OVERLAY_CHANNELS,
-    DOOR_DENSITY_NORMALIZER,
-    GOLD_DENSITY_NORMALIZER,
     MINE_DENSITY_NORMALIZER,
     MINE_KILL_ZONE_RADIUS_PX,
     MINE_STATE_DEADLY,
     classify_mines_by_state,
     compute_entity_overlays,
 )
-
-
-def _locked_door(
-    door_xy: tuple[float, float], switch_xy: tuple[float, float],
-    closed: bool = True, active: bool = True,
-) -> SimpleNamespace:
-    # Real locked-door entities (both backends) expose the BARRIER via `segment`
-    # (endpoints x1/y1/x2/y2) and the SWITCH via xpos/ypos. Mirror that here so the
-    # overlay marks the barrier (channel 6) at the door and the switch (channel 7)
-    # at the switch.
-    segment = SimpleNamespace(
-        x1=float(door_xy[0]), y1=float(door_xy[1]),
-        x2=float(door_xy[0]), y2=float(door_xy[1]),
-    )
-    return SimpleNamespace(
-        segment=segment,
-        xpos=float(switch_xy[0]), ypos=float(switch_xy[1]),
-        closed=closed, active=active,
-    )
-
-
-def test_locked_door_channels_bin_barrier_and_switch():
-    """Closed barrier -> channel 6 at its tile; uncollected switch -> channel 7."""
-    dtx, dty = 12, 7
-    stx, sty = 4, 7
-    door_px = _px_from_inner_tile(dtx, dty)
-    sw_px = _px_from_inner_tile(stx, sty)
-    arr = compute_entity_overlays(
-        ninja_pos=(100.0, 100.0), switch_pos=None, switch_activated=False,
-        exit_pos=None, deadly_mines=[], safe_mines=[],
-        locked_doors=[_locked_door(door_px, sw_px)],
-    )
-    assert arr[ENTITY_OVERLAY_CH_LOCKED_DOOR, dtx, dty] == pytest.approx(
-        1.0 / DOOR_DENSITY_NORMALIZER
-    )
-    assert arr[ENTITY_OVERLAY_CH_LOCKED_SWITCH, stx, sty] == pytest.approx(
-        1.0 / DOOR_DENSITY_NORMALIZER
-    )
-
-
-def test_locked_door_channels_drop_when_opened_and_collected():
-    """An opened door (closed=False) leaves channel 6 empty; a collected switch
-    (active=False) leaves channel 7 empty — the channels are live state."""
-    door_px = _px_from_inner_tile(12, 7)
-    sw_px = _px_from_inner_tile(4, 7)
-    arr = compute_entity_overlays(
-        ninja_pos=(100.0, 100.0), switch_pos=None, switch_activated=False,
-        exit_pos=None, deadly_mines=[], safe_mines=[],
-        locked_doors=[_locked_door(door_px, sw_px, closed=False, active=False)],
-    )
-    assert arr[ENTITY_OVERLAY_CH_LOCKED_DOOR].sum() == 0.0
-    assert arr[ENTITY_OVERLAY_CH_LOCKED_SWITCH].sum() == 0.0
-
-
-def test_locked_door_channels_are_n_invariant():
-    """Many doors in one tile saturate; shape is fixed regardless of door count."""
-    door_px = _px_from_inner_tile(12, 7)
-    sw_px = _px_from_inner_tile(4, 7)
-    doors = [_locked_door(door_px, sw_px) for _ in range(20)]
-    arr = compute_entity_overlays(
-        ninja_pos=(100.0, 100.0), switch_pos=None, switch_activated=False,
-        exit_pos=None, deadly_mines=[], safe_mines=[], locked_doors=doors,
-    )
-    assert arr.shape == (ENTITY_OVERLAY_CHANNELS, MAP_TILE_WIDTH, MAP_TILE_HEIGHT)
-    assert arr[ENTITY_OVERLAY_CH_LOCKED_DOOR, 12, 7] == 1.0  # saturated, clamped
 
 
 def _mine(x: float, y: float, state: int = MINE_STATE_DEADLY) -> SimpleNamespace:
@@ -130,7 +59,7 @@ def test_overlay_shape_dtype_range():
     assert arr.max() <= 1.0
 
 
-def test_overlay_has_exactly_6_channels():
+def test_overlay_has_expected_channel_count():
     arr = compute_entity_overlays(
         ninja_pos=(100.0, 100.0),
         switch_pos=None,
@@ -139,8 +68,9 @@ def test_overlay_has_exactly_6_channels():
         deadly_mines=[],
         safe_mines=[],
     )
-    assert arr.shape[0] == 8
-    assert ENTITY_OVERLAY_CHANNELS == 8
+    # 5: ninja, switch, exit, mine-deadly, mine-safe.
+    assert arr.shape[0] == 5
+    assert ENTITY_OVERLAY_CHANNELS == 5
 
 
 def test_ninja_bilinear_splat_sums_to_one_on_center():
@@ -156,6 +86,33 @@ def test_ninja_bilinear_splat_sums_to_one_on_center():
     )
     total = float(arr[ENTITY_OVERLAY_CH_NINJA].sum())
     assert math.isclose(total, 1.0, rel_tol=1e-5, abs_tol=1e-5)
+
+
+def test_switch_and_exit_are_bilinear_subtile_splats():
+    """Goal channels carry the 6px-grid sub-tile location, not a hard cell write.
+
+    A point offset 6px (a quarter-tile) into a cell must spread mass across the
+    two neighboring cells in proportion, while still summing to 1.0.
+    """
+    tx, ty = 8, 6
+    base_x, base_y = (tx + 1) * TILE_PIXEL_SIZE, (ty + 1) * TILE_PIXEL_SIZE
+    # 6px = quarter tile into the cell along x; on the cell edge along y.
+    px, py = base_x + 6.0, base_y
+    arr = compute_entity_overlays(
+        ninja_pos=(10.0, 10.0),
+        switch_pos=(px, py),
+        switch_activated=False,
+        exit_pos=(px, py),
+        deadly_mines=[],
+        safe_mines=[],
+    )
+    for ch in (ENTITY_OVERLAY_CH_SWITCH, ENTITY_OVERLAY_CH_EXIT):
+        plane = arr[ch]
+        assert math.isclose(float(plane.sum()), 1.0, rel_tol=1e-5, abs_tol=1e-5)
+        # Quarter-tile x offset -> 0.75 in tile tx, 0.25 in tx+1.
+        assert math.isclose(float(plane[tx, ty]), 0.75, abs_tol=1e-5)
+        assert math.isclose(float(plane[tx + 1, ty]), 0.25, abs_tol=1e-5)
+        # Two distinct sub-positions in the same tile must produce distinct planes.
 
 
 def test_switch_suppressed_when_activated():
@@ -188,49 +145,8 @@ def test_exit_channel_populated():
         deadly_mines=[],
         safe_mines=[],
     )
-    assert arr[ENTITY_OVERLAY_CH_EXIT].sum() == 1.0
-
-
-def test_gold_channel_counts_remaining_gold():
-    """Gold channel bins remaining gold to tiles, normalized and clamped to 1."""
-    tx, ty = 12, 7
-    gx, gy = _px_from_inner_tile(tx, ty)
-    # One gold in a tile reads as 1/normalizer.
-    arr = compute_entity_overlays(
-        ninja_pos=(50.0, 50.0),
-        switch_pos=None,
-        switch_activated=True,
-        exit_pos=None,
-        deadly_mines=[],
-        safe_mines=[],
-        gold_positions=[(gx, gy)],
-    )
-    assert math.isclose(
-        arr[ENTITY_OVERLAY_CH_GOLD, tx, ty], 1.0 / GOLD_DENSITY_NORMALIZER,
-        rel_tol=1e-5, abs_tol=1e-5,
-    )
-    # A dense cluster (>= normalizer) saturates at 1.0.
-    dense = compute_entity_overlays(
-        ninja_pos=(50.0, 50.0),
-        switch_pos=None,
-        switch_activated=True,
-        exit_pos=None,
-        deadly_mines=[],
-        safe_mines=[],
-        gold_positions=[(gx, gy)] * (int(GOLD_DENSITY_NORMALIZER) + 4),
-    )
-    assert dense[ENTITY_OVERLAY_CH_GOLD, tx, ty] == 1.0
-    # No gold -> empty channel (collected gold drops out of the caller's list).
-    empty = compute_entity_overlays(
-        ninja_pos=(50.0, 50.0),
-        switch_pos=None,
-        switch_activated=True,
-        exit_pos=None,
-        deadly_mines=[],
-        safe_mines=[],
-        gold_positions=[],
-    )
-    assert empty[ENTITY_OVERLAY_CH_GOLD].sum() == 0.0
+    # Bilinear splat: mass spreads over up to 4 cells but always sums to 1.0.
+    assert math.isclose(float(arr[ENTITY_OVERLAY_CH_EXIT].sum()), 1.0, abs_tol=1e-5)
 
 
 def test_mine_density_matches_legacy_reference():
@@ -280,13 +196,7 @@ def _reference_mine_density(mines) -> np.ndarray:
 
 
 def test_classify_mines_by_state_splits_on_live_state():
-    """Mines must be classified by live `state`, not by entity type.
-
-    Regression for the overlay/hazard divergence: a type-1 TOGGLE_MINE that has
-    transitioned to STATE_UNTOGGLED (state != 0) must appear in the safe
-    bucket, not the deadly bucket, and vice versa for a type-21
-    TOGGLE_MINE_TOGGLED that has become deadly.
-    """
+    """Mines must be classified by live `state`, not by entity type."""
     t1_deadly = SimpleNamespace(xpos=10.0, ypos=10.0, state=0, entity_type=1)
     t1_safe = SimpleNamespace(xpos=20.0, ypos=20.0, state=1, entity_type=1)
     t21_deadly = SimpleNamespace(xpos=30.0, ypos=30.0, state=0, entity_type=21)
@@ -305,11 +215,7 @@ def test_classify_mines_by_state_splits_on_live_state():
 
 
 def test_overlay_classification_agrees_with_hazard_state_filter():
-    """End-to-end: deadly density must include only state==0 mines, regardless of type.
-
-    The hazard map filters `state == 0` across the union of toggle_mines and
-    toggled_mines; the overlay must do the same via `classify_mines_by_state`.
-    """
+    """End-to-end: deadly density must include only state==0 mines, regardless of type."""
     mines = [
         SimpleNamespace(xpos=100.0, ypos=100.0, state=0, entity_type=1),
         SimpleNamespace(xpos=160.0, ypos=100.0, state=1, entity_type=1),
@@ -339,25 +245,16 @@ def test_overlay_classification_agrees_with_hazard_state_filter():
     assert float(arr[ENTITY_OVERLAY_CH_MINE_SAFE].sum()) > 0.0
 
 
-def test_no_launch_pad_signature_in_call():
-    """Sanity: the new signature does not accept dropped-entity kwargs."""
-    with pytest.raises(TypeError):
-        compute_entity_overlays(
-            ninja_pos=(100.0, 100.0),
-            switch_pos=None,
-            switch_activated=False,
-            exit_pos=None,
-            deadly_mines=[],
-            safe_mines=[],
-            launch_pads=[],
-        )
-    with pytest.raises(TypeError):
-        compute_entity_overlays(
-            ninja_pos=(100.0, 100.0),
-            switch_pos=None,
-            switch_activated=False,
-            exit_pos=None,
-            deadly_mines=[],
-            safe_mines=[],
-            bounce_blocks=[],
-        )
+def test_out_of_scope_kwargs_rejected():
+    """The rescoped signature must reject dropped-entity kwargs."""
+    for bad_kwarg in ("gold_positions", "locked_doors", "one_ways", "launch_pads"):
+        with pytest.raises(TypeError):
+            compute_entity_overlays(
+                ninja_pos=(100.0, 100.0),
+                switch_pos=None,
+                switch_activated=False,
+                exit_pos=None,
+                deadly_mines=[],
+                safe_mines=[],
+                **{bad_kwarg: []},
+            )

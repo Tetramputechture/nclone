@@ -22,6 +22,11 @@ pub struct Simulator {
     pub entities: Vec<Entity>,
     pub entity_grid: [[Vec<usize>; MAP_HEIGHT]; MAP_WIDTH],
 
+    /// True iff any loaded entity is physically collidable (one-way platform).
+    /// When false, `collide_vs_objects` is a no-op, so `pre_collision` skips its
+    /// per-frame entity gather. Computed once at load.
+    pub has_physical_entities: bool,
+
     // Tile data for Python access
     pub tile_grid: [[u8; MAP_HEIGHT]; MAP_WIDTH],
 
@@ -73,6 +78,8 @@ impl Simulator {
         let data = loader::load_map(map_data);
         let ninja = Ninja::new(data.ninja_spawn_x, data.ninja_spawn_y);
 
+        let has_physical_entities = data.entities.iter().any(|e| e.is_physical_collidable());
+
         let mut sim = Simulator {
             frame: 0,
             ninja,
@@ -80,6 +87,7 @@ impl Simulator {
             segment_grid: data.segment_grid,
             entities: data.entities,
             entity_grid: std::array::from_fn(|_| std::array::from_fn(|_| Vec::new())),
+            has_physical_entities,
             tile_grid: data.tile_grid,
             deadly_mine_zone: [[false; MAP_HEIGHT]; MAP_WIDTH],
             kernel_opt: std::env::var_os("NCLONE_KERNEL_BASELINE").is_none(),
@@ -229,6 +237,13 @@ impl Simulator {
                     out.extend_from_slice(&e.xpos.to_le_bytes());
                     out.extend_from_slice(&e.ypos.to_le_bytes());
                 }
+                Entity::OneWay(e) => {
+                    // Static: position/orientation never mutate. Round-trip (x, y)
+                    // only so the blob stays self-describing and length-validated.
+                    out.push(11);
+                    out.extend_from_slice(&e.xpos.to_le_bytes());
+                    out.extend_from_slice(&e.ypos.to_le_bytes());
+                }
             }
         }
         out
@@ -254,6 +269,7 @@ impl Simulator {
                 4 => Some(1 + 8 + 8),         // ExitSwitch: active,x,y
                 3 => Some(1 + 8 + 8),         // ExitDoor: switch_hit,x,y
                 6 => Some(1 + 1 + 1 + 8 + 8), // LockedDoor: active,closed,orient,x,y
+                11 => Some(8 + 8),            // OneWay: x,y
                 _ => None,
             }
         }
@@ -264,6 +280,7 @@ impl Simulator {
                 Entity::ExitSwitch(_) => 4,
                 Entity::ExitDoor(_) => 3,
                 Entity::LockedDoor(_) => 6,
+                Entity::OneWay(_) => 11,
             }
         }
 
@@ -354,6 +371,10 @@ impl Simulator {
                     e.xpos = read_f64(data, &mut p);
                     e.ypos = read_f64(data, &mut p);
                 }
+                Entity::OneWay(e) => {
+                    e.xpos = read_f64(data, &mut p);
+                    e.ypos = read_f64(data, &mut p);
+                }
             }
         }
         self.rebuild_entity_grid();
@@ -422,11 +443,12 @@ impl Simulator {
             if self.ninja.state != 6 {
                 // Normal ninja physics
                 self.ninja.integrate();
-                self.ninja.pre_collision(&self.entity_grid);
+                self.ninja
+                    .pre_collision(&self.entity_grid, self.has_physical_entities);
 
                 // 4 physics substeps
                 for _ in 0..4 {
-                    self.ninja.collide_vs_objects();
+                    self.ninja.collide_vs_objects(&self.entities);
                     self.ninja.collide_vs_tiles(&self.segment_grid, &self.segments);
                 }
 
@@ -448,10 +470,11 @@ impl Simulator {
         if self.ninja.state != 9 {
             if self.ninja.state != 6 {
                 self.ninja.integrate();
-                self.ninja.pre_collision(&self.entity_grid);
+                self.ninja
+                    .pre_collision(&self.entity_grid, self.has_physical_entities);
 
                 for _ in 0..4 {
-                    self.ninja.collide_vs_objects();
+                    self.ninja.collide_vs_objects(&self.entities);
                     self.ninja.collide_vs_tiles(&self.segment_grid, &self.segments);
                 }
 
@@ -481,7 +504,9 @@ impl Simulator {
         if self.ninja.state != 9 {
             if self.ninja.state != 6 {
                 self.ninja.integrate();
-                self.ninja.pre_collision(&self.entity_grid);
+                // tiles-only: entity depenetration is intentionally excluded, so
+                // never gather the physical-entity neighbourhood.
+                self.ninja.pre_collision(&self.entity_grid, false);
 
                 // Open-air skip: the 4 substeps are a no-op when no active segment
                 // is within the swept region (the common case mid-flight).
@@ -525,7 +550,8 @@ impl Simulator {
         if self.ninja.state != 9 {
             if self.ninja.state != 6 {
                 self.ninja.integrate();
-                self.ninja.pre_collision(&self.entity_grid);
+                // mines-only: like tiles-only, no entity depenetration.
+                self.ninja.pre_collision(&self.entity_grid, false);
 
                 // Open-air skip (see tick_tiles_only): no-op substeps when the swept
                 // region holds no active segment.
@@ -702,6 +728,16 @@ impl Simulator {
                     if door.logical_collision(&mut self.ninja) {
                         self.ninja.doors_opened += 1;
                         doors_to_open.push(door.door_segment_index);
+                    }
+                }
+                Entity::OneWay(ow) => {
+                    // Directional barrier: a horizontal-facing one-way contributes a
+                    // wall normal (±1) when the ninja is depenetrated against it,
+                    // letting it wall-slide/wall-jump. Mirrors the entity-loop branch
+                    // of post_collision (ninja.py). Order vs the tile-segment wall_normal
+                    // sum above is irrelevant: only the SIGN of the total is consumed.
+                    if let Some(n) = ow.logical_collision(&self.ninja) {
+                        wall_normal += n;
                     }
                 }
             }

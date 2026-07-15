@@ -30,6 +30,37 @@ logger = logging.getLogger(__name__)
 CELL_SIZE = 24
 
 
+def _signed_goal_residual(
+    goal_node_world_x: float,
+    goal_node_world_y: float,
+    goal_center: Tuple[float, float],
+    start: Tuple[float, float],
+) -> float:
+    """Signed distance from the snapped goal NODE to the true entity CENTER,
+    projected onto the approach direction (ninja ``start`` -> entity center).
+
+    Entities are placed on the 6px grid (coords ``≡0 mod 6``) while graph nodes
+    sit at ``≡3 mod 6``, so the snapped goal node is up to ~4.24px off the true
+    entity center. Path distances are measured to the node; adding this projected
+    residual converts them to the true center-to-center distance.
+
+    The projection is SIGNED: when the node lies beyond the center along the
+    approach the residual is negative (the path overshoots and must come back),
+    when it lies short the residual is positive. This keeps the corrected
+    distance symmetric for approaches from either side. Returns 0 when the ninja
+    is essentially on top of the center (degenerate direction; that case is
+    handled by the combined-radius early exit anyway).
+    """
+    approach_dx = goal_center[0] - start[0]
+    approach_dy = goal_center[1] - start[1]
+    approach_len = (approach_dx * approach_dx + approach_dy * approach_dy) ** 0.5
+    if approach_len <= 1e-6:
+        return 0.0
+    offset_x = goal_center[0] - goal_node_world_x
+    offset_y = goal_center[1] - goal_node_world_y
+    return (offset_x * approach_dx + offset_y * approach_dy) / approach_len
+
+
 class CachedPathDistanceCalculator:
     """
     Path distance calculator with caching for static goals.
@@ -149,8 +180,13 @@ class CachedPathDistanceCalculator:
             Tuple[int, int, Optional[str]], Tuple[int, int]
         ] = {}
 
-        # Cached adjacency bounds (min_x, max_x, min_y, max_y) for fast bounds checking
+        # Cached adjacency bounds (min_x, max_x, min_y, max_y) for fast bounds checking.
+        # Keyed by the ADJACENCY OBJECT IDENTITY it was computed from (``_adjacency_bounds_adj``)
+        # so the OOB guard can never check the ninja against a PREVIOUS level's bounds
+        # (the stale-cache bug: build_level_cache only refreshed these on a cache
+        # rebuild, so a level whose cache "hit" kept the prior level's bounds).
         self._adjacency_bounds: Optional[Tuple[int, int, int, int]] = None
+        self._adjacency_bounds_adj = None
 
         # Performance timing
         self.timer = PerformanceTimer(enabled=enable_timing)
@@ -539,6 +575,38 @@ class CachedPathDistanceCalculator:
             current = next_hop
         return path
 
+    def _bounds_for_adjacency(self, adjacency):
+        """Bounding box (min_x, max_x, min_y, max_y) of ``adjacency``'s nodes,
+        cached by the adjacency OBJECT IDENTITY.
+
+        The graph pipeline builds a fresh adjacency per level, so keying the
+        bounds on the live adjacency object guarantees the OOB guard always
+        compares the ninja against the SAME graph it is about to search — it can
+        never inherit a previous level's bounds (the stale-cache bug). Recompute
+        is O(nodes) but only runs when the adjacency object actually changes.
+        """
+        if adjacency is self._adjacency_bounds_adj:
+            return self._adjacency_bounds
+        min_x = max_x = min_y = max_y = None
+        for nx, ny in adjacency:
+            if min_x is None:
+                min_x = max_x = nx
+                min_y = max_y = ny
+            else:
+                if nx < min_x:
+                    min_x = nx
+                elif nx > max_x:
+                    max_x = nx
+                if ny < min_y:
+                    min_y = ny
+                elif ny > max_y:
+                    max_y = ny
+        self._adjacency_bounds = (
+            (min_x, max_x, min_y, max_y) if min_x is not None else None
+        )
+        self._adjacency_bounds_adj = adjacency
+        return self._adjacency_bounds
+
     def get_path_cost(
         self,
         start: Tuple[int, int],
@@ -624,7 +692,11 @@ class CachedPathDistanceCalculator:
         if not return_path and key in self.cache:
             self.hits += 1
             cached_distance = self.cache[key]
-            # Adjust for collision radii
+            # cached_distance is the node-path distance already corrected to the
+            # true entity center (the goal-side residual is baked in on the miss
+            # path before caching). Subtract the activation reach so the value is
+            # the distance until the ninja's edge first enters the entity's
+            # activation circle (overlap_circle_vs_circle in physics.py).
             adjusted_dist = max(0.0, cached_distance - (ninja_radius + entity_radius))
             return adjusted_dist
 
@@ -810,6 +882,24 @@ class CachedPathDistanceCalculator:
                                     start_node_world_y = (
                                         start_node[1] + NODE_WORLD_COORD_OFFSET
                                     )
+                                    # GOAL-SIDE ACTIVATION CORRECTION:
+                                    # cached_dist is measured to the snapped goal
+                                    # NODE, but entities sit on the 6px grid (coords
+                                    # ≡0 mod 6) while graph nodes sit at ≡3 mod 6, so
+                                    # every entity center is ~4.24px off its nearest
+                                    # node. Add the SIGNED projection of the
+                                    # node→center offset onto the approach direction
+                                    # (ninja→center) so the value becomes the true
+                                    # center-to-center path distance. Signed (not the
+                                    # raw offset) keeps it symmetric for approaches
+                                    # from either side; positions inside the reach are
+                                    # already handled by the early exit above.
+                                    goal_residual = _signed_goal_residual(
+                                        goal_node[0] + NODE_WORLD_COORD_OFFSET,
+                                        goal_node[1] + NODE_WORLD_COORD_OFFSET,
+                                        goal_pos,
+                                        start,
+                                    )
                                     if path_dir is not None:
                                         path_dir_x, path_dir_y = path_dir
                                         player_dx = start[0] - start_node_world_x
@@ -822,6 +912,7 @@ class CachedPathDistanceCalculator:
                                             0.0,
                                             cached_dist
                                             - projection
+                                            + goal_residual
                                             - (ninja_radius + entity_radius),
                                         )
                                         self._step_cache[step_key] = total_dist
@@ -834,7 +925,9 @@ class CachedPathDistanceCalculator:
 
                                     result = max(
                                         0.0,
-                                        cached_dist - (ninja_radius + entity_radius),
+                                        cached_dist
+                                        + goal_residual
+                                        - (ninja_radius + entity_radius),
                                     )
                                     self._step_cache[step_key] = result
                                     if return_path:
@@ -904,8 +997,11 @@ class CachedPathDistanceCalculator:
             start_tile_y = start[1] - NODE_WORLD_COORD_OFFSET
 
             _OOB_MARGIN = 200  # px beyond graph bounding box
-            if self._adjacency_bounds is not None:
-                _bmin_x, _bmax_x, _bmin_y, _bmax_y = self._adjacency_bounds
+            # Bounds of the CURRENT adjacency (keyed by identity) — never a stale
+            # previous level's box, so the guard/warning can't fire spuriously.
+            _live_bounds = self._bounds_for_adjacency(adjacency)
+            if _live_bounds is not None:
+                _bmin_x, _bmax_x, _bmin_y, _bmax_y = _live_bounds
                 if (
                     start_tile_x < _bmin_x - _OOB_MARGIN
                     or start_tile_x > _bmax_x + _OOB_MARGIN
@@ -1088,6 +1184,25 @@ class CachedPathDistanceCalculator:
             return float("inf")
 
         self.misses += 1
+
+        # GOAL-SIDE ACTIVATION CORRECTION (cache-miss path):
+        # _calculate_distance returns the node-to-node distance ending at the
+        # snapped goal_node. Entities are placed on the 6px grid (coords ≡0 mod 6)
+        # while graph nodes sit at ≡3 mod 6, so the snapped node is ~4.24px off the
+        # true entity center. Add the SIGNED projection of the node→center offset
+        # onto the approach direction so the subtraction is taken from the real
+        # center (matches the circle-vs-circle activation test in physics.py).
+        from .pathfinding_utils import (
+            NODE_WORLD_COORD_OFFSET as _GOAL_OFFSET,
+        )
+
+        goal_residual = _signed_goal_residual(
+            goal_node[0] + _GOAL_OFFSET,
+            goal_node[1] + _GOAL_OFFSET,
+            goal,
+            start,
+        )
+
         with self.timer.measure("pathfinding_compute"):
             result = self._calculate_distance(
                 start_node,
@@ -1099,18 +1214,22 @@ class CachedPathDistanceCalculator:
 
         if return_path:
             distance, path = result
-            total_dist = max(0.0, distance - (ninja_radius + entity_radius))
+            total_dist = max(
+                0.0, distance + goal_residual - (ninja_radius + entity_radius)
+            )
             return total_dist, path
 
         distance = result
 
-        # Cache raw node-to-node distance (before adjustment)
+        # Cache the node-path distance corrected to the true entity center (the
+        # goal-side residual is baked in here so the early per-query cache hit
+        # above returns a center-accurate value too).
         if len(self.cache) >= self.max_cache_size:
             # Remove oldest entry
             oldest = next(iter(self.cache))
             del self.cache[oldest]
 
-        self.cache[key] = distance
+        self.cache[key] = distance + goal_residual
 
         # SUB-NODE PBRS RESOLUTION (cache miss path)
         # For cache misses, we don't have precomputed distances for nearby nodes,
@@ -1119,7 +1238,9 @@ class CachedPathDistanceCalculator:
         #
         # The primary path (level cache hit) handles sub-node resolution properly
         # by checking minimum distance among nearby nodes.
-        total_dist = max(0.0, distance - (ninja_radius + entity_radius))
+        total_dist = max(
+            0.0, distance + goal_residual - (ninja_radius + entity_radius)
+        )
         return total_dist
 
     def compute_baseline_physics_costs(

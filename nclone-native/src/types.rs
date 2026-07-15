@@ -133,6 +133,7 @@ pub enum EntityType {
     // entity); recognized only so map parsing treats it as a no-op rather than
     // silently misreading subsequent bytes.
     LockedDoorSwitch = 7,
+    OneWay = 11,
     ToggleMineToggled = 21,
 }
 
@@ -145,6 +146,7 @@ impl EntityType {
             4 => Some(EntityType::ExitSwitch),
             6 => Some(EntityType::LockedDoor),
             7 => Some(EntityType::LockedDoorSwitch),
+            11 => Some(EntityType::OneWay),
             21 => Some(EntityType::ToggleMineToggled),
             _ => None,
         }
@@ -277,6 +279,11 @@ pub struct EntitySnapshot {
     pub state: u8,
     #[pyo3(get)]
     pub radius: f64,
+    // Orientation 0..7 (8-way). Meaningful for directional entities such as the
+    // one-way platform (type 11), where it encodes the blocking normal; 0 for
+    // entities without an orientation.
+    #[pyo3(get)]
+    pub orientation: u8,
     // Locked-door fields (zero/false for all other entity types). For a locked
     // door, (x, y) above is the SWITCH position and `active` means the switch is
     // uncollected; these expose the door barrier so the planner can model it.

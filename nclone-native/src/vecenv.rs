@@ -179,6 +179,10 @@ impl NativeVecEnv {
                         e.xpos = x;
                         e.ypos = y;
                     }
+                    Entity::OneWay(e) => {
+                        e.xpos = x;
+                        e.ypos = y;
+                    }
                 }
                 sim.rebuild_entity_grid();
             }

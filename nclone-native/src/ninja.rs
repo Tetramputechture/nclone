@@ -4,6 +4,7 @@
 
 use crate::collision::{spatial, sweep};
 use crate::constants::*;
+use crate::entities::Entity;
 use crate::segments::Segment;
 use crate::types::NinjaSnapshot;
 
@@ -179,14 +180,17 @@ impl Ninja {
 
     /// Reset collision accumulators before collision phase.
     ///
-    /// `_entity_grid` is accepted for API stability but unused: the entity
-    /// neighbourhood is (re)gathered fresh in `post_collision_with_entities`,
-    /// so the old per-frame `cached_entity_indices` gather here was dead work
-    /// (the field is never read).  Dropping it is byte-identical and removes one
-    /// allocating spatial gather from every physics frame.
+    /// When `gather_physical_entities` is true, cache the entity neighbourhood
+    /// once per frame (mirroring Python's `_cached_entities` gather in
+    /// `pre_collision`) for the physical-collision substeps. Levels without a
+    /// physically-collidable entity (no one-way platform) pass `false`, keeping
+    /// the gather out of the hot path entirely — byte-identical, since
+    /// `collide_vs_objects` is then a no-op. Logical collisions still (re)gather
+    /// fresh in `post_collision_with_entities`.
     pub fn pre_collision(
         &mut self,
-        _entity_grid: &[[Vec<usize>; MAP_HEIGHT]; MAP_WIDTH],
+        entity_grid: &[[Vec<usize>; MAP_HEIGHT]; MAP_WIDTH],
+        gather_physical_entities: bool,
     ) {
         self.xspeed_old = self.xspeed;
         self.yspeed_old = self.yspeed;
@@ -201,16 +205,71 @@ impl Ninja {
         self.x_crush = 0.0;
         self.y_crush = 0.0;
         self.crush_len = 0.0;
+        if gather_physical_entities {
+            self.cached_entity_indices =
+                spatial::gather_entities_from_neighbourhood(entity_grid, self.xpos, self.ypos);
+        } else {
+            self.cached_entity_indices.clear();
+        }
     }
 
-    /// Handle physical collisions with entities (bounce blocks, thwumps, etc.).
-    /// In our scoped port (only toggle mine, exit switch, exit door), none of
-    /// these entities have physical collisions, so this is a no-op.
-    pub fn collide_vs_objects(&mut self) {
-        // Toggle mines, exit switches, and exit doors have no physical collision
-        // (is_physical_collidable = false). Only bounce blocks, thwumps, one-way
-        // platforms, etc. have physical collisions, and those are out of scope.
-        // This method is kept for API compatibility and future expansion.
+    /// Handle physical (depenetration) collisions with entities. Faithful port
+    /// of `Ninja.collide_vs_objects` (nclone/ninja.py): iterate the entity
+    /// neighbourhood cached in `pre_collision` and apply each physically-
+    /// collidable entity's depenetration to position, crush accumulators,
+    /// velocity, and floor/ceiling normals. Currently only one-way platforms
+    /// (type 11) are physically collidable; the type-17/20/28 branches are
+    /// retained verbatim from Python for when bounce blocks/thwumps/shwumps land.
+    pub fn collide_vs_objects(&mut self, entities: &[Entity]) {
+        for i in 0..self.cached_entity_indices.len() {
+            let idx = self.cached_entity_indices[i];
+            if idx >= entities.len() {
+                continue;
+            }
+            let entity = &entities[idx];
+            if !entity.is_physical_collidable() {
+                continue;
+            }
+            if let Some(((depen_x, depen_y), (depen_len, _))) = entity.physical_collision(self) {
+                let pop_x = depen_x * depen_len;
+                let pop_y = depen_y * depen_len;
+                self.xpos += pop_x;
+                self.ypos += pop_y;
+                let etype = entity.entity_type_id();
+                // Update crushing parameters unless collision with a bounce block.
+                if etype != 17 {
+                    self.x_crush += pop_x;
+                    self.y_crush += pop_y;
+                    self.crush_len += depen_len;
+                }
+                // Ninja can only get crushed by a thwump.
+                if etype == 20 {
+                    self.is_crushable = true;
+                }
+                // Depenetration for bounce blocks, thwumps and shwumps.
+                if etype == 17 || etype == 20 || etype == 28 {
+                    self.xspeed += pop_x;
+                    self.yspeed += pop_y;
+                }
+                // Depenetration for one-ways: project velocity onto platform tangent.
+                if etype == 11 {
+                    let xspeed_new = (self.xspeed * depen_y - self.yspeed * depen_x) * depen_y;
+                    let yspeed_new = (self.xspeed * depen_y - self.yspeed * depen_x) * (-depen_x);
+                    self.xspeed = xspeed_new;
+                    self.yspeed = yspeed_new;
+                }
+                // Adjust ceiling variables on ceiling/wall contact, else floor.
+                if depen_y >= -0.0001 {
+                    self.ceiling_count += 1;
+                    self.ceiling_normal_x += depen_x;
+                    self.ceiling_normal_y += depen_y;
+                } else {
+                    self.floor_count += 1;
+                    self.floor_normal_x += depen_x;
+                    self.floor_normal_y += depen_y;
+                }
+            }
+        }
     }
 
     /// Handle collisions with tile segments (interpolation + depenetration loop).

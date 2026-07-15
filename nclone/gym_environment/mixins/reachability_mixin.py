@@ -16,6 +16,15 @@ from ...graph.reachability.feature_computation import (
 from ...graph.reachability.path_distance_calculator import (
     CachedPathDistanceCalculator,
 )
+from ..constants import LEVEL_DIAGONAL, WAYPOINT_NAV_DIM
+
+# Process-wide LRU of free-space distance sources for the default-on
+# ``free_space_nav`` policy hint, keyed by a hash of the level's map_data. The
+# build is ~300ms, so this amortizes it to once-per-distinct-level within a
+# worker (curriculum pools revisit the same levels constantly across resets).
+# Bounded by a simple clear-on-overflow to cap memory.
+_FREE_SPACE_NAV_CACHE: dict = {}
+_FREE_SPACE_NAV_CACHE_CAP = 512
 
 
 class ReachabilityMixin:
@@ -62,14 +71,50 @@ class ReachabilityMixin:
         self._lattice_map_name = None
         self._use_lattice_this_episode = False
         self._lattice_episode_decided = False
-        # Free-space grid potential: fallback for airborne/mine-threading levels
-        # where the surface lattice has no finite cost-to-go (severed by mines).
+        # Mine-threading potential: the FAITHFUL fallback for mine-saturated levels
+        # where the surface lattice is severed. Hard 14px mine constraint + tile-soft
+        # cost over a fine 3px grid -> connected, mine-faithful cost-to-go (the route
+        # threads between mines). Preferred over the mine-SOFT free-space grid.
+        self._minethreading_source = None
+        self._minethreading_map_name = None
+        self._use_minethreading_this_episode = False
+        self._minethreading_episode_decided = False
+        # Free-space grid potential: last-resort fallback (mine-SOFT) for severed
+        # levels where even the mine-threading region has no finite spawn route.
         self._freespace_source = None
         self._freespace_map_name = None
         self._use_freespace_this_episode = False
         self._freespace_episode_decided = False
+        # True while the reward distances currently in ``_cached_switch_distance``/
+        # ``_cached_exit_distance`` come from a COMMITTED substitution source
+        # (lattice / mine-threading / free-space cost-to-completion). False means
+        # the raw per-phase A* fallback is live — the reward calculator then
+        # composes its own continuous basis (or degrades to the HWM ratchet) so
+        # PBRS never flips basis at switch activation. Exposed into the obs dict
+        # as ``_potential_substituted`` (reward metadata, stripped from policy obs).
+        self._potential_substituted = False
         # Cached physics-aware nav hint for the optional ``lattice_nav`` obs key.
         self._cached_lattice_nav = np.zeros(4, dtype=np.float32)
+
+        # Default-on free-space nav hint (folded into game_state). A dedicated
+        # FreeSpaceDistanceSource per level (LRU-cached process-wide) gives a
+        # physics-free steepest-descent direction toward the current objective
+        # that rounds obstacles. Rebuilt only on map identity change.
+        self._free_space_nav_source = None
+        self._free_space_nav_map_name = None
+        self._cached_free_space_nav = np.zeros(4, dtype=np.float32)
+
+        # Lattice-backed waypoint subgoals (long-horizon distance fix). A
+        # WaypointTracker advances through the lattice route's subgoals; its cached
+        # fields feed the reward (``waypoint_leg_distance``/``waypoint_index`` for the
+        # per-leg PBRS) and the optional ``waypoint_nav`` policy obs. Rebuilt per
+        # episode (cheap when waypoints are injected; lattice build is disk-cached).
+        self._waypoint_planner = None
+        self._waypoint_tracker = None
+        self._injected_waypoints = None  # set via set_level_waypoints() at scale
+        self._cached_waypoint_nav = np.zeros(WAYPOINT_NAV_DIM, dtype=np.float32)
+        self._waypoint_leg_distance = None
+        self._waypoint_index = None
         # Number of NECESSARY locked doors opened so far (from the lattice
         # door-dependency plan); drives the locked-door reward + HWM sub-goal
         # phase. 0 when there is no plan / no necessary doors.
@@ -87,9 +132,126 @@ class ReachabilityMixin:
         # Re-decide lattice-vs-geometric on the next reachability call (the
         # source itself is rebuilt only when the map identity changes).
         self._lattice_episode_decided = False
+        self._minethreading_episode_decided = False
         self._freespace_episode_decided = False
+        self._potential_substituted = False
         self._cached_lattice_nav = np.zeros(4, dtype=np.float32)
+        # Force a per-episode rebind of the free-space nav source (cheap: the
+        # source object itself is LRU-cached, only the map-identity check resets).
+        self._free_space_nav_map_name = None
+        self._free_space_nav_source = None
+        self._cached_free_space_nav = np.zeros(4, dtype=np.float32)
         self._necessary_doors_open = 0
+        # Force a per-episode tracker rebuild (picks up newly injected waypoints /
+        # the new map). The lattice build is disk-cached so repeat maps are cheap.
+        self._waypoint_tracker = None
+        self._cached_waypoint_nav = np.zeros(WAYPOINT_NAV_DIM, dtype=np.float32)
+        self._waypoint_leg_distance = None
+        self._waypoint_index = None
+
+    def set_level_waypoints(self, waypoints):
+        """Inject precomputed subgoals (list[Waypoint]) for the current level.
+
+        The scalable path for procgen: a level source attaches pool-precomputed
+        waypoints (see ``tools/export_subgoals.py``) so the env never builds a
+        lattice on the hot path. The tracker rebuilds from these on the next step.
+        Passing ``None``/empty clears them (tracker falls back to on-reset build if
+        ``waypoint_build_on_reset`` is set, else becomes a no-op).
+        """
+        self._injected_waypoints = list(waypoints) if waypoints else None
+        self._waypoint_tracker = None
+
+    def _resolve_waypoints(self, reach_cfg):
+        """Injected waypoints if present; else build on reset (when allowed).
+
+        Prefers the CHEAP free-space waypoint planner (steepest-descent on the
+        disk-cached free-space cost-to-go — ~ms, scales to procgen) and falls back
+        to the physics-aware lattice planner only if free-space is unavailable.
+        """
+        if self._injected_waypoints:
+            return self._injected_waypoints
+        if not getattr(reach_cfg, "waypoint_build_on_reset", True):
+            return None
+        nplay = getattr(self, "nplay_headless", None)
+        map_data = getattr(nplay, "current_map_data", None)
+        if not map_data:
+            return None
+        name = getattr(self, "_lattice_map_name", None) or getattr(
+            getattr(self, "map_loader", None), "current_map_name", None
+        )
+        max_leg = getattr(reach_cfg, "waypoint_max_leg_px", None)
+        # Free-space planner (cheap, default).
+        if getattr(reach_cfg, "waypoint_use_free_space", True):
+            try:
+                from ...value_function.waypoint_planner import FreeSpaceWaypointPlanner
+
+                pos = nplay.ninja_position()
+                if pos is not None:
+                    fp = FreeSpaceWaypointPlanner(
+                        map_data, (float(pos[0]), float(pos[1])),
+                        name=name, max_leg_px=(max_leg or 48.0),
+                    )
+                    if fp.available and fp.waypoints:
+                        self._waypoint_planner = fp
+                        return fp.waypoints
+            except Exception:
+                pass
+        # Lattice fallback (physics-aware but precompute-heavy).
+        try:
+            from ...value_function.waypoint_planner import LatticeWaypointPlanner
+
+            p = LatticeWaypointPlanner(
+                map_data, use_cache=True, name=name, max_leg_px=max_leg,
+            )
+            self._waypoint_planner = p
+            return p.waypoints if p.available else None
+        except Exception:
+            return None
+
+    def _maybe_update_waypoints(self, ninja_pos, switch_activated):
+        """Advance the WaypointTracker and cache the reward/obs fields.
+
+        No-op unless ``enable_waypoint_tracker`` or ``expose_waypoint_features`` is
+        set. Builds the tracker once per episode (lazy, on first call). Any failure
+        leaves the cached fields as their safe defaults (``None`` distance/index ->
+        the per-leg PBRS term simply doesn't fire).
+        """
+        cfg = getattr(self, "config", None)
+        reach_cfg = getattr(cfg, "reachability", None)
+        if reach_cfg is None:
+            return
+        if not (
+            getattr(reach_cfg, "enable_waypoint_tracker", False)
+            or getattr(reach_cfg, "expose_waypoint_features", False)
+        ):
+            return
+
+        if self._waypoint_tracker is None:
+            from ...value_function.waypoint_planner import WaypointTracker
+
+            waypoints = self._resolve_waypoints(reach_cfg)
+            self._waypoint_tracker = WaypointTracker(waypoints) if waypoints else None
+
+        t = self._waypoint_tracker
+        if t is None:
+            return
+        nx, ny = float(ninja_pos[0]), float(ninja_pos[1])
+        self._cached_waypoint_nav = t.nav_feature(nx, ny, bool(switch_activated))
+        self._waypoint_leg_distance = float(t.leg_distance(nx, ny))
+        self._waypoint_index = int(t.index)
+
+    def _potential_source_cls(self, reach_cfg):
+        """Class used for the free-space-style PBRS reward / cost_to_go_map source.
+
+        ``ReachabilityConfig.use_jump_potential`` swaps the geometric free-space
+        flood for the physics-faithful jump-aware cost-to-go (a drop-in subclass,
+        same API). Default returns the free-space source so nothing changes unless
+        the flag is set."""
+        if reach_cfg is not None and getattr(reach_cfg, "use_jump_potential", False):
+            from ...value_function.jump_distance import JumpDistanceSource
+            return JumpDistanceSource
+        from ...value_function.free_space_distance import FreeSpaceDistanceSource
+        return FreeSpaceDistanceSource
 
     def _build_lattice_source(self, reach_cfg):
         """Build a LatticeDistanceSource from the current map_data (cached on
@@ -136,7 +298,63 @@ class ReachabilityMixin:
             getattr(getattr(cfg, "reward_config", None),
                     "enable_locked_door_rewards", False)
         )
-        if not (want_reward or want_obs or want_door_reward):
+        # use_jump_potential routes through the same free-space-primary path (the
+        # jump source is a drop-in subclass); _freespace_substitute picks the class.
+        want_free_space = bool(
+            getattr(reach_cfg, "use_free_space_potential", False)
+            or getattr(reach_cfg, "use_jump_potential", False)
+        )
+        if not (want_reward or want_obs or want_door_reward or want_free_space):
+            return
+
+        # Substitution status is re-derived on every call; each commit path below
+        # sets it back to True. When it stays False the raw per-phase A* distances
+        # are live and the reward calculator applies its own continuity fallback.
+        self._potential_substituted = False
+
+        # Free-space-PRIMARY potential: skip the (often infeasible) surface-lattice
+        # build entirely and take the reward distances straight from the cheap
+        # mine-aware free-space grid. Only valid when the policy obs / locked-door
+        # plan don't also need the full lattice (those fall through below).
+        if want_free_space and not (want_obs or want_door_reward):
+            nx, ny = float(ninja_pos[0]), float(ninja_pos[1])
+            self._use_lattice_this_episode = False
+            committed_src = None
+            use_jump = bool(getattr(reach_cfg, "use_jump_potential", False))
+            if use_jump:
+                # Audit II F4 fix: with --use-jump-potential the jump-aware
+                # field runs FIRST — including on mined levels. Previously the
+                # mine-threading source pre-empted it whenever the level had
+                # mines, so the jump field was silently unused on exactly the
+                # mined precision levels it exists for. The jump field is now
+                # mine-HARD itself (jump5: deadly kill-radius cells block
+                # support/wall/arcs/fall-fill), so precedence is safe; the
+                # threading source remains the fallback when the hardened jump
+                # field has no finite spawn route.
+                if self._freespace_substitute(nx, ny, switch_activated, True):
+                    committed_src = self._freespace_source
+                elif self._level_has_mines() and self._minethreading_substitute(
+                    nx, ny, switch_activated
+                ):
+                    committed_src = self._minethreading_source
+            else:
+                # Mine-HARD threading source first when the level has mines,
+                # mirroring the severed-lattice chain below: the mine-SOFT
+                # free-space grid only soft-penalizes mine cells (cost
+                # x(1+8*mden)), so on wall-of-mines geometry its potential can
+                # route THROUGH a lethal wall when the detour is long enough.
+                # The threading source's hard 14px mine mask cannot.
+                if self._level_has_mines() and self._minethreading_substitute(
+                    nx, ny, switch_activated
+                ):
+                    committed_src = self._minethreading_source
+                elif self._freespace_substitute(nx, ny, switch_activated, True):
+                    committed_src = self._freespace_source
+            if committed_src is not None:
+                self._maybe_ballistic_reevaluate(
+                    committed_src, nx, ny, switch_activated
+                )
+            self._potential_substituted = committed_src is not None
             return
         try:
             map_name = getattr(
@@ -153,16 +371,17 @@ class ReachabilityMixin:
             if src is None or not getattr(src, "available", False):
                 self._use_lattice_this_episode = False
                 self._lattice_episode_decided = True
-                self._freespace_substitute(nx, ny, switch_activated, want_reward)
+                self._severed_lattice_substitute(nx, ny, switch_activated, want_reward)
                 return
 
             if not self._lattice_episode_decided:
                 self._use_lattice_this_episode = src.spawn_finite(nx, ny)
                 self._lattice_episode_decided = True
             if not self._use_lattice_this_episode:
-                # Surface lattice severed at spawn (airborne / mine-threading) ->
-                # use the free-space grid potential instead of the geometric A*.
-                self._freespace_substitute(nx, ny, switch_activated, want_reward)
+                # Surface lattice severed at spawn (airborne / mine-threading) -> use
+                # the mine-faithful threading potential (then free-space) instead of
+                # the geometric A*.
+                self._severed_lattice_substitute(nx, ny, switch_activated, want_reward)
                 return
 
             # Locked-door phase: which doors are open now, and how many of the
@@ -224,9 +443,15 @@ class ReachabilityMixin:
                     self._cached_switch_distance = float(c_sw)
                 if np.isfinite(c_ex):
                     self._cached_exit_distance = float(c_ex)
+                # Committed only when BOTH phases carry the lattice scale — a
+                # partial write would mix bases across the switch flip.
+                self._potential_substituted = bool(
+                    np.isfinite(c_sw) and np.isfinite(c_ex)
+                )
         except Exception:
             # Never let the potential source break an episode.
             self._use_lattice_this_episode = False
+            self._potential_substituted = False
 
     def _lattice_open_door_indices(self) -> set:
         """Indices of currently-OPEN locked doors, aligned with the lattice door
@@ -245,16 +470,185 @@ class ReachabilityMixin:
             if not bool(getattr(d, "closed", True))
         }
 
-    def _freespace_substitute(self, nx, ny, switch_activated, want_reward):
+    def _level_has_mines(self) -> bool:
+        """True when the current level contains any toggle mines (type 1 or 21).
+
+        Cheap gate for preferring the mine-HARD threading potential over the
+        mine-SOFT free-space grid; on mine-free levels both are identical, so
+        the threading build is skipped entirely."""
+        try:
+            toggle_mines, toggled_mines = self.nplay_headless.get_mine_entities()
+            return bool(toggle_mines) or bool(toggled_mines)
+        except Exception:
+            return False
+
+    def _severed_lattice_substitute(self, nx, ny, switch_activated, want_reward):
+        """Fallback chain when the surface lattice is severed at spawn:
+        mine-threading (faithful hard-mine) first, then the free-space grid
+        (mine-soft) if the threading region has no finite spawn route. No-op unless
+        a reward potential is wanted. Records whether any source committed via
+        ``_potential_substituted``."""
+        if not want_reward:
+            return
+        if self._minethreading_substitute(nx, ny, switch_activated):
+            self._potential_substituted = True
+            return
+        self._potential_substituted = bool(
+            self._freespace_substitute(nx, ny, switch_activated, want_reward)
+        )
+
+    def _maybe_ballistic_reevaluate(self, src, nx, ny, switch_activated) -> None:
+        """Audit II P0-2 (--ballistic-air-potential): while AIRBORNE, evaluate
+        the committed potential at the point where the CURRENT no-input arc
+        actually lands, instead of at the ninja's air position (whose value is
+        a straight-down, velocity-blind column projection). This is the only
+        change that makes controlling flight toward the route visible to the
+        reward: an unchanged arc gives dPhi = 0 (no dawdle pay — hovering is
+        impossible), a 1-frame trim that moves the landing to a better cell
+        pays immediately, and grounded states degenerate to today's Phi
+        exactly (this method is a no-op on the ground). Still a true state
+        potential (a function of (x, y, vx, vy) only) => telescopes; the death
+        clawback and D0 normalization are untouched downstream.
+
+        Overwrites ``_cached_switch_distance`` / ``_cached_exit_distance``
+        (already written by the committing substitute at the ninja position)
+        only when the ballistic landing evaluates finite — a degraded
+        projection (mine landing in an inf pocket, no native projector, no
+        contact within horizon toward the border) keeps the standard values.
+        """
+        reach_cfg = getattr(getattr(self, "config", None), "reachability", None)
+        if not bool(getattr(reach_cfg, "ballistic_air_potential", False)):
+            return
+        try:
+            ninja = self.nplay_headless.sim.ninja
+            if not bool(getattr(ninja, "airborn", False)):
+                return
+            get_proj = getattr(self, "_get_trajectory_projector", None)
+            proj = get_proj() if get_proj is not None else None
+            if proj is None:
+                return
+            vx, vy = self.nplay_headless.ninja_velocity()
+            jf = 0
+            if (
+                getattr(ninja, "state", 4) == 3
+                and getattr(ninja, "jump_input_old", 0) != 0
+            ):
+                from ...constants.physics_constants import MAX_JUMP_DURATION
+
+                jf = max(
+                    0, MAX_JUMP_DURATION - int(getattr(ninja, "jump_duration", 0))
+                )
+            from ..constants import GHOST_ARC_MAX_FRAMES
+
+            if bool(getattr(reach_cfg, "ballistic_air_best_arc", False)):
+                # v13 best-arc: evaluate all three steering arcs and take the
+                # best SURVIVING landing per target (min finite cost). An arc
+                # is discarded if it ends in a deadly mine (class 3), never
+                # contacts within the horizon (class 4), or lands hard enough
+                # to die (impact_speed > impact_threshold). Still a pure
+                # function of (pos, vel, jf) => a valid state potential.
+                best_sw = float("inf")
+                best_ex = float("inf")
+                for u in (-1, 0, 1):
+                    cls_, lx, ly, _nx2, _ny2, _tau, imp, thr, _cw, *_rest = proj.project(
+                        float(nx),
+                        float(ny),
+                        float(vx),
+                        float(vy),
+                        u,
+                        jf,
+                        GHOST_ARC_MAX_FRAMES,
+                    )
+                    if cls_ in (3, 4) or (thr > 0.0 and imp > thr):
+                        continue
+                    c_sw = src.cost_to_completion(float(lx), float(ly), False)
+                    c_ex = src.cost_to_go(float(lx), float(ly), True)
+                    if np.isfinite(c_sw):
+                        best_sw = min(best_sw, float(c_sw))
+                    if np.isfinite(c_ex):
+                        best_ex = min(best_ex, float(c_ex))
+                if np.isfinite(best_sw):
+                    self._cached_switch_distance = best_sw
+                if np.isfinite(best_ex):
+                    self._cached_exit_distance = best_ex
+                # All arcs doomed/inf => keep the standard (ninja-position)
+                # values, same degradation contract as the u=0 path below.
+                return
+
+            lx, ly, _cls, _tau = proj.project_landing(
+                float(nx), float(ny), float(vx), float(vy), jf, GHOST_ARC_MAX_FRAMES
+            )
+            c_sw = src.cost_to_completion(float(lx), float(ly), False)
+            c_ex = src.cost_to_go(float(lx), float(ly), True)
+            if np.isfinite(c_sw):
+                self._cached_switch_distance = float(c_sw)
+            if np.isfinite(c_ex):
+                self._cached_exit_distance = float(c_ex)
+        except Exception:
+            # Never degrade the standard substitution over a projection issue.
+            pass
+
+    def _minethreading_substitute(self, nx, ny, switch_activated) -> bool:
+        """Substitute the reward distances with the mine-faithful threading
+        cost-to-completion. Returns True iff it committed to the threading source
+        this episode (spawn has a finite hard-mine route). Built once per map; the
+        per-episode use decision mirrors the lattice gate."""
+        try:
+            map_name = getattr(
+                getattr(self, "map_loader", None), "current_map_name", None
+            )
+            if (map_name != self._minethreading_map_name
+                    or self._minethreading_source is None):
+                self._minethreading_map_name = map_name
+                nplay = getattr(self, "nplay_headless", None)
+                md = getattr(nplay, "current_map_data", None)
+                if md:
+                    from ...value_function.mine_threading_distance import (
+                        MineThreadingDistanceSource,
+                    )
+                    self._minethreading_source = MineThreadingDistanceSource(
+                        md, name=map_name)
+                else:
+                    self._minethreading_source = None
+                self._minethreading_episode_decided = False
+
+            mt = self._minethreading_source
+            if mt is None or not getattr(mt, "available", False):
+                self._use_minethreading_this_episode = False
+                self._minethreading_episode_decided = True
+                return False
+            if not self._minethreading_episode_decided:
+                self._use_minethreading_this_episode = mt.spawn_finite(nx, ny)
+                self._minethreading_episode_decided = True
+            if not self._use_minethreading_this_episode:
+                return False
+            # Pre-switch distance composed to cost-to-COMPLETION (continuous across
+            # switch activation), exactly like the free-space/lattice substitution.
+            c_sw = mt.cost_to_completion(nx, ny, False)
+            c_ex = mt.cost_to_go(nx, ny, True)
+            if np.isfinite(c_sw):
+                self._cached_switch_distance = float(c_sw)
+            if np.isfinite(c_ex):
+                self._cached_exit_distance = float(c_ex)
+            return True
+        except Exception:
+            self._use_minethreading_this_episode = False
+            return False
+
+    def _freespace_substitute(self, nx, ny, switch_activated, want_reward) -> bool:
         """Fallback potential for levels where the surface lattice is severed
         (airborne / dense-mine corridors): a mine-aware free-space grid cost-to-go.
         Substitutes the reward distances so PBRS/HWM still get a dense, corridor-
         following signal (the RL agent learns the frame-precise execution). The
         per-episode use decision mirrors the lattice gate (commit only if the spawn
-        has a finite free-space route). No-op unless a reward potential is wanted."""
+        has a finite free-space route). No-op unless a reward potential is wanted.
+
+        Returns True iff it committed to the free-space source this episode AND
+        wrote both phase distances (a consistent cost-to-completion basis)."""
         if not want_reward:
-            return
+            return False
         try:
+            reach_cfg = getattr(getattr(self, "config", None), "reachability", None)
             map_name = getattr(
                 getattr(self, "map_loader", None), "current_map_name", None
             )
@@ -264,10 +658,11 @@ class ReachabilityMixin:
                 nplay = getattr(self, "nplay_headless", None)
                 md = getattr(nplay, "current_map_data", None)
                 if md:
-                    from ...value_function.free_space_distance import (
-                        FreeSpaceDistanceSource,
-                    )
-                    self._freespace_source = FreeSpaceDistanceSource(md, name=map_name)
+                    # Jump-aware source when use_jump_potential is set, else the
+                    # geometric free-space flood (default). Both share the same API
+                    # and a (distinct-namespace) two-tier disk cache.
+                    cls = self._potential_source_cls(reach_cfg)
+                    self._freespace_source = cls(md, name=map_name)
                 else:
                     self._freespace_source = None
                 self._freespace_episode_decided = False
@@ -276,20 +671,79 @@ class ReachabilityMixin:
             if fs is None or not getattr(fs, "available", False):
                 self._use_freespace_this_episode = False
                 self._freespace_episode_decided = True
-                return
+                return False
             if not self._freespace_episode_decided:
                 self._use_freespace_this_episode = fs.spawn_finite(nx, ny)
                 self._freespace_episode_decided = True
             if not self._use_freespace_this_episode:
-                return
-            c_sw = fs.cost_to_go(nx, ny, False)
+                return False
+            # Pre-switch distance is composed to cost-to-COMPLETION (cost-to-switch
+            # + constant exit tail) so the substituted distance is one continuous
+            # potential across switch activation, matching the lattice's d_comb.
+            # Without this the PBRS term would see a basis change at the switch and
+            # punish activating it (see FreeSpaceDistanceSource.cost_to_completion).
+            c_sw = fs.cost_to_completion(nx, ny, False)
             c_ex = fs.cost_to_go(nx, ny, True)
             if np.isfinite(c_sw):
                 self._cached_switch_distance = float(c_sw)
             if np.isfinite(c_ex):
                 self._cached_exit_distance = float(c_ex)
+            return bool(np.isfinite(c_sw) and np.isfinite(c_ex))
         except Exception:
             self._use_freespace_this_episode = False
+            return False
+
+    def _refresh_free_space_nav(self, nx, ny, switch_activated) -> None:
+        """Refresh the default-on ``free_space_nav`` hint (folded into game_state).
+
+        Builds (LRU-cached per level) a mine-aware free-space cost-to-go and reads
+        a 4-dim steepest-descent hint ``[dx_hop, dy_hop, cost_norm, phase]`` toward
+        the current objective. Physics-free and policy-invariant (an OBSERVATION
+        only — do NOT also use it as a reward potential, that would double-count
+        against the existing PBRS). Any failure leaves the hint at zeros."""
+        try:
+            map_name = getattr(
+                getattr(self, "map_loader", None), "current_map_name", None
+            )
+            if (map_name != self._free_space_nav_map_name
+                    or self._free_space_nav_source is None):
+                self._free_space_nav_map_name = map_name
+                self._free_space_nav_source = self._get_free_space_nav_source()
+            src = self._free_space_nav_source
+            if src is not None and getattr(src, "available", False):
+                self._cached_free_space_nav = np.asarray(
+                    src.nav_feature(float(nx), float(ny), bool(switch_activated)),
+                    dtype=np.float32,
+                )
+            else:
+                self._cached_free_space_nav = np.zeros(4, dtype=np.float32)
+        except Exception:
+            self._cached_free_space_nav = np.zeros(4, dtype=np.float32)
+
+    def _get_free_space_nav_source(self):
+        """Get/build the per-level FreeSpaceDistanceSource for the nav hint.
+
+        Keyed in a process-wide LRU by a hash of the map_data so repeat levels
+        (the common curriculum case) skip the ~300ms rebuild."""
+        nplay = getattr(self, "nplay_headless", None)
+        md = getattr(nplay, "current_map_data", None)
+        if not md:
+            return None
+        reach_cfg = getattr(getattr(self, "config", None), "reachability", None)
+        cls = self._potential_source_cls(reach_cfg)
+        # Key on the source CLASS too so a jump-potential run never reads back a
+        # geometric free-space source (and vice-versa) for the same map.
+        key = (cls.__name__, hash(tuple(int(v) for v in md)))
+        src = _FREE_SPACE_NAV_CACHE.get(key)
+        if src is None:
+            # The jump source is slow to build but disk-cached (jumpfield/ subdir),
+            # so a cold worker pays once per level; the free-space source builds in
+            # ~0.1-0.5 s. Both expose the identical nav_feature / cost-to-go API.
+            src = cls(list(md), name=self._free_space_nav_map_name)
+            if len(_FREE_SPACE_NAV_CACHE) >= _FREE_SPACE_NAV_CACHE_CAP:
+                _FREE_SPACE_NAV_CACHE.clear()
+            _FREE_SPACE_NAV_CACHE[key] = src
+        return src
 
     def _compute_reachability(self, ninja_pos: Tuple[int, int]) -> np.ndarray:
         """
@@ -434,6 +888,7 @@ class ReachabilityMixin:
         # Store in instance variable to be added to observation in _get_observation
         self._cached_switch_distance = switch_distance_raw
         self._cached_exit_distance = exit_distance_raw
+        self._sanitize_cached_distances(ninja_pos, switch_activated)
 
         # Substitute the physics-aware lattice d* cost-to-go for the geometric A*
         # distance signal where we have a finite plan (handoff step #1: replace
@@ -441,6 +896,7 @@ class ReachabilityMixin:
         # ReachabilityConfig.use_lattice_potential is set; falls back to the
         # geometric distances above on no-route levels / build failure.
         self._maybe_substitute_lattice_distance(ninja_pos, switch_activated)
+        self._maybe_update_waypoints(ninja_pos, switch_activated)
 
         # Feature experiment B: optionally exclude path distances from actor obs
         # (PBRS still uses raw distances; actor learns from reward gradient alone)
@@ -519,7 +975,97 @@ class ReachabilityMixin:
             if hasattr(self, "nplay_headless")
             else False
         )
+        self._sanitize_cached_distances(ninja_pos, switch_activated)
         self._maybe_substitute_lattice_distance(ninja_pos, switch_activated)
+        self._maybe_update_waypoints(ninja_pos, switch_activated)
+
+    def _sanitize_cached_distances(self, ninja_pos, switch_activated: bool) -> None:
+        """Guarantee FINITE reward distances; never let the graph's ``inf`` reach
+        the reward.
+
+        The reachability GRAPH (``path_distance_calculator``) returns ``inf`` for a
+        query position outside its spawn-reachable bounding box. Start-state
+        curricula (post-switch / goal-distance reverse curriculum) place the ninja
+        at mid-route positions validated only against the looser FREE-SPACE model,
+        so a legitimately-placed ninja can land graph-OOB. That ``inf`` flows into
+        the HWM term (``hwm_alpha * hwm_progress * beta`` -> ``0*inf = NaN`` even
+        when ``hwm_alpha`` is 0 under free-space PBRS) and blows up training.
+
+        Fix the modeling mismatch at the source: when a cached distance is
+        non-finite, substitute the FREE-SPACE cost-to-go (the SAME model the
+        curriculum validates spawns against), scaled grid-cells -> pixels for unit
+        consistency with the graph distance. Ultimate fallback: a large finite
+        constant. Fires only on the rare OOB step, so it never perturbs normal
+        in-graph distances.
+        """
+        sw = self._cached_switch_distance
+        ex = self._cached_exit_distance
+        sw_bad = sw is not None and not np.isfinite(sw)
+        ex_bad = ex is not None and not np.isfinite(ex)
+        if not (sw_bad or ex_bad):
+            return
+
+        # Capture ONLY a non-finite CURRENT-goal distance — that is the real
+        # anomaly (bad procgen OR a graph/grid logic error worth offline debug).
+        # The OFF-goal distance going inf is BENIGN and expected: once the switch
+        # is activated its node drops from the graph so dist_switch reads inf,
+        # but the goal is now the exit (and vice-versa pre-switch). Capturing
+        # those would flood the dumps with non-bugs, so gate on the live goal.
+        current_goal_bad = ex_bad if switch_activated else sw_bad
+        if current_goal_bad:
+            self._capture_invalid_distance(ninja_pos, switch_activated, sw, ex)
+
+        src = getattr(self, "_free_space_nav_source", None)
+        if src is None and hasattr(self, "_get_free_space_nav_source"):
+            try:
+                src = self._get_free_space_nav_source()
+            except Exception:
+                src = None
+        from ...value_function.free_space_distance import _CELL
+
+        big = float(LEVEL_DIAGONAL * 2.0)
+        x, y = float(ninja_pos[0]), float(ninja_pos[1])
+
+        def _fs(activated: bool) -> float:
+            if src is None or not getattr(src, "available", False):
+                return big
+            try:
+                c = float(src.cost_to_go(x, y, activated)) * float(_CELL)
+            except Exception:
+                return big
+            return c if np.isfinite(c) else big
+
+        if sw_bad:
+            # phase-0 cost-to-go = distance to the exit SWITCH (switch_activated=False)
+            self._cached_switch_distance = _fs(False)
+        if ex_bad:
+            # phase-1 cost-to-go = distance to the EXIT door (switch_activated=True)
+            self._cached_exit_distance = _fs(True)
+
+    def _capture_invalid_distance(self, ninja_pos, switch_activated, sw, ex) -> None:
+        """Save a debug dump (map image + entities + context) when the graph
+        produced a non-finite distance. Best-effort; never raises."""
+        try:
+            from ..invalid_value_capture import capture_invalid_value
+
+            nh = getattr(self, "nplay_headless", None)
+            map_data = getattr(nh, "current_map_data", None)
+            bounds = getattr(self._path_calculator, "_adjacency_bounds", None)
+            switch_pos = nh.exit_switch_position() if nh is not None else None
+            exit_pos = nh.exit_door_position() if nh is not None else None
+            context = {
+                "ninja_pos": list(ninja_pos),
+                "switch_activated": bool(switch_activated),
+                "switch_pos": list(switch_pos) if switch_pos is not None else None,
+                "exit_pos": list(exit_pos) if exit_pos is not None else None,
+                "cached_switch_distance": sw,
+                "cached_exit_distance": ex,
+                "adjacency_bounds": list(bounds) if bounds is not None else None,
+                "step": int(getattr(self, "_episode_step", -1)),
+            }
+            capture_invalid_value("oob_graph_distance", map_data, context)
+        except Exception:
+            pass
 
     def _reinit_reachability_system_after_unpickling(self):
         """Reinitialize reachability system components after unpickling."""

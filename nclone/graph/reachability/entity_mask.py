@@ -11,6 +11,43 @@ from ...constants.entity_types import EntityType
 # Hardcoded cell size as per N++ constants
 CELL_SIZE = 24
 
+# One-way platform geometry (mirrors physics: semi-side 12, ninja radius 10). The
+# blocking barrier is modelled as a line segment of half-length SEMI+RADIUS so the
+# graph severs roughly the same lateral span the physics depenetration captures.
+_ONE_WAY_SEMI_SIDE = 12.0
+_ONE_WAY_LATERAL_PAD = 10.0  # NINJA_RADIUS
+
+
+def _orient(a, b, c) -> float:
+    """Signed area * 2 of triangle (a, b, c); sign gives orientation."""
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+
+def _segments_intersect(p1, p2, p3, p4) -> bool:
+    """True if segment p1p2 intersects segment p3p4 (proper or touching)."""
+    d1 = _orient(p3, p4, p1)
+    d2 = _orient(p3, p4, p2)
+    d3 = _orient(p1, p2, p3)
+    d4 = _orient(p1, p2, p4)
+    if ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0)):
+        return True
+    # Collinear/touching cases: check on-segment for any zero orientation.
+    def _on(a, b, c) -> bool:
+        return (
+            min(a[0], b[0]) <= c[0] <= max(a[0], b[0])
+            and min(a[1], b[1]) <= c[1] <= max(a[1], b[1])
+        )
+
+    if d1 == 0 and _on(p3, p4, p1):
+        return True
+    if d2 == 0 and _on(p3, p4, p2):
+        return True
+    if d3 == 0 and _on(p1, p2, p3):
+        return True
+    if d4 == 0 and _on(p1, p2, p4):
+        return True
+    return False
+
 
 class EntityMask:
     """
@@ -37,6 +74,7 @@ class EntityMask:
         # Parse entities by type (positions are cached - never change!)
         self.doors = self._extract_doors()
         self.mines = self._extract_mines()
+        self.one_ways = self._extract_one_ways()
 
         # Build switch->door mapping (static per level)
         self.switch_to_door = self._build_switch_door_mapping()
@@ -59,6 +97,10 @@ class EntityMask:
             if entity_type in [EntityType.TOGGLE_MINE, EntityType.TOGGLE_MINE_TOGGLED]:
                 mines.append(entity)
         return mines
+
+    def _extract_one_ways(self) -> List[Dict]:
+        """Extract one-way platform entities (type 11)."""
+        return [e for e in self.entities if e.get("type") == EntityType.ONE_WAY]
 
     def _build_switch_door_mapping(self) -> Dict[str, Dict]:
         """
@@ -134,7 +176,21 @@ class EntityMask:
                 pixel_y = tile_y * CELL_SIZE + offset_y
                 blocked.add((pixel_x, pixel_y))
 
-        # Block mines (radius-based, node-by-node)
+        # Block mines (radius-based). A mine only blocks nodes within
+        # block_radius (= NINJA_RADIUS + mine_radius, ~14px < one CELL_SIZE), so
+        # the naive "every mine vs every node" scan is O(mines x nodes) — on
+        # mine-dense levels (e.g. 13k mines x 5k nodes ~= 70M Python distance
+        # checks, ~12s per graph build) it dominates env reset. Spatially hash
+        # the nodes into CELL_SIZE buckets once, then probe only the buckets a
+        # mine could possibly reach. Output is identical to the naive scan; only
+        # the candidate set per mine shrinks from all-nodes to a 3x3 cell window.
+        from collections import defaultdict
+
+        node_buckets: Dict[Tuple[int, int], list] = defaultdict(list)
+        for node_pos in all_nodes:
+            nx, ny = node_pos
+            node_buckets[(nx // CELL_SIZE, ny // CELL_SIZE)].append(node_pos)
+
         for mine in self.mines:
             if self._is_mine_deadly(mine):
                 mine_pos = self._get_entity_pixel_position(mine)
@@ -144,30 +200,108 @@ class EntityMask:
                 mine_x, mine_y = mine_pos
                 mine_radius = mine.get("radius", 4.0)
 
-                # Block all nodes within collision distance
                 # Collision occurs when: distance(ninja_center, mine_center) < ninja_radius + mine_radius
                 block_radius = NINJA_RADIUS + mine_radius
                 block_radius_sq = block_radius * block_radius
 
-                for node_pos in all_nodes:
-                    nx, ny = node_pos
-                    dist_sq = (nx - mine_x) ** 2 + (ny - mine_y) ** 2
-
-                    if dist_sq < block_radius_sq:
-                        blocked.add(node_pos)
+                # Probe only buckets the block_radius circle can overlap. The
+                # cell span is ceil(block_radius / CELL_SIZE) in each direction.
+                cell_span = int(block_radius // CELL_SIZE) + 1
+                base_cx = int(mine_x // CELL_SIZE)
+                base_cy = int(mine_y // CELL_SIZE)
+                for cx in range(base_cx - cell_span, base_cx + cell_span + 1):
+                    for cy in range(base_cy - cell_span, base_cy + cell_span + 1):
+                        bucket = node_buckets.get((cx, cy))
+                        if not bucket:
+                            continue
+                        for node_pos in bucket:
+                            nx, ny = node_pos
+                            dist_sq = (nx - mine_x) ** 2 + (ny - mine_y) ** 2
+                            if dist_sq < block_radius_sq:
+                                blocked.add(node_pos)
 
         return blocked
 
-    def get_blocked_edges(self) -> Set[Tuple[Tuple[int, int], Tuple[int, int]]]:
+    def state_signature(self) -> Tuple:
+        """Hashable signature of the dynamic entity state that determines node
+        blocking: the set of deadly mines and closed doors (both by pixel
+        position). Independent of ninja position, so it is identical across
+        resets of a static level — used to memoize the O(mines) blocked-pixel
+        computation in :class:`GraphBuilder`, which otherwise dominates env
+        reset on mine-dense levels (13k+ mines ~= 9s/reset). A change in any
+        mine/door state yields a different signature and forces a recompute, so
+        the cache stays correct mid-episode (e.g. toggling mines)."""
+        mines: list = []
+        for mine in self.mines:
+            if self._is_mine_deadly(mine):
+                pos = self._get_entity_pixel_position(mine)
+                if pos is not None:
+                    mines.append((int(pos[0]), int(pos[1])))
+        doors: list = []
+        for door in self.doors:
+            if self._is_door_closed(door):
+                pos = self._get_entity_pixel_position(door)
+                doors.append((int(pos[0]), int(pos[1])) if pos is not None else id(door))
+        return (tuple(sorted(mines)), tuple(sorted(doors)))
+
+    def get_blocked_edges(
+        self, adjacency: Optional[Dict] = None
+    ) -> Set[Tuple[Tuple[int, int], Tuple[int, int]]]:
         """
-        Get set of edges blocked by entity orientations.
+        Get the set of directed graph edges blocked by directional entities.
+
+        One-way platforms (type 11) block a traversal that crosses the platform
+        from its blocking (+normal) side: a directed edge ``(a, b)`` is blocked iff
+        the move opposes the platform normal (``(b-a)·n < 0``) and the segment
+        ``a→b`` crosses the platform's barrier span. The reverse edge ``(b, a)``
+        moves *with* the normal and stays open — modelling pass-through from the
+        permissive side. Mines/doors block via node masking (see
+        ``get_blocked_pixel_positions``), not here.
+
+        Args:
+            adjacency: Base adjacency ``{node: [(neighbor, cost), ...]}`` in graph
+                (inner) pixel space. Required to test one-ways; if ``None`` (or no
+                one-ways present) an empty set is returned.
 
         Returns:
-            Set of ((tile_x1, tile_y1), (tile_x2, tile_y2)) edge tuples
+            Set of ``((x1, y1), (x2, y2))`` directed pixel-space edges to remove.
         """
-        # For now, only nodes are blocked, not edges
-        # Could be extended in future for directional blocking
-        return set()
+        blocked: Set[Tuple[Tuple[int, int], Tuple[int, int]]] = set()
+        if not self.one_ways or adjacency is None:
+            return blocked
+
+        from ...physics import map_orientation_to_vector
+
+        # Precompute each one-way's inner-space barrier: center + normal + the two
+        # tangential endpoints of the blocking span.
+        barriers = []
+        half = _ONE_WAY_SEMI_SIDE + _ONE_WAY_LATERAL_PAD
+        for ow in self.one_ways:
+            center = self._get_entity_pixel_position(ow)
+            if center is None:
+                continue
+            cx, cy = float(center[0]), float(center[1])
+            nx, ny = map_orientation_to_vector(int(ow.get("orientation", 0)))
+            tx, ty = -ny, nx  # tangent (perpendicular to normal)
+            e1 = (cx - tx * half, cy - ty * half)
+            e2 = (cx + tx * half, cy + ty * half)
+            barriers.append((nx, ny, e1, e2))
+
+        for a, neighbors in adjacency.items():
+            ax, ay = float(a[0]), float(a[1])
+            for neighbor_cost in neighbors:
+                b = neighbor_cost[0]
+                bx, by = float(b[0]), float(b[1])
+                dx, dy = bx - ax, by - ay
+                for nx, ny, e1, e2 in barriers:
+                    # Only block moves that oppose the normal (into the solid side).
+                    if dx * nx + dy * ny >= 0.0:
+                        continue
+                    if _segments_intersect((ax, ay), (bx, by), e1, e2):
+                        blocked.add((a, b))
+                        break
+
+        return blocked
 
     def _is_door_closed(self, door: Dict) -> bool:
         """Check if locked door is currently closed (blocking)."""

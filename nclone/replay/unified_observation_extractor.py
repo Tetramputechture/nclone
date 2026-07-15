@@ -32,16 +32,24 @@ class UnifiedObservationExtractor:
     match ``NppEnvironment.step`` output (Layer 1 policy contract).
     """
 
-    def __init__(self, enable_visual_observations: bool = False) -> None:
+    def __init__(
+        self,
+        enable_visual_observations: bool = False,
+        obs_exposure: Optional[Dict[str, bool]] = None,
+    ) -> None:
         # ``enable_visual_observations`` is accepted for API compatibility with
         # older callers. Layer 1 observations never include screen pixels, so
         # this flag only toggles render-mode wiring for tools that grab frames
         # via ``env.render()`` themselves.
+        # ``obs_exposure`` forwards ReachabilityConfig obs-exposure flags (e.g.
+        # use_jump_potential / expose_cost_to_go_map) so the replayed BC obs match
+        # the policy obs the training run was built with.
         self.enable_visual_observations = enable_visual_observations
 
         self._executor = ReplayExecutor(
             enable_rendering=enable_visual_observations,
             frame_skip=1,
+            obs_exposure=obs_exposure,
         )
 
     # ------------------------------------------------------------------

@@ -345,6 +345,63 @@ def reset_graph_state_caches(env: Any, verbose: bool = False) -> None:
         print("Reset graph state caches")
 
 
+def clear_stale_observation_caches(env: Any, verbose: bool = False) -> None:
+    """Clear lazily-populated observation caches that go stale across resets.
+
+    These attributes are set on first access in the observation path
+    (``BaseNppEnvironment._get_observation`` / ``NppEnvironment``) and were
+    historically cleared only in ``BaseNppEnvironment.reset`` — which
+    ``NppEnvironment.reset`` bypasses. All of them are level-dependent (tile
+    grid, entity object lists, mine signatures) or episode-scoped
+    (``_prev_obs_cache``, ``_cached_observation``), never constructor-lifetime.
+
+    Clears:
+    - _prev_obs_cache: previous-step observation (first-step reward basis)
+    - _cached_observation: current-step observation cache
+    - _cached_tile_grid / _cached_level_id_int: tile grid + derived level id
+    - _cached_switch_pos / _cached_exit_pos: static goal positions. These are as
+      level-dependent as the entity lists below: the no-options
+      ``map_loader.load_map()`` branch can load a DIFFERENT map with
+      ``new_level=False`` (this reset path), so a stale switch/exit position
+      leaks the previous level's goal into ``info["switch_x"]``/``exit_door_x``
+      (and anything reading these caches directly). Re-fetched lazily on the
+      next ``_get_observation`` from the freshly loaded entities.
+    - _cached_toggle_mines / _cached_gold / _cached_one_ways: entity lists
+    - _entity_mine_sig / _entity_mine_channels_cache: mine overlay cache
+    - _deadly_xy_sig / _deadly_mine_xy: nearest-deadly-mine feature cache
+    - _last_reachability_key / _cached_reachability_features: cell-keyed
+      reachability feature cache (its (cell, switch) key aliases across levels)
+
+    Args:
+        env: Environment instance (NppEnvironment or similar)
+        verbose: If True, print cache clearing operations
+    """
+    for attr in (
+        "_prev_obs_cache",
+        "_cached_observation",
+        "_cached_tile_grid",
+        "_cached_level_id_int",
+        "_cached_switch_pos",
+        "_cached_exit_pos",
+        "_cached_toggle_mines",
+        "_cached_gold",
+        "_cached_one_ways",
+        "_entity_mine_sig",
+        "_entity_mine_channels_cache",
+        "_deadly_xy_sig",
+        "_deadly_mine_xy",
+        "_last_reachability_key",
+        "_cached_reachability_features",
+    ):
+        if hasattr(env, attr):
+            setattr(env, attr, None)
+            if verbose:
+                print(f"  - Cleared {attr}")
+
+    if verbose:
+        print("Cleared stale observation caches")
+
+
 def clear_all_caches_for_new_level(env: Any, verbose: bool = False) -> None:
     """
     Clear all caches when loading a new level.
@@ -396,6 +453,16 @@ def clear_all_caches_for_new_level(env: Any, verbose: bool = False) -> None:
         env._cached_exit_pos = None
         if verbose:
             print("  - Cleared _cached_exit_pos")
+
+    # Clear lazily-populated observation caches that are LEVEL-DEPENDENT.
+    # CRITICAL (P0): NppEnvironment.reset() never calls BaseNppEnvironment.reset()
+    # (which clears these around base_environment.py:1466-1483), so this function
+    # is the only clear site on the standard multi-level reset path. Without
+    # this, tile_grid, the mine overlay channels, and the nearest-deadly-mine
+    # game_state feature (plus everything derived from the tile grid: ego_crop,
+    # surface raycasts, landing normals, time-to-contact, scandots) keep
+    # describing the PREVIOUS level after a level switch.
+    clear_stale_observation_caches(env, verbose=verbose)
 
     # Clear pathfinding utility caches (module-level caches)
     clear_pathfinding_utility_caches(verbose=verbose)
@@ -616,12 +683,13 @@ def clear_all_caches_for_reset(env: Any, verbose: bool = False) -> None:
     Clears:
     - Level data caches
     - Door feature caches
+    - Stale observation caches (_prev_obs_cache, cached entity lists, tile
+      grid, mine signatures — see clear_stale_observation_caches)
     - Render caches (in nplay_headless)
     - Pathfinding caches (in debug_overlay_renderer)
     - Pathfinding utility caches (surface area cache)
 
     Does NOT clear:
-    - Entity caches (rebuilt separately)
     - Renderer surface caches (may be reused)
     - Graph state (reset separately via reset_graph_state_caches)
 
@@ -643,6 +711,16 @@ def clear_all_caches_for_reset(env: Any, verbose: bool = False) -> None:
     # Environment-level caches
     clear_level_data_caches(env, verbose=verbose)
     clear_door_feature_caches(env, verbose=verbose)
+
+    # Observation caches. CRITICAL: this includes _prev_obs_cache — a new
+    # episode must never compute its first-step reward against the PREVIOUS
+    # episode's terminal observation (base_environment.step reads it as
+    # initial_obs); with curriculum-seeded starts that pays a spurious
+    # switch-activation bonus on step 1. The entity/tile caches are cleared
+    # too because the standard reset path recreates entity objects (and the
+    # no-options ``map_loader.load_map()`` branch can even load a different
+    # map with ``new_level=False``), so cached entity references go stale.
+    clear_stale_observation_caches(env, verbose=verbose)
 
     # Clear pathfinding utility caches (module-level caches)
     clear_pathfinding_utility_caches(verbose=verbose)

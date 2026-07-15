@@ -14,14 +14,23 @@ class NSimRenderer:
         render_mode: str = "grayscale_array",
         enable_debug_overlay: bool = False,
         grayscale: bool = False,
+        panel_width: int = 0,
     ):
         self.sim = sim
         self.grayscale = grayscale
+        # Reserved UI strip (px) on the right of the human window. When > 0 the
+        # game frame is left-aligned and the caller (dev panel) draws into the
+        # strip and performs the display flip. 0 = legacy centered behaviour.
+        self.panel_width = max(0, int(panel_width))
 
         if render_mode == "human":
-            # RGB for human viewing
+            # RGB for human viewing; widen the window to reserve the panel strip.
             self.screen = pygame.display.set_mode(
-                (render_utils.SRCWIDTH, render_utils.SRCHEIGHT), pygame.RESIZABLE
+                (
+                    render_utils.SRCWIDTH + self.panel_width,
+                    render_utils.SRCHEIGHT,
+                ),
+                pygame.RESIZABLE,
             )
             pygame.display.set_caption("NSim Renderer")
         else:
@@ -131,7 +140,10 @@ class NSimRenderer:
             overlay_surface = self.debug_overlay_renderer.draw_debug_overlay(debug_info)
             self.screen.blit(overlay_surface, (0, 0))
 
-        if self.render_mode == "human":
+        # When a panel strip is reserved the caller (dev panel) draws into it and
+        # performs a single flip after compositing, avoiding a one-frame flicker
+        # of the not-yet-drawn strip.
+        if self.render_mode == "human" and self.panel_width == 0:
             pygame.display.flip()
 
         return self.screen
@@ -140,14 +152,18 @@ class NSimRenderer:
         screen_width = float(self.screen.get_width())
         screen_height = float(self.screen.get_height())
 
+        # Reserve a right-hand strip for an external UI panel: fit/center the game
+        # frame within the remaining left region instead of the full window.
+        game_width = max(1.0, screen_width - float(self.panel_width))
+
         self.adjust = min(
-            screen_width / render_utils.SRCWIDTH, screen_height / render_utils.SRCHEIGHT
+            game_width / render_utils.SRCWIDTH, screen_height / render_utils.SRCHEIGHT
         )
 
         self.width = render_utils.SRCWIDTH * self.adjust
         self.height = render_utils.SRCHEIGHT * self.adjust
 
-        self.tile_x_offset = (screen_width - self.width) / 2.0
+        self.tile_x_offset = (game_width - self.width) / 2.0
         self.tile_y_offset = (screen_height - self.height) / 2.0
 
         self.tile_renderer.adjust = self.adjust

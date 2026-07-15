@@ -60,6 +60,13 @@ class ObservationProcessor:
         "lattice_nav",  # optional d* nav hint (only present when enabled)
         "waypoint_nav",  # optional waypoint-subgoal nav hint (only when enabled)
         "cost_to_go_map",  # optional Phase-2 O2 global cost-to-go field (only when enabled)
+        "visitation_map",  # optional v17 per-episode episodic visitation grid (only when enabled)
+        "frontier_map",  # optional v18 C1 reachable-and-unvisited frontier grid (only when enabled)
+        "ego_crop",  # optional ego-centric high-res tile crop (only when enabled)
+        "ego_crop_mines",  # optional mine-density crop co-registered with ego_crop
+        "ego_crop_route",  # optional grad(d*) unit-vector crop (v14 B2)
+        "ego_crop_route_fine",  # optional 6px un-pooled grad(d*) crop (v22 §3-C)
+        "ego_crop_coarse",  # optional +-21-tile coarse window (Audit II P1-6)
         "action_mask",
         "duration_mask",
     )

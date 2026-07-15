@@ -438,6 +438,131 @@ class DebugOverlayRenderer:
 
         return surface
 
+    def _jump_label_font(self):
+        try:
+            return pygame.font.Font(None, int(18 * self.adjust))
+        except pygame.error:
+            return pygame.font.SysFont("arial", int(14 * self.adjust))
+
+    def _draw_jump_cost_to_go_heatmap(
+        self, info: dict
+    ) -> Optional[pygame.Surface]:
+        """Return a blit-ready jump cost-to-go overlay surface (non-blocking).
+
+        The heatmap is ~17k cells, so painting it every frame would lag the GUI
+        continuously. Instead the painted surface is rendered ONCE and cached,
+        keyed by (map_hash, phase, render params); every subsequent frame just
+        returns the cached Surface (the caller blits it). The cache is rebuilt
+        only when the level (map_hash), objective phase, or view params change.
+
+        While the field is still building off-thread (info["computing"]), this
+        returns a tiny per-frame surface with only a "computing… (Xs)" label.
+
+        Args:
+            info: from ``_get_jump_cost_to_go_data`` -- either a "computing"
+                payload, or one carrying ``field`` (shape ``(W, H)`` x-major,
+                cost-to-go in frames, ``inf`` = unreachable), ``phase``,
+                ``map_hash`` and ``cell_px``.
+
+        Returns:
+            pygame.Surface (screen-sized, SRCALPHA) ready to blit.
+        """
+        # Building: cheap per-frame indicator only, no heatmap, never blocks.
+        if info.get("computing"):
+            surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+            elapsed = info.get("elapsed", 0.0)
+            label = f"Jump cost-to-go: computing… ({elapsed:.0f}s)"
+            surface.blit(
+                self._jump_label_font().render(label, True, (255, 255, 255)),
+                (self.tile_x_offset + 8, self.tile_y_offset + 8),
+            )
+            return surface
+
+        field = info.get("field")
+        if field is None:
+            return pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+
+        phase = info.get("phase", "switch")
+        # Cache key: invalidate on level change, phase switch<->exit, or any view
+        # param change (size/zoom/pan) that would move/resize the painted cells.
+        cache_key = (
+            info.get("map_hash"),
+            phase,
+            float(info.get("cell_px", 6)),
+            round(float(self.adjust), 4),
+            int(self.tile_x_offset),
+            int(self.tile_y_offset),
+            self.screen.get_size(),
+        )
+        cache = getattr(self, "_jump_heatmap_cache", None)
+        if cache is None:
+            cache = self._jump_heatmap_cache = {}
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached  # instant: just blit the pre-painted surface
+
+        surface = self._render_jump_cost_to_go_surface(field, phase)
+        # Bound the cache (level x phase x view params); keep it small.
+        if len(cache) > 8:
+            cache.clear()
+        cache[cache_key] = surface
+        return surface
+
+    def _render_jump_cost_to_go_surface(self, field, phase: str) -> pygame.Surface:
+        """Paint the ~17k-cell heatmap once (called only on a cache miss)."""
+        import numpy as np
+
+        surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+
+        # The JumpDistanceSource field is (W, H) x-major (field[x, y]) whereas the
+        # mine sdf_grid is [rows, cols] = [H, W]. We iterate rows=H, cols=W and index
+        # field[col, row] (col=x, row=y) so cells map straight to screen space.
+        W, H = field.shape
+        cell = 6.0 * self.adjust
+
+        finite = np.isfinite(field)
+        if not finite.any():
+            return surface
+        fmax = float(field[finite].max())
+        if fmax <= 0.0:
+            fmax = 1.0
+
+        for row in range(H):  # row = y
+            for col in range(W):  # col = x
+                c = field[col, row]  # (col=x, row=y) -> screen-aligned
+                if not np.isfinite(c):
+                    continue  # unreachable: transparent
+                t = c / fmax  # 0 near goal, 1 far
+                if t < 0.0:
+                    t = 0.0
+                elif t > 1.0:
+                    t = 1.0
+                # Green (50,200,50) -> yellow/orange (255,200,40) -> red (200,40,40).
+                if t <= 0.5:
+                    u = t / 0.5
+                    r = int(50 + (255 - 50) * u)
+                    g = 200
+                    b = int(50 + (40 - 50) * u)
+                else:
+                    u = (t - 0.5) / 0.5
+                    r = int(255 + (200 - 255) * u)
+                    g = int(200 + (40 - 200) * u)
+                    b = 40
+                alpha = 110
+
+                screen_x = col * cell + self.tile_x_offset
+                screen_y = row * cell + self.tile_y_offset
+                rect = pygame.Rect(screen_x, screen_y, cell, cell)
+                pygame.draw.rect(surface, (r, g, b, alpha), rect)
+
+        # Text label naming the current objective phase (matches other overlays).
+        label = f"Jump cost-to-go: {phase}"
+        surface.blit(
+            self._jump_label_font().render(label, True, (255, 255, 255)),
+            (self.tile_x_offset + 8, self.tile_y_offset + 8),
+        )
+        return surface
+
     def _draw_action_mask(self, action_mask_info: dict) -> Optional[pygame.Surface]:
         """Draw action mask visualization showing allowed vs masked actions.
 
@@ -878,10 +1003,10 @@ class DebugOverlayRenderer:
                 #     f"[PATH_VIZ] Mine proximity cache valid: {len(self._mine_proximity_cache.cache)} nodes cached"
                 # )
                 pass
-            else:
-                logger.warning(
-                    "[PATH_VIZ] Mine proximity cache empty (no deadly mines or avoidance disabled)"
-                )
+            # else:
+            #     logger.warning(
+            #         "[PATH_VIZ] Mine proximity cache empty (no deadly mines or avoidance disabled)"
+            #     )
 
             # Sync mine cache with path calculator for unified pathfinding
             self._path_calculator.mine_proximity_cache = self._mine_proximity_cache
@@ -2107,6 +2232,262 @@ class DebugOverlayRenderer:
             surface.blit(text, (x0 + pad, y + 2))
             y += bg.get_height() + 4
 
+    # Ghost-arc overlay (Audit II P0-1): per-u polyline colors and per-class
+    # contact-marker colors. u=-1 orange / u=0 cyan / u=+1 green; contact
+    # class 0=floor 1=wall 2=ceiling 3=deadly-mine 4=none.
+    GHOST_ARC_COLORS = {
+        -1: (255, 160, 60, 220),
+        0: (80, 220, 255, 230),
+        1: (120, 255, 120, 220),
+    }
+    # Grounded takeoff rows (v13 jump-now full-hold / v14 tap): the same
+    # per-u hue family, but the tap row is drawn dimmer + thinner so both
+    # counterfactual rows read at a glance without swamping the scene.
+    TAP_ARC_COLORS = {
+        -1: (200, 120, 40, 170),
+        0: (60, 160, 190, 180),
+        1: (90, 190, 90, 170),
+    }
+    GHOST_CONTACT_COLORS = {
+        0: (90, 230, 90, 255),    # floor: green
+        1: (90, 140, 255, 255),   # wall: blue
+        2: (200, 110, 255, 255),  # ceiling: purple
+        3: (255, 70, 70, 255),    # deadly mine: red
+        4: (160, 160, 160, 200),  # none within horizon: grey
+    }
+
+    def _draw_ghost_arcs(self, info: dict) -> Optional[pygame.Surface]:
+        """Draw the ballistic ghost arcs the obs bundles are computed from.
+
+        Airborne: the three committed steering arcs (u = -1/0/+1). Grounded:
+        BOTH counterfactual takeoff rows the obs exposes — the v13 jump-now
+        full-hold arcs (solid, bright) and the v14 tap-jump arcs (thin, dim;
+        jump released immediately, the low-ceiling hop). Per arc: the exact
+        native polyline to first contact, a contact marker colored by contact
+        class (mine = X), the surface normal tick, and a compact annotation
+        "τ / impact-ratio / clear-width". When the native projector is
+        unavailable a small status label is shown instead.
+        """
+        surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        font = pygame.font.Font(None, 18)
+
+        def to_screen(p):
+            return (
+                int(p[0] * self.adjust) + self.tile_x_offset,
+                int(p[1] * self.adjust) + self.tile_y_offset,
+            )
+
+        ninja = info.get("ninja", (0.0, 0.0))
+        if info.get("unavailable"):
+            label = self._render_text_cached(
+                font, "ghost arcs: native projector unavailable", (255, 120, 120)
+            )
+            surface.blit(label, to_screen((ninja[0] + 14, ninja[1] - 14)))
+            return surface
+
+        def draw_row(arcs, colors, width, tag, note_row):
+            for arc in arcs:
+                u = arc.get("u", 0)
+                color = colors.get(u, (255, 255, 255, 220))
+                pts = [to_screen(p) for p in arc.get("path", [])]
+                if len(pts) >= 2:
+                    pygame.draw.lines(surface, color, False, pts, width)
+
+                cls = int(arc.get("class", 4))
+                ccolor = self.GHOST_CONTACT_COLORS.get(cls, (255, 255, 255, 255))
+                cx, cy = to_screen(arc.get("contact", ninja))
+                if cls == 3:  # deadly mine: X marker
+                    r = 7
+                    pygame.draw.line(
+                        surface, ccolor, (cx - r, cy - r), (cx + r, cy + r), 3
+                    )
+                    pygame.draw.line(
+                        surface, ccolor, (cx - r, cy + r), (cx + r, cy - r), 3
+                    )
+                elif cls == 4:  # no contact within horizon: hollow circle
+                    pygame.draw.circle(surface, ccolor, (cx, cy), 6, 2)
+                else:
+                    pygame.draw.circle(surface, ccolor, (cx, cy), 6, 0 if width > 1 else 1)
+                    # Surface normal tick (points away from the surface).
+                    nx, ny = arc.get("normal", (0.0, 0.0))
+                    if abs(nx) + abs(ny) > 1e-6:
+                        tick_len = 14
+                        pygame.draw.line(
+                            surface, ccolor, (cx, cy),
+                            (int(cx + nx * tick_len), int(cy + ny * tick_len)), 2,
+                        )
+
+                # v15 contact-velocity vector (the landing velocity the obs
+                # exposes at [9]/[10]): a yellow arrow from the contact along
+                # (vx, vy), length scaled for visibility. Drawn for real surface
+                # contacts (floor/wall/ceiling); mine/none arcs skip it.
+                if cls in (0, 1, 2):
+                    cvx, cvy = arc.get("contact_vel", (0.0, 0.0))
+                    vmag = (cvx * cvx + cvy * cvy) ** 0.5
+                    if vmag > 0.05:
+                        vscale = 7.0  # screen px per (px/frame)
+                        ex = int(cx + cvx * vscale)
+                        ey = int(cy + cvy * vscale)
+                        vcol = (250, 230, 60, 255)
+                        pygame.draw.line(surface, vcol, (cx, cy), (ex, ey), 2)
+                        # Arrowhead: two short barbs against the velocity dir.
+                        ux, uy = cvx / vmag, cvy / vmag
+                        for s in (0.5, -0.5):
+                            hx = int(ex - 6 * ux + 4 * (-uy) * s)
+                            hy = int(ey - 6 * uy + 4 * ux * s)
+                            pygame.draw.line(surface, vcol, (ex, ey), (hx, hy), 2)
+
+                # v15 mine-threading warning ring: when the arc's closest
+                # approach to a deadly mine ([12] mine_proximity) is inside the
+                # danger band, ring the contact orange->red as clearance shrinks
+                # (a SURVIVING arc that still threads dangerously close).
+                mclr = arc.get("mine_clearance", float("inf"))
+                if mclr != float("inf") and mclr < 48.0:
+                    t = max(0.0, min(1.0, (48.0 - mclr) / 34.0))  # 0 far -> 1 near
+                    warn = (255, int(170 * (1.0 - t)), 40, 255)
+                    pygame.draw.circle(surface, warn, (cx, cy), 11, 2)
+
+                # Per-arc annotation: τ frames / impact ratio / clear width,
+                # plus v15 contact velocity + surface class. Impact ratio >= 1
+                # means the no-brake landing is LETHAL — red.
+                imp = float(arc.get("impact_ratio", 0.0))
+                cvx, cvy = arc.get("contact_vel", (0.0, 0.0))
+                sc = arc.get("surface_class", 0)
+                sc_tag = {1: "flr", -1: "cei"}.get(sc, "wal")
+                mclr = arc.get("mine_clearance", float("inf"))
+                mtag = "" if mclr == float("inf") else f" m{mclr:.0f}"
+                # v16 (feature C): arc->goal closest approach. Gold ring at the
+                # contact when this arc reaches the active objective (<=12px);
+                # "G<px>" tag otherwise while within the graded range.
+                gclr = arc.get("goal_clearance", float("inf"))
+                gtag = ""
+                if gclr != float("inf"):
+                    if gclr <= 12.0:
+                        gtag = " G-HIT"
+                        pygame.draw.circle(surface, (255, 215, 0, 255), (cx, cy), 13, 3)
+                    elif gclr < 108.0:
+                        gtag = f" G{gclr:.0f}"
+                note = (
+                    f"{tag}u{u:+d}  τ{arc.get('tau', 0):.0f}f  "
+                    f"imp{imp:.2f}  cw{arc.get('clear_width', 0)}  "
+                    f"v({cvx:+.1f},{cvy:+.1f}) {sc_tag}{mtag}{gtag}"
+                )
+                note_color = (255, 90, 90) if imp >= 1.0 else color[:3]
+                label = self._render_text_cached(font, note, note_color)
+                surface.blit(
+                    label, (cx + 10, cy + 4 + 14 * (u + 1) + note_row * 46)
+                )
+
+        def draw_passive(pa):
+            """v16 batch A passive-release arc: the 'let go of everything now'
+            trajectory (u=0, jf=0). Drawn as a white dashed polyline so it is
+            distinct from the committed steering arcs, with a large ring at the
+            landing point (green=safe, red=FATAL) and a landing-velocity arrow.
+            This is exactly the arc the game_state passive block encodes."""
+            path = pa.get("path", [])
+            pts = [to_screen(p) for p in path]
+            fatal = bool(pa.get("fatal", False))
+            is_none = bool(pa.get("is_none", False))
+            base = (255, 80, 80, 255) if fatal else (240, 240, 240, 230)
+            # Dashed: draw every other segment.
+            for i in range(0, len(pts) - 1, 2):
+                pygame.draw.line(surface, base, pts[i], pts[i + 1], 2)
+            cx, cy = to_screen(pa.get("contact", ninja))
+            if is_none:
+                pygame.draw.circle(surface, (200, 200, 200, 200), (cx, cy), 9, 2)
+            else:
+                ring = (255, 60, 60, 255) if fatal else (90, 230, 90, 255)
+                pygame.draw.circle(surface, ring, (cx, cy), 10, 3)
+                cvx, cvy = pa.get("contact_vel", (0.0, 0.0))
+                vmag = (cvx * cvx + cvy * cvy) ** 0.5
+                if vmag > 0.05:
+                    ex, ey = int(cx + cvx * 7.0), int(cy + cvy * 7.0)
+                    pygame.draw.line(surface, (255, 255, 255, 255), (cx, cy), (ex, ey), 2)
+            imp = float(pa.get("impact_ratio", 0.0))
+            tag = "PASSIVE FATAL" if fatal else ("passive none" if is_none else "passive")
+            note = f"{tag}  τ{pa.get('tau', 0):.0f}f  imp{imp:.2f}"
+            label = self._render_text_cached(
+                font, note, (255, 90, 90) if fatal else (230, 230, 230)
+            )
+            surface.blit(label, (cx + 10, cy - 16))
+
+        if info.get("airborne", False):
+            draw_row(info.get("arcs", []), self.GHOST_ARC_COLORS, 2, "", 0)
+            passive = info.get("passive_arc")
+            if passive:
+                draw_passive(passive)
+            # Wall-jump-now row (v14): present only while walled — dim/thin,
+            # same palette family as the tap row.
+            wall_arcs = info.get("wall_arcs", [])
+            if wall_arcs:
+                draw_row(wall_arcs, self.TAP_ARC_COLORS, 1, "wj ", 1)
+                key = self._render_text_cached(
+                    font, "bright=committed  dim=wall-jump-now", (200, 200, 200)
+                )
+                surface.blit(key, to_screen((ninja[0] + 14, ninja[1] - 34)))
+        else:
+            jump_arcs = info.get("jump_arcs", [])
+            tap_arcs = info.get("tap_arcs", [])
+            if not jump_arcs and not tap_arcs:
+                label = self._render_text_cached(
+                    font, "ghost arcs: grounded (fast-path zeros)", (170, 170, 170)
+                )
+                surface.blit(label, to_screen((ninja[0] + 14, ninja[1] - 20)))
+                return surface
+            # v13 jump-now full-hold row (bright/solid) + v14 tap row (dim/thin).
+            draw_row(jump_arcs, self.GHOST_ARC_COLORS, 2, "hold ", 0)
+            draw_row(tap_arcs, self.TAP_ARC_COLORS, 1, "tap ", 1)
+            key = self._render_text_cached(
+                font, "takeoff arcs: bright=full-hold  dim=tap", (200, 200, 200)
+            )
+            surface.blit(key, to_screen((ninja[0] + 14, ninja[1] - 34)))
+
+        return surface
+
+    def _draw_raycasts(self, info: dict) -> Optional[pygame.Surface]:
+        """Draw the 8 cardinal surface-distance rays the game_state RAYCAST block
+        exposes ([E, NE, N, NW, W, SW, S, SE]).
+
+        Each ray is drawn from the ninja to the EXACT normalized obs distance
+        (0 = adjacent surface, 1.0 = nothing within 500 px), so the picture is
+        literally the feature vector. A ray that found a surface is solid with a
+        filled endpoint colored near(red) -> far(green); a ray that saturated
+        (no surface within range) fades out to the horizon with a hollow
+        endpoint. Each ray is labelled with its compass point + normalized value.
+        """
+        surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        font = pygame.font.Font(None, 16)
+
+        def to_screen(p):
+            return (
+                int(p[0] * self.adjust) + self.tile_x_offset,
+                int(p[1] * self.adjust) + self.tile_y_offset,
+            )
+
+        for ray in info.get("rays", []):
+            sx, sy = to_screen(ray.get("start", (0.0, 0.0)))
+            ex, ey = to_screen(ray.get("end", (0.0, 0.0)))
+            d = float(ray.get("dist_norm", 1.0))
+            if ray.get("hit", False):
+                # near surface (d small) = red; open (d large) = green.
+                col = (
+                    min(255, int(230 * (1.0 - d) + 40)),
+                    min(255, int(200 * d + 40)),
+                    50,
+                    255,
+                )
+                pygame.draw.line(surface, col, (sx, sy), (ex, ey), 2)
+                pygame.draw.circle(surface, col, (ex, ey), 5, 0)
+            else:
+                col = (90, 150, 90, 130)  # no surface within range: faded
+                pygame.draw.line(surface, col, (sx, sy), (ex, ey), 1)
+                pygame.draw.circle(surface, col, (ex, ey), 5, 1)
+            lbl = self._render_text_cached(
+                font, f"{ray.get('label', '')}:{d:.2f}", col[:3]
+            )
+            surface.blit(lbl, (ex + 4, ey - 6))
+        return surface
+
     def draw_debug_overlay(self, debug_info: dict = None) -> pygame.Surface:
         """Helper method to draw debug overlay with nested dictionary support.
 
@@ -2154,6 +2535,25 @@ class DebugOverlayRenderer:
                 mine_sdf_surface = self._draw_mine_sdf(mine_sdf_info)
                 if mine_sdf_surface:
                     surface.blit(mine_sdf_surface, (0, 0))
+
+        # Draw ghost-arc ballistic projections if provided (Audit II P0-1)
+        if debug_info and "ghost_arcs" in debug_info:
+            ghost_surface = self._draw_ghost_arcs(debug_info["ghost_arcs"])
+            if ghost_surface:
+                surface.blit(ghost_surface, (0, 0))
+
+        # Draw cardinal surface-distance raycasts if provided (game_state RAYCAST)
+        if debug_info and "raycasts" in debug_info:
+            raycast_surface = self._draw_raycasts(debug_info["raycasts"])
+            if raycast_surface:
+                surface.blit(raycast_surface, (0, 0))
+
+        # Draw jump-aware cost-to-go heatmap if provided
+        jump_cost_info = debug_info.get("jump_cost_to_go") if debug_info else None
+        if jump_cost_info is not None:
+            jump_cost_surface = self._draw_jump_cost_to_go_heatmap(jump_cost_info)
+            if jump_cost_surface:
+                surface.blit(jump_cost_surface, (0, 0))
 
         # Draw action mask visualization if provided
         if debug_info and "action_mask" in debug_info:
@@ -2211,11 +2611,170 @@ class DebugOverlayRenderer:
             if input_seq_surface:
                 surface.blit(input_seq_surface, (0, 0))
 
+        # TAS editor overlay: trajectory polyline + piano-roll timeline + HUD
+        if debug_info and "tas" in debug_info:
+            self._draw_tas_overlay(surface, debug_info["tas"])
+
         # Mechanic-benchmark / tooling HUD: top-left text (single composited pass with the game)
         if debug_info and "benchmark_hud" in debug_info:
             self._blit_benchmark_hud_text(surface, debug_info["benchmark_hud"])
 
         return surface
+
+    def _draw_tas_overlay(self, surface: pygame.Surface, tas: dict) -> None:
+        """Draw the TAS editor: ninja trajectory + piano-roll timeline + HUD.
+
+        ``tas`` is the payload from
+        :func:`nclone.tas_tool.overlay.build_tas_payload`. Trajectory points are
+        in sim pixel coordinates and transformed to screen space here using the
+        renderer's current ``adjust``/offset (kept in sync each draw).
+        """
+        from .tas_tool.layout import (
+            ACTION_LABEL,
+            CELL_W,
+            strip_rect,
+            visible_window,
+        )
+
+        def to_screen(x, y):
+            return (
+                int(x * self.adjust + self.tile_x_offset),
+                int(y * self.adjust + self.tile_y_offset),
+            )
+
+        # ---- trajectory polyline (grounded green, airborne cyan) ----------
+        traj = tas.get("trajectory") or []
+        if len(traj) >= 2:
+            for i in range(1, len(traj)):
+                x0, y0, _ = traj[i - 1]
+                x1, y1, air1 = traj[i]
+                color = (90, 200, 255) if air1 else (120, 230, 140)
+                pygame.draw.line(
+                    surface, color, to_screen(x0, y0), to_screen(x1, y1), 2
+                )
+
+        # ---- NOOP fall-prediction ghost (dashed orange, from the cursor) --
+        pred = tas.get("prediction") or []
+        if len(pred) >= 1:
+            cpx0, cpy0 = tas.get("cursor_point", (0, 0))
+            prev = to_screen(cpx0, cpy0)
+            for i, (px, py, _air) in enumerate(pred):
+                cur_pt = to_screen(px, py)
+                if i % 2 == 0:  # dashed: draw every other segment
+                    pygame.draw.line(surface, (255, 160, 40), prev, cur_pt, 1)
+                prev = cur_pt
+            # Mark the predicted landing/endpoint.
+            ex, ey = to_screen(pred[-1][0], pred[-1][1])
+            pygame.draw.circle(surface, (255, 160, 40), (ex, ey), 3, 1)
+
+        # Cursor marker (where the live sim currently is) + faint full-path dots
+        cpx, cpy = tas.get("cursor_point", (0, 0))
+        csx, csy = to_screen(cpx, cpy)
+        pygame.draw.circle(surface, (255, 230, 40), (csx, csy), 6, 2)
+        pygame.draw.circle(surface, (255, 230, 40), (csx, csy), 2)
+
+        # Mark win/death at the terminal frame if any.
+        for fx, fy, _air in traj[-1:]:
+            if tas.get("status") == "WON":
+                pygame.draw.circle(surface, (80, 255, 120), to_screen(fx, fy), 8, 2)
+            elif tas.get("status") == "DEAD":
+                ex, ey = to_screen(fx, fy)
+                pygame.draw.line(surface, (255, 70, 70), (ex - 6, ey - 6), (ex + 6, ey + 6), 2)
+                pygame.draw.line(surface, (255, 70, 70), (ex - 6, ey + 6), (ex + 6, ey - 6), 2)
+
+        screen_w, screen_h = self.screen.get_size()
+
+        # ---- HUD text row -------------------------------------------------
+        font = pygame.font.Font(None, 22)
+        small = pygame.font.Font(None, 18)
+        cursor = int(tas.get("cursor", 0))
+        length = int(tas.get("length", 0))
+        status = tas.get("status", "EDIT")
+        status_color = {
+            "WON": (80, 255, 120),
+            "DEAD": (255, 90, 90),
+            "EDIT": (230, 230, 230),
+        }.get(status, (230, 230, 230))
+        vx, vy = tas.get("cursor_vel", (0.0, 0.0))
+        play = "▶PLAY" if tas.get("playing") else "❚❚PAUSE"
+        batch = tas.get("batch_typed") or 0
+        batch_str = f"  x{batch}" if batch else ""
+        hud_line = (
+            f"TAS  f {cursor}/{length}  [{status}]  pend:{tas.get('pending_name', '?')}"
+            f"{batch_str}  {play}   vel({vx:+.2f},{vy:+.2f})"
+        )
+        hud_surf = font.render(hud_line, True, status_color)
+        hud_y = screen_h - 8 - CELL_W - 24 - hud_surf.get_height()
+        bg = pygame.Surface((hud_surf.get_width() + 10, hud_surf.get_height() + 4), pygame.SRCALPHA)
+        bg.fill((0, 0, 0, 150))
+        surface.blit(bg, (8, hud_y - 2))
+        surface.blit(hud_surf, (12, hud_y))
+
+        # Controls legend (top-right, compact).
+        legend = [
+            "←/→ pend dir   ↑ pend jump   C clear",
+            "SPACE step(xN)   ,/. scrub   BKSP undo",
+            "O overwrite  I insert  DEL del  T cut tail",
+            "P play  G fall-predict  digits=batch",
+            "S save  L load  R reset  Q quit",
+        ]
+        ly = 10
+        for line in legend:
+            ls = small.render(line, True, (210, 210, 210))
+            lb = pygame.Surface((ls.get_width() + 8, ls.get_height() + 2), pygame.SRCALPHA)
+            lb.fill((0, 0, 0, 140))
+            surface.blit(lb, (screen_w - ls.get_width() - 14, ly))
+            surface.blit(ls, (screen_w - ls.get_width() - 10, ly + 1))
+            ly += ls.get_height() + 3
+
+        msg = tas.get("message")
+        if msg:
+            ms = small.render(str(msg), True, (255, 220, 120))
+            surface.blit(ms, (12, hud_y - ms.get_height() - 4))
+
+        # ---- piano-roll strip --------------------------------------------
+        sx, sy, sw, sh = strip_rect(screen_w, screen_h)
+        strip_bg = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        strip_bg.fill((0, 0, 0, 160))
+        surface.blit(strip_bg, (sx, sy))
+
+        actions = tas.get("actions") or []
+        start, visible = visible_window(screen_w, cursor, length)
+        cell_font = pygame.font.Font(None, 18)
+        idx_font = pygame.font.Font(None, 13)
+        for col in range(visible):
+            frame = start + col
+            if frame > length:
+                break
+            cx = sx + col * CELL_W
+            is_cursor = frame == cursor
+            is_tip = frame == length  # one-past-end "append here" slot
+            # Cell background
+            if is_cursor:
+                cell_color = (250, 210, 40, 220)
+            elif is_tip:
+                cell_color = (40, 40, 40, 120)
+            elif (frame // 10) % 2 == 0:
+                cell_color = (60, 60, 70, 120)
+            else:
+                cell_color = (45, 45, 55, 120)
+            cell = pygame.Surface((CELL_W - 1, sh - 1), pygame.SRCALPHA)
+            cell.fill(cell_color)
+            surface.blit(cell, (cx, sy))
+
+            # Frame index every 10 frames (and at the cursor).
+            if frame % 10 == 0 or is_cursor:
+                istxt = idx_font.render(str(frame), True, (180, 180, 180))
+                surface.blit(istxt, (cx + 1, sy + 1))
+
+            if frame < len(actions):
+                label = ACTION_LABEL.get(actions[frame], "-")
+                tcol = (20, 20, 20) if is_cursor else (235, 235, 235)
+                gs = cell_font.render(label, True, tcol)
+                surface.blit(
+                    gs,
+                    (cx + (CELL_W - gs.get_width()) // 2, sy + sh - gs.get_height() - 2),
+                )
 
     def _draw_input_sequence_overlay(
         self, input_seq_info: dict

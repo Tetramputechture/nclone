@@ -27,6 +27,13 @@ from .map_curves import MapCurves
 from .map_multi_jump import MapMultiJump
 from .map_composite import MapComposite
 from .map_precision import MapPrecision
+from .map_open_field import MapOpenField
+from .map_round_corner import MapRoundCorner
+from .map_loop_corridor import MapLoopCorridor
+from .map_simple_corridor import MapSimpleCorridor
+from .map_platform_stairs import MapPlatformStairs
+from .map_long_jump import MapLongJump
+from .map_drop_landing import MapDropLanding
 from .generator_configs import GENERATOR_PRESETS
 
 
@@ -50,6 +57,13 @@ GENERATOR_REGISTRY: Dict[str, Type[Map]] = {
     "multi_jump": MapMultiJump,
     "composite": MapComposite,
     "precision": MapPrecision,
+    "open_field": MapOpenField,
+    "round_corner": MapRoundCorner,
+    "loop_corridor": MapLoopCorridor,
+    "simple_corridor": MapSimpleCorridor,
+    "platform_stairs": MapPlatformStairs,
+    "long_jump": MapLongJump,
+    "drop_landing": MapDropLanding,
 }
 
 

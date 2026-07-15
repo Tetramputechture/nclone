@@ -73,6 +73,33 @@ optimal_route_videos/
 nclone-native/target/
 
 *.npz
+
+# Ninja animation data is a required runtime asset (see nclone/ninja.py) —
+# force-tracked despite the blanket *.bin rule above.
+!anim_data_line_new.txt.bin
+
+# Local experiment / analysis / render output (kept locally, not published)
+ckpt/
+checkpoints/
+experiments/
+generator_samples/
+viz/
+renders/
+chamber_maze_analysis/
+demo_gen_logs/
+platform_diag/
+stuck_level_renders/
+precision_dumps_sample/
+platform_stairs_zero_success_levels/
+scratch_dumps/
+videos/
+bc_replays_tmp/
+validation_output/
+
+# Loose map artifacts at repo root
+attract_0_map.dat
+cubemap.map
+
 # --- Excluded from VCS (kept locally) ---
 # Documentation + handoffs + cursor plans
 docs/

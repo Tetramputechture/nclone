@@ -74,4 +74,32 @@ class MapCurves(Map):
                 self.rng,
             )
             comp.finalize_floor_level(self, results, 0, self.rng)
+        # Seal the play area: make a continuous solid base under EVERY column
+        # (and a flat floor wherever the segments left a gap) so the agent can
+        # never run/fall off the curve platform into an empty pit.
+        self._seal_play_area(floor_row, base_row)
         return self
+
+    def _seal_play_area(self, floor_row: int, base_row: int) -> None:
+        """Fill solid from each column's surface tile down to the BOTTOM row and
+        add a flat floor at ``floor_row`` in any column with no surface, so the
+        bottom of the playfield is one continuous solid mass (curve shape kept on
+        top, no internal pits or fall-off-the-edge gaps).
+
+        Covers the FULL inner width (cols 0..W-1) and down to the bottom inner row
+        (W-1 height). Previously it stopped at cols 1..W-2 and ``base_row``, which
+        left an empty 'moat' around the block — the two edge columns and the bottom
+        row — so the ninja could run off the surface edge, drop into that moat, and
+        get stuck UNDER the block. Sealing the full perimeter closes that trap.
+        """
+        for x in range(0, MAP_TILE_WIDTH):
+            surface = None
+            for y in range(MAP_TILE_HEIGHT):
+                if self.get_tile(x, y) != 0:
+                    surface = y
+                    break
+            if surface is None:
+                surface = floor_row  # empty column -> extend the flat floor here
+            for y in range(surface, MAP_TILE_HEIGHT):
+                if self.get_tile(x, y) == 0:
+                    self.set_tile(x, y, 1)

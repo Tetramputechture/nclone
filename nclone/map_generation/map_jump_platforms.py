@@ -31,8 +31,18 @@ class MapJumpPlatforms(Map):
     MAX_PLATFORM_SPACING = 10
     MAX_Y_OFFSET = 3
 
-    # Mine spacing (0.5 tile widths means ~1.5 tiles between mine centers)
-    MINE_SPACING = 1
+    # Mine spacing in TILE units between consecutive floor mines. 0.5 tiles ==
+    # 2 map-units == 12px, dense enough that a ninja (radius ~10px) cannot land
+    # in a gap between mines. The catch-floor is ALWAYS mined: the ninja spawns
+    # on an elevated platform and only ever touches the floor by falling, so a
+    # missed hop dies instantly (a clean terminal) instead of wandering to a
+    # timeout. Difficulty comes from the hops (spacing / width / height), not
+    # from how sparse the floor is.
+    MINE_SPACING = 0.5
+
+    # Tiles per platform. Wider platforms = a bigger landing target = an easier
+    # hop (single-tile platforms demand pixel-precise landings).
+    PLATFORM_WIDTH = 3
 
     def set_empty_rectangle(self, x1: int, y1: int, x2: int, y2: int):
         """Set a rectangular region of the map to empty space."""
@@ -41,26 +51,39 @@ class MapJumpPlatforms(Map):
                 self.set_tile(x, y, 0)
 
     def place_platform(self, x: int, y: int):
-        """Place a single-tile platform at the specified position."""
-        random_platform_tile = self.rng.choice([1, 2, 4])
-        self.set_tile(x, y, random_platform_tile)
+        """Place a solid platform PLATFORM_WIDTH tiles wide, centred on ``x``.
+
+        Solid (type-1) tiles give a flat, forgiving landing surface; the width
+        widens the landing target so the hop is achievable from-scratch.
+        """
+        pw = max(1, int(self.PLATFORM_WIDTH))
+        half = pw // 2
+        for xx in range(x - half, x - half + pw):
+            if 1 <= xx <= MAP_TILE_WIDTH - 2:
+                self.set_tile(xx, y, 1)
 
     def place_floor_mines(self, chamber_x1: int, chamber_x2: int, chamber_y2: int):
-        """Place mines along the floor of the chamber.
+        """Lay a dense lethal mine line across the whole chamber floor.
 
-        Mines are spaced 0.5 tile widths apart (1.5 tiles between centers).
+        Spacing is ``MINE_SPACING`` tiles (default 0.5 == 12px). A fall off any
+        platform lands here and terminates the episode immediately, so the agent
+        gets a clean negative signal rather than wandering an open floor until
+        timeout.
 
         Args:
             chamber_x1: Left edge of chamber
             chamber_x2: Right edge of chamber
             chamber_y2: Bottom edge of chamber (floor level)
         """
-        # Calculate mine positions with 1.5 tile spacing
-        x = chamber_x1 + 1
-        while x <= chamber_x2 + 2:
-            # Place mine on the floor
+        # A large spacing remains a "no floor mines" escape hatch, but the
+        # default tiers mine the floor densely.
+        if self.MINE_SPACING >= 50:
+            return
+        step = max(0.5, float(self.MINE_SPACING))
+        x = float(chamber_x1 + 1)
+        while x <= chamber_x2 + 1:
             self.add_entity(1, x, chamber_y2 + 2, 0, 1)  # Type 1 = toggle mine
-            x += self.MINE_SPACING
+            x += step
 
     def validate_platform_position(
         self,
@@ -125,12 +148,15 @@ class MapJumpPlatforms(Map):
             )
             platform2_y = base_y + y_offset1
 
-            # Third platform 8-12 tiles away with another Y offset
+            # Third platform 8-12 tiles away. Offset relative to platform2 (NOT
+            # base_y) so the consecutive hop delta is bounded by MAX_Y_OFFSET;
+            # offsetting both from base_y independently allowed a +MAX then -MAX
+            # swing = 2x MAX_Y_OFFSET (frame-perfect-tier) between adjacent hops.
             y_offset2 = self.rng.randint(-self.MAX_Y_OFFSET, self.MAX_Y_OFFSET)
             platform3_x = platform2_x + self.rng.randint(
                 self.MIN_PLATFORM_SPACING, self.MAX_PLATFORM_SPACING
             )
-            platform3_y = base_y + y_offset2
+            platform3_y = platform2_y + y_offset2
         else:
             # First platform 1-3 tiles from right edge
             platform1_x = chamber_x2 - self.rng.randint(1, 3)
@@ -143,12 +169,15 @@ class MapJumpPlatforms(Map):
             )
             platform2_y = base_y + y_offset1
 
-            # Third platform 8-12 tiles away with another Y offset
+            # Third platform 8-12 tiles away. Offset relative to platform2 (NOT
+            # base_y) so the consecutive hop delta is bounded by MAX_Y_OFFSET;
+            # offsetting both from base_y independently allowed a +MAX then -MAX
+            # swing = 2x MAX_Y_OFFSET (frame-perfect-tier) between adjacent hops.
             y_offset2 = self.rng.randint(-self.MAX_Y_OFFSET, self.MAX_Y_OFFSET)
             platform3_x = platform2_x - self.rng.randint(
                 self.MIN_PLATFORM_SPACING, self.MAX_PLATFORM_SPACING
             )
-            platform3_y = base_y + y_offset2
+            platform3_y = platform2_y + y_offset2
 
         # Ensure all platforms are at least 2 tiles from boundaries
         platform1_y = max(chamber_y1 + 2, min(platform1_y, chamber_y2 - 2))

@@ -318,12 +318,12 @@ git clone https://github.com/Tetramputechture/npp-rl.git
 cd nclone && pip install -e . && cd ..
 cd npp-rl && pip install -r requirements.txt && cd ..
 
-# Train agent
+# Train agent (see npp-rl for full options and the reference v22 launcher)
 cd npp-rl
-python scripts/train_and_compare.py \
-    --architectures full_hgt \
-    --train-dataset ../nclone/datasets/train \
-    --total-timesteps 20000000
+python scripts/train.py \
+    --experiment-name quickstart \
+    --benchmark-root ~/datasets/mechanic_benchmark \
+    --total-timesteps 20_000_000
 ```
 
 See `npp-rl/README.md` for full training instructions.

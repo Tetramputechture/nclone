@@ -101,11 +101,15 @@ class LatticeDStar:
                 if self.sim.has_died() or self.sim.has_won():
                     return
 
-    def enumerate_lattice(self) -> dict:
+    def enumerate_lattice(self, stop_on_win: bool = False) -> dict:
         """Forward uniform-cost Dijkstra over the state lattice, expanding via
         **pure action-replay** (no save/restore_ninja_state). Slower than snapshot
         teleport, but every node's stored path replays bit-exactly to that node, so
-        the extracted route is guaranteed executable. Returns g*, edges, won paths."""
+        the extracted route is guaranteed executable. Returns g*, edges, won paths.
+
+        ``stop_on_win``: return immediately when the first complete (exit-reaching)
+        path is found. Under uniform-cost expansion that path is near-shortest, so
+        for a demo harvest this avoids enumerating the whole reachable set."""
         t0 = time.time()
         self.sim.fast_reset()
         root_x, root_y = self.sim.get_ninja_pos()
@@ -147,6 +151,10 @@ class LatticeDStar:
                 fwd.append((key, ck, float(self.macro)))
                 if won_here and ck not in won_paths:
                     won.add(ck); won_paths[ck] = path + [a]
+                    if stop_on_win:
+                        return {"g": g, "pos": pos, "fwd": fwd, "won": won,
+                                "won_paths": won_paths, "spawn_key": spawn_key,
+                                "settled": len(settled), "time": time.time() - t0}
                 if ng < g.get(ck, float("inf")):
                     g[ck] = ng
                     pos[ck] = (x, y)

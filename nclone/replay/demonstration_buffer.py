@@ -63,11 +63,13 @@ def _load_replay_batch_worker(
     max_transitions_per_demo: int,
     simulate_replays: bool,
     frame_skip: int = 1,
+    obs_exposure: Optional[Dict[str, bool]] = None,
 ) -> List[Dict[str, Any]]:
     """Worker for parallel batch loading.
 
     A single ``ReplayExecutor`` is shared across the batch to amortize env
-    setup cost.
+    setup cost. ``obs_exposure`` forwards ReachabilityConfig obs-exposure flags so
+    the replayed BC obs match the policy obs the training run was built with.
     """
     from pathlib import Path
 
@@ -78,7 +80,7 @@ def _load_replay_batch_worker(
     executor = None
     if simulate_replays:
         try:
-            executor = ReplayExecutor(frame_skip=frame_skip)
+            executor = ReplayExecutor(frame_skip=frame_skip, obs_exposure=obs_exposure)
         except Exception:
             executor = None
 
@@ -212,12 +214,17 @@ class DemonstrationBuffer:
         num_workers: Optional[int] = None,
         level_filter: Optional[str] = None,
         frame_skip: int = 1,
+        obs_exposure: Optional[Dict[str, bool]] = None,
     ):
         self.max_demos = max_demos
         self.max_transitions_per_demo = max_transitions_per_demo
         self.simulate_replays = simulate_replays
         self.level_filter = level_filter
         self.frame_skip = frame_skip
+        # ReachabilityConfig obs-exposure flags (use_jump_potential /
+        # expose_cost_to_go_map / ...) so the replayed BC obs match the policy obs
+        # the training run was built with. None = strict Layer-1 contract.
+        self.obs_exposure = obs_exposure
 
         if num_workers is None:
             cpu_count = os.cpu_count() or 1
@@ -241,7 +248,9 @@ class DemonstrationBuffer:
         self._replay_executor: Optional[Any] = None
         if self.num_workers == 1 and simulate_replays and REPLAY_EXECUTOR_AVAILABLE:
             try:
-                self._replay_executor = ReplayExecutor(frame_skip=self.frame_skip)
+                self._replay_executor = ReplayExecutor(
+                    frame_skip=self.frame_skip, obs_exposure=self.obs_exposure
+                )
                 logger.info(
                     "ReplayExecutor initialized for demonstration loading "
                     f"(frame_skip={self.frame_skip})"
@@ -346,6 +355,7 @@ class DemonstrationBuffer:
                         self.max_transitions_per_demo,
                         self.simulate_replays,
                         self.frame_skip,
+                        self.obs_exposure,
                     ): idx
                     for idx, batch in enumerate(batches)
                 }

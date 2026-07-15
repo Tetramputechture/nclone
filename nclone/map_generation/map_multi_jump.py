@@ -28,6 +28,11 @@ class MapMultiJump(Map):
     MAX_JUMPS = 3
     MAX_MINES = 0
     VARIANT = "gaps"
+    # Carved-gap width cap (seg_gap honours this) and the initial run-up length.
+    # A 2-tile gap + a long flat run-up = an easy hop; the default keeps the
+    # original 3-tile gap for the harder tiers.
+    MAX_GAP_W = 3
+    RUNUP = 5
 
     def generate(self, seed: Optional[int] = None) -> "MapMultiJump":
         if seed is not None:
@@ -42,7 +47,7 @@ class MapMultiJump(Map):
 
         n_jumps = self.rng.randint(self.MIN_JUMPS, self.MAX_JUMPS)
 
-        plan = [("flat", 5)]
+        plan = [("flat", int(self.RUNUP))]
         for i in range(n_jumps):
             if self.VARIANT == "gaps":
                 seg = "gap"

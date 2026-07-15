@@ -47,8 +47,20 @@ class MechanicBenchmarkLoader:
             with meta_path.open("r", encoding="utf-8") as f:
                 meta = json.load(f)
             level_ids: List[int] = meta.get("level_ids") or []
+            # Index every pickle under the split ONCE (single tree walk) instead
+            # of rglob-per-level, which is O(N^2) and dominates startup on large
+            # pools (~20k levels). Map level_id -> shortest matching path.
+            pkl_index: Dict[int, Path] = {}
+            for pkl in (self.root / split).rglob("*.pkl"):
+                try:
+                    lid = int(pkl.stem)
+                except ValueError:
+                    continue
+                prev = pkl_index.get(lid)
+                if prev is None or len(str(pkl)) < len(str(prev)):
+                    pkl_index[lid] = pkl
             for lid in level_ids:
-                pkl = self._find_pickle(split, int(lid))
+                pkl = pkl_index.get(int(lid))
                 if pkl is None:
                     raise FileNotFoundError(
                         f"Missing pickle for level_id={lid} split={split} under {self.root}"

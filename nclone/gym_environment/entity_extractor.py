@@ -78,6 +78,9 @@ class EntityExtractor:
         # Mines (toggle mines and regular mines)
         entities.extend(self._extract_mines())
 
+        # One-way platforms (directional barriers)
+        entities.extend(self._extract_one_ways())
+
         return entities
 
     def _extract_exit_entities(self) -> List[Dict[str, Any]]:
@@ -264,4 +267,29 @@ class EntityExtractor:
                     }
                 )
 
+        return entities
+
+    def _extract_one_ways(self) -> List[Dict[str, Any]]:
+        """Extract one-way platforms (type 11).
+
+        Static directional barriers; the ``orientation`` (0..7) determines the
+        blocking normal that ``EntityMask.get_blocked_edges`` uses to sever graph
+        traversals crossing the platform from its solid side.
+        """
+        entities = []
+        if hasattr(self.nplay_headless.sim, "entity_dic"):
+            one_ways = self.nplay_headless.sim.entity_dic.get(11, [])
+            for i, ow in enumerate(one_ways):
+                entities.append(
+                    {
+                        "type": EntityType.ONE_WAY,
+                        "x": getattr(ow, "xpos", 0.0),
+                        "y": getattr(ow, "ypos", 0.0),
+                        "orientation": getattr(ow, "orientation", 0),
+                        "active": True,
+                        "state": 0,
+                        "entity_id": f"one_way_{i}",
+                        "entity_ref": ow,
+                    }
+                )
         return entities

@@ -61,12 +61,67 @@ def test_empty_curriculum_safe():
     assert cur.sample(0.5) == {}
 
 
+@pytest.fixture(scope="module")
+def corridor_post_switch():
+    return StartStateCurriculum.generate_post_switch(
+        _corridor_md(), n_states=120, max_iter=40000, seed=0
+    )
+
+
+def test_post_switch_states_activate_the_switch(corridor_post_switch):
+    """Every post-switch start state, replayed on FULL physics, must consume the
+    exit switch — that is the whole point (seed the return-to-exit leg)."""
+    import nclone_native
+
+    cur = corridor_post_switch
+    assert len(cur) > 0
+    assert cur.goal_kind == "exit"
+    md = _corridor_md()
+    sim = nclone_native.Simulator.load(list(md))
+    act = {0: (0, 0), 1: (1, 0), 2: (-1, 0), 3: (0, 1), 4: (1, 1), 5: (-1, 1)}
+    rng = __import__("random").Random(0)
+    consumed = 0
+    trials = 12
+    for _ in range(trials):
+        s = cur.sample(1.0, rng)  # difficulty 1.0 == full return leg from switch
+        sim.fast_reset()
+        for a in s["start_actions"]:
+            h, j = act[int(a)]
+            sim.tick(h, j)
+            if sim.has_died() or sim.has_won():
+                break
+        # exit switch (entity_type 4) is ``active`` until touched.
+        if any(e.entity_type == 4 and not e.active for e in sim.get_state().entities):
+            consumed += 1
+    assert consumed == trials, f"only {consumed}/{trials} states activated the switch"
+
+
+def test_post_switch_lazy_cache_roundtrips(tmp_path, monkeypatch):
+    """The lazy per-level cache builds once and reloads from disk."""
+    monkeypatch.setenv("NCLONE_POST_SWITCH_CACHE_DIR", str(tmp_path))
+    import importlib
+    from nclone.gym_environment import post_switch_curriculum_cache as psc
+
+    importlib.reload(psc)
+    md = _corridor_md()
+    a = psc.get_or_build(md, n_states=80, max_iter=30000)
+    assert len(a) > 0 and a.goal_kind == "exit"
+    # A json cache file is written; a second call returns an equal-length pool.
+    assert any(p.suffix == ".json" for p in tmp_path.iterdir())
+    psc._MEM_CACHE.clear()  # force the disk path
+    b = psc.get_or_build(md, n_states=80, max_iter=30000)
+    assert len(b) == len(a)
+
+
 @pytest.mark.slow
 def test_env_reset_hook_starts_midroute(corridor_curriculum):
     from nclone.gym_environment.npp_environment import NppEnvironment
     from nclone.gym_environment.config import EnvironmentConfig
     md = _corridor_md()
-    env = NppEnvironment(config=EnvironmentConfig())
+    # defer_initial_map_load: the first level is supplied via reset options
+    # (payload-driven, like benchmark training) — avoids the default-category
+    # generator path (and its registry flakiness).
+    env = NppEnvironment(config=EnvironmentConfig(defer_initial_map_load=True))
     env.reset(options={"map_data": md})
     spawn_x = env.nplay_headless.ninja_position()[0]
     env.reset(options={"map_data": md, "start_state_curriculum": corridor_curriculum,

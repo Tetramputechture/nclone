@@ -16,9 +16,35 @@ TIME_PER_MINE = (
 # episodes ~2.5x faster (multiplier 25->10, min 1200->600).
 TRUNCATION_MULTIPLIER = 10  # was 25
 MIN_TRUNCATION_FRAMES = 600  # was 1200 (~10s floor for tiny levels)
+# Frames of budget per pixel of free-space cost-to-completion. Optimal traversal
+# is ~cost/MAX_HOR_SPEED (~0.3 frame/px); ~6.5x exploration headroom -> 2.0.
+# Raised 2.0 -> 3.0 (2026-06-23): FAR_OBJECTIVE is a DOUBLE round-trip (climb to
+# the switch, then climb back to the exit) — cost_to_completion already covers the
+# full round-trip, but the agent climbs slower than optimal, so it was reaching the
+# switch (~40%) yet timing out before the exit (exit_given_switch=0, 100% timeout).
+# The earlier 4.0 fed a high-gamma value divergence; that is now retired by PopArt +
+# gamma=0.997, so 3.0 buys the round-trip headroom safely.
+# v17 (2026-07-09): 3.0 -> 3.5. The longest OFFICIAL/FAR levels still timed out
+# pre-completion (v16 solved only 3/45 held-out OFFICIAL, several hit the budget);
+# this floor is a per-level FLOOR keyed on the level's OWN route cost, so it only
+# lengthens genuinely long episodes and leaves short/medium levels on their
+# (smaller) formula limit untouched.
+COST_TIME_FACTOR = 3.5
+# Absolute ceiling regardless of level size (prevents a pathological estimate
+# from producing an unbounded episode). v17: 18000 -> 24000 (~6.7 min @ 60 fps).
+# This is the ONLY hard clamp on the longest levels; at 18000 a long round-trip
+# needing ~24k frames for a non-optimal-but-valid solve was truncated before it
+# could ever complete. Raising ONLY the ceiling targets exactly those long levels
+# (anything under 18000 is unaffected), so throughput on the common short/medium
+# levels — governed by the smaller formula limit — is unchanged.
+HARD_TRUNCATION_CEILING = 24000
 
 
-def calculate_truncation_limit(surface_area: float, reachable_mine_count: int) -> int:
+def calculate_truncation_limit(
+    surface_area: float,
+    reachable_mine_count: int,
+    cost_to_completion: float | None = None,
+) -> int:
     """
     Calculate dynamic truncation limit based on level complexity.
 
@@ -51,9 +77,18 @@ def calculate_truncation_limit(surface_area: float, reachable_mine_count: int) -
     # Apply generous multiplier for learning phase
     truncation_limit = (base_time + mine_time) * TRUNCATION_MULTIPLIER
 
-    # Clamp to reasonable range
-    truncation_limit = int(
-        np.clip(truncation_limit, MIN_TRUNCATION_FRAMES, MAX_TIME_IN_FRAMES)
-    )
+    # Path-length-aware floor: the free-space cost-to-completion (~pixels) is a
+    # direct measure of how far the goal is, so a LONG, winding level gets enough
+    # frames to be solved/explored even if its surface area is modest. Without
+    # this a 100-1000 env-step level would be truncated before the agent could
+    # ever reach the goal (a hard ceiling on learnable difficulty).
+    if cost_to_completion is not None and cost_to_completion > 0:
+        truncation_limit = max(truncation_limit, cost_to_completion * COST_TIME_FACTOR)
 
-    return truncation_limit
+    # Let the cap SCALE with the level's own need rather than hard-clamping every
+    # level at MAX_TIME_IN_FRAMES (which would starve genuinely long levels);
+    # short levels keep their small formula limit, long levels get proportional
+    # time, all bounded by an absolute ceiling.
+    cap = min(HARD_TRUNCATION_CEILING, max(MAX_TIME_IN_FRAMES, truncation_limit))
+
+    return int(np.clip(truncation_limit, MIN_TRUNCATION_FRAMES, cap))

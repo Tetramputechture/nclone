@@ -81,6 +81,11 @@ class LevelBasedPathDistanceCache:
         # Mapping of goal_id -> goal_pos for validation
         self._goal_id_to_goal_pos: Dict[str, Tuple[int, int]] = {}
         self._cached_level_data: Optional[LevelData] = None
+        # level_id (hashes tiles + entities + start_position) is the AUTHORITATIVE
+        # per-level key: LevelData-equality + mine/switch signatures collide across
+        # distinct levels (e.g. two 0-mine, one-unactivated-switch levels), which
+        # let a stale graph survive a level change. Keying on level_id closes that.
+        self._cached_level_id: Optional[str] = None
         self._cached_mine_signature: Optional[Tuple] = None
         self._cached_switch_signature: Optional[Tuple] = None
         self.level_cache_hits = 0
@@ -327,8 +332,10 @@ class LevelBasedPathDistanceCache:
         switch_signature = tuple(sorted(level_data.switch_states.items()))
 
         # Check if cache needs invalidation
+        new_level_id = getattr(level_data, "level_id", None)
         needs_rebuild = (
             self._cached_level_data is None
+            or self._cached_level_id != new_level_id
             or self._cached_level_data != level_data
             or self._cached_mine_signature != mine_signature
             or self._cached_switch_signature != switch_signature
@@ -351,6 +358,7 @@ class LevelBasedPathDistanceCache:
 
             # Update cached state
             self._cached_level_data = level_data
+            self._cached_level_id = new_level_id
             self._cached_mine_signature = mine_signature
             self._cached_switch_signature = switch_signature
 
@@ -366,6 +374,7 @@ class LevelBasedPathDistanceCache:
         self._goal_node_to_goal_id.clear()
         self._goal_id_to_goal_pos.clear()
         self._cached_level_data = None
+        self._cached_level_id = None
         self._cached_mine_signature = None
         self._cached_switch_signature = None
         self.level_cache_hits = 0

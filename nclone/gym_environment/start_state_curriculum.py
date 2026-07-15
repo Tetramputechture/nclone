@@ -215,8 +215,11 @@ class StartStateCurriculum:
             return cls()
 
         def progress(x, y):
-            c = fs.cost_to_go(x, y, goal_kind == "exit")
-            return c if math.isfinite(c) else fs._d_max_switch
+            # Raw free-space cost-to-go; INFINITE means the goal is unreachable
+            # from (x, y) — i.e. the position is outside the goal's reachable
+            # region. Such states must NEVER become start states (see the filter
+            # in the tagging step below), so we return inf rather than clamping.
+            return fs.cost_to_go(x, y, goal_kind == "exit")
 
         sim.fast_reset()
         x0, y0 = sim.get_ninja_pos()
@@ -288,14 +291,28 @@ class StartStateCurriculum:
                 out.extend([a] * kext)
             return out
 
-        tagged = [(prefix(i), progress(nodes[i][1], nodes[i][2]))
-                  for i in range(1, len(nodes))]
+        # REACHABILITY GUARD (RFCL invariant): only keep states from which the
+        # goal is still reachable (FINITE free-space cost-to-go). The RRT explores
+        # over physics and can reach dead-end pits/ledges from which the switch or
+        # exit can no longer be reached; those have infinite cost-to-go. Seeding an
+        # episode from such a state moves the "spawn" OUTSIDE the reachable area —
+        # producing an unsolvable episode, inf PBRS/goal-distance signal, and the
+        # "position far outside graph bounds" log flood. Discard them here so the
+        # reverse curriculum can never place the ninja outside the reachable region.
+        tagged = []
+        for i in range(1, len(nodes)):
+            c = progress(nodes[i][1], nodes[i][2])
+            if not math.isfinite(c):
+                continue
+            tagged.append((prefix(i), c))
+        n_dropped = (len(nodes) - 1) - len(tagged)
         tagged.sort(key=lambda t: t[1])
         if len(tagged) > n_states:
             idx = np.linspace(0, len(tagged) - 1, n_states).astype(int)
             tagged = [tagged[i] for i in idx]
         max_p = max((p for _, p in tagged), default=1.0) or 1.0
-        log(f"  curriculum: {len(tagged)} states, progress 0..{max_p:.0f}")
+        log(f"  curriculum: {len(tagged)} states (dropped {n_dropped} "
+            f"goal-unreachable), progress 0..{max_p:.0f}")
         return cls(states=tagged, max_progress=max_p, goal_kind=goal_kind)
 
     @classmethod
@@ -352,8 +369,10 @@ class StartStateCurriculum:
                        for e in sim.get_state().entities)
 
         def exit_progress(x, y) -> float:
-            c = fs.cost_to_go(x, y, True)  # switch_activated=True -> exit leg
-            return c if math.isfinite(c) else fs._d_max_exit
+            # Raw exit-leg cost-to-go; INFINITE == the exit is unreachable from
+            # (x, y). Callers DROP inf states (below) so a post-switch start is
+            # never placed outside the exit's reachable region (RFCL invariant).
+            return fs.cost_to_go(x, y, True)  # switch_activated=True -> exit leg
 
         # Phase 2: validate each prefix on FULL physics; keep switch-consuming
         # ones (re-tagged by exit cost-to-go) and track the best-connected one as
@@ -376,6 +395,8 @@ class StartStateCurriculum:
                 continue
             px, py = sim.get_ninja_pos()
             cost = exit_progress(px, py)
+            if not math.isfinite(cost):
+                continue  # exit unreachable from here -> never a valid start
             coarse.append((list(prefix), cost))
             if cost < anchor_cost:
                 anchor_cost, anchor_prefix = cost, list(prefix)
@@ -398,8 +419,11 @@ class StartStateCurriculum:
             if nodes:
                 for ni in range(1, len(nodes)):  # skip root (== anchor, in coarse)
                     nx, ny = nodes[ni][1], nodes[ni][2]
+                    ecost = exit_progress(nx, ny)
+                    if not math.isfinite(ecost):
+                        continue  # exit unreachable from here -> never a valid start
                     suffix = _node_prefix(nodes, ni, kext)
-                    tree_states.append((anchor_prefix + suffix, exit_progress(nx, ny)))
+                    tree_states.append((anchor_prefix + suffix, ecost))
 
         tagged = coarse + tree_states
         tagged.sort(key=lambda t: t[1])

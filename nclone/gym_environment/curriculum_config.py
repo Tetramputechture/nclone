@@ -40,6 +40,7 @@ def _build_curriculum_categories():
     """Build curriculum categories from generator categories."""
     # Default weights for curriculum learning (can be overridden)
     default_weights = {
+        "extremely_simple": 20.0,
         "simplest": 10.0,
         "simplest_few_mines": 10.0,
         "simplest_with_mines": 10.0,

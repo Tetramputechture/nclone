@@ -26,8 +26,41 @@ import numpy as np
 
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 from ..constants.entity_types import EntityType
+from ..constants.physics_constants import TOGGLE_MINE_RADII
+from ..ninja import NINJA_RADIUS
 
 logger = logging.getLogger(__name__)
+
+# Minimum spawn-to-mine CENTER clearance (px). A toggled mine kills the ninja
+# within NINJA_RADIUS + TOGGLE_MINE_RADII[0] (= 14px) -> a mine that close makes
+# the level impossible (frame-1 death); an UNtoggled mine the ninja merely
+# overlaps at spawn (NINJA_RADIUS + TOGGLE_MINE_RADII[2] = 14.5px) toggles into a
+# deadly mine the instant the ninja steps off it -> a spawn trap. We require a
+# full extra ninja-radius of clearance beyond the overlap distance so the spawn
+# is never on or immediately adjacent to a mine.
+MINE_SPAWN_CLEARANCE_PX = NINJA_RADIUS + max(TOGGLE_MINE_RADII.values()) + NINJA_RADIUS  # 24.5
+
+
+def spawn_mine_clearance_ok(
+    level_data, clearance_px: float = MINE_SPAWN_CLEARANCE_PX
+) -> bool:
+    """True iff no toggle mine sits within ``clearance_px`` of the ninja spawn.
+
+    A mine on/adjacent to the spawn makes a level impossible (the ninja dies on
+    frame 1 to a toggled mine) or a spawn trap (an untoggled mine the ninja
+    overlaps toggles deadly the moment it moves). Both classes are silent — the
+    goals can still be "reachable" — so this is checked separately in the gate.
+    Reusable so runtime generators can self-verify by construction too.
+    """
+    sx, sy = level_data.start_position
+    c2 = float(clearance_px) * float(clearance_px)
+    for mine in level_data.get_all_toggle_mines():
+        mx, my = mine.get("x"), mine.get("y")
+        if mx is None or my is None:
+            continue
+        if (float(mx) - sx) ** 2 + (float(my) - sy) ** 2 < c2:
+            return False
+    return True
 
 # A single reusable headless sim -- instantiating one per call is wasteful.
 _SHARED_NPLAY = None
@@ -43,6 +76,11 @@ def _get_nplay():
             enable_animation=False,
             enable_logging=False,
             enable_debug_overlay=False,
+            # Solvability only extracts tiles/entities; never render. Without this
+            # the headless sim initialises a pygame display (render_mode=None still
+            # left rendering enabled), which is wasted work and, when called from an
+            # interactive window, resizes the shared display surface.
+            enable_rendering=False,
         )
     return _SHARED_NPLAY
 
@@ -118,6 +156,13 @@ def is_map_solvable(map_data: List[int]) -> bool:
     if not level_data.get_entities_by_type(EntityType.EXIT_SWITCH):
         return False
     if not level_data.get_entities_by_type(EntityType.EXIT_DOOR):
+        return False
+
+    # A mine on/adjacent to the spawn makes the level impossible (frame-1 mine
+    # death) or a spawn trap, even when the goals are perfectly reachable. Reject
+    # so the generator reseeds to a spawn-safe layout.
+    if not spawn_mine_clearance_ok(level_data):
+        logger.debug("solvability: a mine is within the spawn clearance radius")
         return False
 
     try:

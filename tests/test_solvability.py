@@ -49,3 +49,33 @@ def test_new_bucket_presets_pass_gate(bucket):
                 assert is_map_solvable(gen.map_data()), (
                     f"{bucket} T{tier} {gen_type}:{preset} seed={seed} not solvable"
                 )
+
+
+def test_spawn_mine_clearance_rejects_adjacent_mine():
+    """A toggle mine on/adjacent to the spawn (frame-1 death / spawn trap) must
+    fail the clearance check, while a mine a safe distance away passes."""
+    import types
+    from nclone.map_generation.solvability import (
+        spawn_mine_clearance_ok,
+        MINE_SPAWN_CLEARANCE_PX,
+    )
+
+    def _ld(mine_dx):
+        spawn = (300.0, 300.0)
+        mine = {"x": 300.0 + mine_dx, "y": 300.0}
+        return types.SimpleNamespace(
+            start_position=spawn,
+            get_all_toggle_mines=lambda: [mine],
+        )
+
+    # Mine 12px away (ninja overlaps it at spawn) -> rejected.
+    assert spawn_mine_clearance_ok(_ld(12.0)) is False
+    # Mine right at the clearance boundary -> rejected (strictly inside fails).
+    assert spawn_mine_clearance_ok(_ld(MINE_SPAWN_CLEARANCE_PX - 1.0)) is False
+    # Mine comfortably clear (1.5 tiles) -> passes.
+    assert spawn_mine_clearance_ok(_ld(36.0)) is True
+    # No mines at all -> passes.
+    empty = types.SimpleNamespace(
+        start_position=(300.0, 300.0), get_all_toggle_mines=lambda: []
+    )
+    assert spawn_mine_clearance_ok(empty) is True

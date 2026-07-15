@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from nclone.map_augmentation import NONTRIVIAL_AUGMENTATIONS, iter_augmented
+from nclone.map_augmentation.translate_map import sample_translations
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +70,17 @@ def _hash_map_data(map_data: List[int]) -> str:
 def _augmented_level_id(parent_id: int, kind: str) -> int:
     """Deterministic 63-bit id for a variant, stable across runs."""
     payload = f"aug:{parent_id}:{kind}".encode("utf-8")
+    return int.from_bytes(hashlib.sha1(payload).digest()[:8], "big") & ((1 << 63) - 1)
+
+
+def _translate_level_id(parent_id: int, offset_idx: int) -> int:
+    """Deterministic 63-bit id for a translation variant, stable across runs.
+
+    Keyed by ``(parent_id, "translate", offset_idx)`` so re-runs with the same
+    ``--translate-seed``/``--translate-k`` reproduce identical ids, and the
+    translation ids never collide with the mirror ids (different ``kind`` tag).
+    """
+    payload = f"aug:{parent_id}:translate:{offset_idx}".encode("utf-8")
     return int.from_bytes(hashlib.sha1(payload).digest()[:8], "big") & ((1 << 63) - 1)
 
 
@@ -151,53 +163,102 @@ def _augment_procgen(
     output_dir: Path,
     kinds: Tuple[str, ...],
     seen_hashes: set,
+    *,
+    translate_k: int = 0,
+    translate_seed: int = 0,
+    translate_buffer: int = 1,
+    splits: Optional[Tuple[str, ...]] = None,
 ) -> List[Dict[str, Any]]:
-    """Mirror every level pkl under ``dataset_dir``. Returns the new records."""
+    """Augment every level pkl under ``dataset_dir``. Returns the new records.
+
+    Applies the requested mirror ``kinds`` and, when ``translate_k > 0``, up to
+    ``translate_k`` random valid playspace translations per level. ``splits``,
+    when given, restricts augmentation to levels whose ``metadata.split`` is in
+    the set (e.g. only ``("train",)`` so a held-out test split stays base-only).
+    """
     new_records: List[Dict[str, Any]] = []
     pkls = sorted(dataset_dir.glob("**/*.pkl"))
     print(f"[procgen] {dataset_dir}: {len(pkls)} source levels")
 
-    n_skipped_symmetric = 0
     n_skipped_already_aug = 0
+    n_skipped_split = 0
     n_dup = 0
+    n_mirror = 0
+    n_translate = 0
+    n_translate_noop = 0
     for pkl in pkls:
         with open(pkl, "rb") as f:
             parent = pickle.load(f)
+        meta0 = parent.get("metadata", {})
         # Don't augment augmentations (idempotent re-runs add nothing).
-        if parent.get("metadata", {}).get("source") == "augmented":
+        if meta0.get("source") == "augmented":
             n_skipped_already_aug += 1
+            continue
+        # Restrict to selected splits (keep test split base-only when asked).
+        if splits is not None and meta0.get("split", "train") not in splits:
+            n_skipped_split += 1
             continue
 
         parent_map = parent["map_data"]
         parent_id = parent["level_id"]
-        for kind, variant in iter_augmented(parent_map, kinds, dedup=True):
+
+        def _emit(variant: List[int], kind: str, lid: int) -> bool:
+            """Dedup + build a variant record. Returns True if emitted."""
             map_hash = _hash_map_data(variant)
             if map_hash in seen_hashes:
-                n_dup += 1
-                continue
+                return False
             seen_hashes.add(map_hash)
-
             record = dict(parent)  # shallow copy of all parent fields
-            record["level_id"] = _augmented_level_id(parent_id, kind)
+            record["level_id"] = lid
             record["map_data"] = list(variant)
-            meta = dict(parent.get("metadata", {}))
             meta = {
-                **meta,
+                **dict(meta0),
                 "source": "augmented",
                 "augmentation": kind,
                 "parent_level_id": parent_id,
-                "parent_source": meta.get("source", "procedural"),
+                "parent_source": meta0.get("source", "procedural"),
                 "map_hash": map_hash,
-                "description": f"{meta.get('description', '')} [{kind}]".strip(),
+                "description": f"{meta0.get('description', '')} [{kind}]".strip(),
             }
             record["metadata"] = meta
             new_records.append(record)
+            return True
+
+        # 1) Mirror augmentations (skip byte-identical mirrors via dedup=True).
+        for kind, variant in iter_augmented(parent_map, kinds, dedup=True):
+            if _emit(variant, kind, _augmented_level_id(parent_id, kind)):
+                n_mirror += 1
+            else:
+                n_dup += 1
+
+        # 2) Translation augmentations: up to translate_k valid offsets. The seed
+        #    is mixed with the parent id so every level gets an independent but
+        #    reproducible offset sequence.
+        if translate_k > 0:
+            variants = sample_translations(
+                parent_map,
+                translate_k,
+                seed=(translate_seed ^ (parent_id & 0xFFFFFFFF)),
+                buffer=translate_buffer,
+            )
+            if not variants:
+                n_translate_noop += 1
+            for offset_idx, ((dx, dy), vmap) in enumerate(variants):
+                kind = f"translate_{dx}_{dy}"
+                lid = _translate_level_id(parent_id, offset_idx)
+                if _emit(vmap, kind, lid):
+                    n_translate += 1
+                else:
+                    n_dup += 1
 
     for r in new_records:
         _write_record(output_dir, r)
     print(
         f"[procgen] wrote {len(new_records)} variants "
-        f"(skipped {n_skipped_already_aug} already-augmented, {n_dup} duplicates)"
+        f"({n_mirror} mirror, {n_translate} translate; "
+        f"skipped {n_skipped_already_aug} already-augmented, "
+        f"{n_skipped_split} out-of-split, {n_translate_noop} no-room-to-translate, "
+        f"{n_dup} duplicates)"
     )
     return new_records
 
@@ -371,6 +432,10 @@ def _write_summary(output_dir: Path, records: List[Dict[str, Any]], args: argpar
         "version": 1,
         "source_script": "scripts/augment_dataset.py",
         "augmentations": list(args.kinds),
+        "translate_k": args.translate_k,
+        "translate_seed": args.translate_seed,
+        "translate_buffer": args.translate_buffer,
+        "splits": list(args.splits) if args.splits else None,
         "procgen_source": str(args.procgen) if args.procgen else None,
         "official_root": str(args.official) if args.official else None,
         "official_dirs": args.official_dirs if args.official else None,
@@ -420,7 +485,28 @@ def main() -> int:
     )
     parser.add_argument(
         "--kinds", nargs="+", default=list(NONTRIVIAL_AUGMENTATIONS),
-        help=f"Augmentations to apply (default: {list(NONTRIVIAL_AUGMENTATIONS)}).",
+        help=f"Mirror augmentations to apply (default: {list(NONTRIVIAL_AUGMENTATIONS)}).",
+    )
+    parser.add_argument(
+        "--translate-k", type=int, default=0,
+        help="For --procgen: also emit up to K random valid playspace "
+        "translations per level (shift the reachable bbox + entities + spawn by "
+        "a valid tile offset, keeping difficulty constant but varying absolute "
+        "position). 0 disables translation (default).",
+    )
+    parser.add_argument(
+        "--translate-seed", type=int, default=0,
+        help="Base RNG seed for --translate-k offset sampling (mixed per level).",
+    )
+    parser.add_argument(
+        "--translate-buffer", type=int, default=1,
+        help="Safety buffer in tiles around the reachable region kept intact "
+        "during translation (default: 1).",
+    )
+    parser.add_argument(
+        "--splits", nargs="+", default=None,
+        help="For --procgen: restrict augmentation to these splits (e.g. "
+        "'train' to keep the test split base-only). Default: all splits.",
     )
     parser.add_argument(
         "--warm-lattice", action="store_true",
@@ -446,7 +532,16 @@ def main() -> int:
     if args.procgen:
         out = args.output_dir or args.procgen
         out.mkdir(parents=True, exist_ok=True)
-        procgen_records = _augment_procgen(args.procgen, out, kinds, seen_hashes)
+        procgen_records = _augment_procgen(
+            args.procgen,
+            out,
+            kinds,
+            seen_hashes,
+            translate_k=args.translate_k,
+            translate_seed=args.translate_seed,
+            translate_buffer=args.translate_buffer,
+            splits=tuple(args.splits) if args.splits else None,
+        )
         _update_split_metadata(out, procgen_records)
         all_records += procgen_records
 
