@@ -106,3 +106,6 @@ docs/
 .cursor/
 # Generated lattice route data
 nclone/latticepaths/
+
+# local dev-assistant skill configs
+.claude/
