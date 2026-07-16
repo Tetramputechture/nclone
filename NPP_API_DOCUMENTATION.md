@@ -1,6 +1,6 @@
 # N++ Query & Data Format Documentation
 
-This document provides comprehensive documentation of the N++ (N Plus Plus) game's API query formats and binary data structures.
+Documentation of the N++ (N Plus Plus) game's API query formats and binary data structures.
 
 ## Table of Contents
 
@@ -19,11 +19,11 @@ This document provides comprehensive documentation of the N++ (N Plus Plus) game
 
 ## Query Format
 
-**Base URL:** `https://dojo.nplusplus.ninja/prod/steam/`
+Base URL: `https://dojo.nplusplus.ninja/prod/steam/`
 
-**Format:** `query + ? + parameters`
+Format: `query + ? + parameters`
 
-**Sample Query:** Retrieve the first page of results from "Newest" in Solo mode:
+Sample query, retrieving the first page of results from "Newest" in Solo mode:
 ```
 https://dojo.nplusplus.ninja/prod/steam/query_levels?steam_id=765611980412720628&steam_auth=&qt=10&mode=0&page=0
 ```
@@ -93,7 +93,7 @@ The following categories are available for the `qt` parameter:
 
 ### Query Levels Header
 
-**Total Size:** 48 bytes
+Total size: 48 bytes
 
 | Bytes | Description |
 |-------|-------------|
@@ -125,7 +125,7 @@ The following categories are available for the `qt` parameter:
 | 02 | Entity count |
 | ## | z-lib compressed map data |
 
-**Notes:**
+Notes:
 - All integers are little endian
 - Position is in parentheses
 - A query is capped at 500 results
@@ -169,7 +169,7 @@ The following categories are available for the `qt` parameter:
 | 01 | Orientation |
 | 01 | Mode |
 
-**Notes:**
+Notes:
 - Tiles are stored left to right, up to Row 23 (22-966 B)
 - Each entity count is 2 bytes
 - Tile counts are 11 unused tiles
@@ -213,7 +213,7 @@ The following categories are available for the `qt` parameter:
 | 2 | Left |
 | 3 | Reset |
 
-**Example frame:** `right + jump = 2^1 + 2^0 = 3`
+Example frame: `right + jump = 2^1 + 2^0 = 3`
 
 ---
 

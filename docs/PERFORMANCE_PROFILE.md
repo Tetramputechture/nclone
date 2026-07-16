@@ -1,7 +1,7 @@
 # Performance Profile: N++ Environment Step
 
-**Profile date:** Feb 2026 — 500 frames (post-Optimization 1-5, profiling plan)  
-**Command:** `python nclone/test_environment.py --headless --profile-frames 500 --map nclone/test_maps/<map>`
+Profile date: Feb 2026, 500 frames (post-Optimization 1-5, profiling plan)  
+Command: `python nclone/test_environment.py --headless --profile-frames 500 --map nclone/test_maps/<map>`
 
 ---
 
@@ -11,13 +11,13 @@
 
 | Map | Step Time | Steps/s | Physics | Observation | Reward |
 |-----|-----------|---------|---------|-------------|--------|
-| **simple-walk** | 0.67 ms | 1504 | 15.0% | 37.8% | 15.7% |
-| **long-walk** | 0.79 ms | 1268 | 11.0% | 35.4% | 30.3% |
-| **switch-simple** | 0.69 ms | 1456 | 12.7% | 31.3% | 29.5% |
+| simple-walk | 0.67 ms | 1504 | 15.0% | 37.8% | 15.7% |
+| long-walk | 0.79 ms | 1268 | 11.0% | 35.4% | 30.3% |
+| switch-simple | 0.69 ms | 1456 | 12.7% | 31.3% | 29.5% |
 
 *simple-walk uses `--profile-frames` which skips privileged features; baseline was 0.83 ms pre-optimizations.*
 
-**Optimizations 6-8:** Route `find_ninja_node` through step cache, share cache obs↔reward, lazy privileged features. **~20% improvement** (0.83→0.67 ms on simple-walk).
+Optimizations 6-8: route `find_ninja_node` through step cache, share cache obs↔reward, lazy privileged features. ~20% improvement (0.83→0.67 ms on simple-walk).
 
 ---
 
@@ -59,45 +59,45 @@ Platform distances (features 8-9) now use `get_cached_directional_connectivity` 
 
 | % Total | Cumulative (ms) | Calls | Function |
 |---------|-----------------|-------|----------|
-| **18.8%** | **79** | 1006 | `get_path_cost` (path_distance_calculator.py:763) |
-| **19.2%** | 81 | 500 | `calculate_combined_potential` (pbrs_potentials.py:1582) |
-| **14.3%** | 60 | 1006 | `find_ninja_node` (node_lookup.py:414) |
-| **16.2%** | 68 | 500 | `_get_cached_or_compute_potential` (pbrs_potentials.py:1350) |
-| **14.7%** | 62 | 500 | `objective_distance_potential` (pbrs_potentials.py:189) |
-| **35.6%** | 150 | 501 | `_get_observation` (base_environment.py:2879) |
-| **9.3%** | 39 | 501 | `_compute_privileged_features` (npp_environment.py:1430) |
-| **8.6%** | 36 | 2002 | `_get_cached_or_find_ninja_node` (path_distance_calculator.py:1991) |
-| **7.0%** | 29 | 501 | `_get_ninja_node_position_for_cache` (npp_environment.py:2309) |
-| **5.9%** | 25 | 500 | `_compute_spatial_context` (npp_environment.py:2266) |
-| **7.8%** | 33 | 500 | `tick` (nplay_headless) |
-| **1.9%** | 8 | 1002 | `LevelCache.get_distance` |
-| **1.2%** | 5 | 500 | `compute_local_tile_grid` (spatial_context.py:113) |
+| 18.8% | 79 | 1006 | `get_path_cost` (path_distance_calculator.py:763) |
+| 19.2% | 81 | 500 | `calculate_combined_potential` (pbrs_potentials.py:1582) |
+| 14.3% | 60 | 1006 | `find_ninja_node` (node_lookup.py:414) |
+| 16.2% | 68 | 500 | `_get_cached_or_compute_potential` (pbrs_potentials.py:1350) |
+| 14.7% | 62 | 500 | `objective_distance_potential` (pbrs_potentials.py:189) |
+| 35.6% | 150 | 501 | `_get_observation` (base_environment.py:2879) |
+| 9.3% | 39 | 501 | `_compute_privileged_features` (npp_environment.py:1430) |
+| 8.6% | 36 | 2002 | `_get_cached_or_find_ninja_node` (path_distance_calculator.py:1991) |
+| 7.0% | 29 | 501 | `_get_ninja_node_position_for_cache` (npp_environment.py:2309) |
+| 5.9% | 25 | 500 | `_compute_spatial_context` (npp_environment.py:2266) |
+| 7.8% | 33 | 500 | `tick` (nplay_headless) |
+| 1.9% | 8 | 1002 | `LevelCache.get_distance` |
+| 1.2% | 5 | 500 | `compute_local_tile_grid` (spatial_context.py:113) |
 
 ---
 
 ## 3. Bottleneck Analysis
 
-### 3.1 `get_path_cost` — **#1 bottleneck (~30%)**
-- **Calls:** 1006 over 500 steps ≈ **2 calls/step** (spawn→switch, switch→exit, etc.)
-- **Time:** 89ms total → **~89μs/call**
-- **Cause:** Path distance calculation. Level cache hits are fast; misses trigger Python A* or extra work.
-- **Opportunity:** Reduce number of distinct `get_path_cost` calls per step.
+### 3.1 `get_path_cost`, #1 bottleneck (~30%)
+- Calls: 1006 over 500 steps ≈ 2 calls/step (spawn→switch, switch→exit, etc.)
+- Time: 89ms total, ~89μs/call
+- Cause: path distance calculation. Level cache hits are fast; misses trigger Python A* or extra work.
+- Opportunity: reduce number of distinct `get_path_cost` calls per step.
 
-### 3.2 `find_ninja_node` — **#2 bottleneck (~14%, reduced from ~27%)**
-- **Calls:** 1006 over 500 steps ≈ **2 calls/step** (down from ~5/step after Optimization 1)
-- **Time:** 68ms total → **~68μs/call**
-- **Cause:** Python spatial lookup to find the graph node nearest to ninja position. Used by `get_path_cost` and action mask logic.
-- **Opportunity:** Port to Rust or add a Rust-backed spatial index; cache result within step.
+### 3.2 `find_ninja_node`, #2 bottleneck (~14%, reduced from ~27%)
+- Calls: 1006 over 500 steps ≈ 2 calls/step (down from ~5/step after Optimization 1)
+- Time: 68ms total, ~68μs/call
+- Cause: Python spatial lookup to find the graph node nearest to ninja position. Used by `get_path_cost` and action mask logic.
+- Opportunity: port to Rust or add a Rust-backed spatial index; cache result within step.
 
-### 3.3 PBRS reward chain — **#3–5 (~50% combined)**
+### 3.3 PBRS reward chain, #3-5 (~50% combined)
 - `calculate_combined_potential` → `_get_cached_or_compute_potential` → `objective_distance_potential`
-- **Cause:** PBRS requires path distances for potential shaping. Each call cascades to `get_path_cost` and `find_ninja_node`.
-- **Opportunity:** Batch path lookups; consolidate potential computation; reuse ninja node within step.
+- Cause: PBRS requires path distances for potential shaping. Each call cascades to `get_path_cost` and `find_ninja_node`.
+- Opportunity: batch path lookups; consolidate potential computation; reuse ninja node within step.
 
 ### 3.4 Observation / action mask
 - `_get_action_mask_with_path_update`, `_detect_straight_path_direction`, `_compute_privileged_features`
-- **Cause:** Path-based heuristics and privileged features again trigger node lookups and path queries.
-- **Opportunity:** Reuse `find_ninja_node` result; share path data between observation and reward.
+- Cause: path-based heuristics and privileged features again trigger node lookups and path queries.
+- Opportunity: reuse `find_ninja_node` result; share path data between observation and reward.
 
 ---
 
@@ -115,24 +115,24 @@ Platform distances (features 8-9) now use `get_cached_directional_connectivity` 
 
 ## 5. Remaining Optimization Opportunities (by impact)
 
-1. **`find_ninja_node`** — Most expensive single function. Options:
+1. `find_ninja_node`, most expensive single function. Options:
    - Rust spatial hash / nearest-neighbor
    - Cache ninja node per step (invalidate when position moves across threshold)
    - Reduce call count via shared lookups
 
-2. **Reduce `get_path_cost` calls** — Currently ~2/step. Options:
+2. Reduce `get_path_cost` calls, currently ~2/step. Options:
    - Broader use of step cache
    - Batch PBRS potential computation
    - Reuse path results across observation and reward
 
-3. **`get_phi`** — 500 calls, ~5ms. Options:
+3. `get_phi`, 500 calls, ~5ms. Options:
    - Batch PBRS potential computation
    - Reuse path results across observation and reward
 
-4. **`get_geometric_distance`** — 4508 calls (via `path_distance_cache`). Options:
+4. `get_geometric_distance`, 4508 calls (via `path_distance_cache`). Options:
    - Audit call sites to reduce redundancy
 
-5. **Feature computation** — Single expensive call (~1.66ms) during observation. See §1.1 for section breakdown. Options:
+5. Feature computation, single expensive call (~1.66ms) during observation. See §1.1 for section breakdown. Options:
    - Feature-level profiling now available via `--profile-frames`
    - `surface_area` and `exit_reachable_and_platform` dominate
 
@@ -142,7 +142,7 @@ Platform distances (features 8-9) now use `get_cached_directional_connectivity` 
 
 | Metric | Plan Target | Current (simple-walk, profiling) |
 |--------|-------------|-----------------------------------|
-| Step time | 0.3–0.5 ms | 0.67 ms |
-| Gap | — | ~1.3–2× |
+| Step time | 0.3-0.5 ms | 0.67 ms |
+| Gap | n/a | ~1.3-2× |
 
-Post-Optimizations 6-8: **find_ninja_node** calls reduced ~50% (step cache + position-only sharing). **PBRS** reward calc ~50% faster (obs↔reward cache sharing). **Privileged features** skipped when profiling. Remaining bottleneck: **feature computation** (~1.67 ms when uncached) and **observation** pipeline.
+Post-Optimizations 6-8: `find_ninja_node` calls reduced ~50% (step cache + position-only sharing). PBRS reward calc ~50% faster (obs↔reward cache sharing). Privileged features skipped when profiling. Remaining bottleneck: feature computation (~1.67 ms when uncached) and the observation pipeline.

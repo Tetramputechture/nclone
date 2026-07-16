@@ -1,324 +1,146 @@
 # nclone: N++ Simulator for Deep RL
 
-N++ game simulator with Gym-compatible interface for Deep Reinforcement Learning research.
+N++ game simulator with a Gymnasium-compatible interface for deep reinforcement learning research.
 
 ## Overview
 
-`nclone` is a high-performance Python-based N++ simulator designed specifically for DRL training. It provides:
+`nclone` is a Python N++ simulator built for DRL training. It provides:
 
-- **Accurate physics simulation** matching N++ gameplay mechanics
-- **Gym-compatible environment** for standard RL frameworks
-- **Headless rendering** for fast training (1000+ FPS)
-- **Multi-modal observations** (visual frames, physics state, graph representations)
+- Physics simulation matching N++ gameplay mechanics
+- A Gymnasium-compatible environment
+- Headless rendering for fast training
+- A structured multi-tensor observation (tiles, entity overlays, hazard field, physics state)
 
 ## Installation
 
 ```bash
-# Install from source (recommended for development)
+# From source (recommended for development)
 git clone https://github.com/Tetramputechture/nclone.git
 cd nclone
 pip install -e .
 
-# Or install directly
+# Or directly
 pip install git+https://github.com/Tetramputechture/nclone.git
 ```
 
-**Dependencies:**
-- Python 3.8+
-- pygame>=2.5.0
-- numpy>=1.24.0
-- opencv-python>=4.8.0
-- pycairo>=1.25.0
-- gymnasium>=0.29.0
+Dependencies: Python 3.8+, pygame>=2.5.0, numpy>=1.24.0, opencv-python>=4.8.0, pycairo>=1.25.0, gymnasium>=0.29.0.
 
-## Quick Start
+## Quick start
 
-### Interactive Play
-
-Test the environment with keyboard controls:
+### Interactive play
 
 ```bash
-# Run test environment
 python -m nclone.test_environment
 
 # Controls:
-#   Arrow keys / WASD: Move
-#   Space / Up: Jump
-#   R: Reset level
+#   Arrow keys / WASD: move
+#   Space / Up: jump
+#   R: reset level
 ```
 
-### RL Training Integration
+### RL training
 
 ```python
-from nclone import NppEnvironment
+from nclone.gym_environment import NppEnvironment, EnvironmentConfig
 
-# Create environment
-env = NppEnvironment(
-    render_mode="grayscale_array",  # Headless for training
-    dataset_dir="datasets/train",
-    config=EnvironmentConfig(
-        graph=GraphConfig()  # Graph for PBRS and observations
-    ),
-    curriculum_level=0  # Difficulty level
-)
+# Headless training config
+env = NppEnvironment(EnvironmentConfig.for_training())
 
-# Standard Gym interface
 obs, info = env.reset()
 done = False
-
 while not done:
-    action = policy(obs)  # Your policy here
+    action = policy(obs)  # your policy
     obs, reward, terminated, truncated, info = env.step(action)
     done = terminated or truncated
-
 env.close()
 ```
 
-## Environment Interface
+`create_training_env(config=None)` is a convenience wrapper around the same constructor.
+`EnvironmentConfig` controls rendering, PBRS, graph output, reachability, reward config, sim
+backend, and curriculum (see `nclone/gym_environment/config.py`).
 
-### Action Space
+## Environment interface
 
-Discrete(6) actions:
-- 0: No-op
-- 1: Left
-- 2: Right
-- 3: Jump
-- 4: Left + Jump
-- 5: Right + Jump
+### Action space
 
-### Observation Space
+Discrete(6): 0 no-op, 1 left, 2 right, 3 jump, 4 left+jump, 5 right+jump.
 
-Multi-modal observations for CNN, MLP, and GNN architectures.
+### Observation space
 
-```python
-{
-    # Visual (CNNs)
-    'player_frame': Box(0, 255, (84, 84, 1), uint8),  # or (stack_size, 84, 84, 1) if stacked
-    'global_view': Box(0, 255, (176, 100, 1), uint8),  # or (stack_size, 176, 100, 1) if stacked
-    
-    # State vectors (MLPs)
-    'game_state': Box(-1, 1, (26,), float32),  # or (stack_size, 26) if stacked
-    'reachability_features': Box(0, 1, (8,), float32),
-    'entity_positions': Box(0, 1, (6,), float32),
-    'switch_states': Box(0, 1, (25,), float32),
-    
-    # Graph (GNNs, optional - memory-optimized)
-    'graph_node_feats': Box(-inf, inf, (max_nodes, 4), float32),  # Memory-optimized: 4 dims
-    'graph_edge_index': Box(0, max_nodes-1, (2, max_edges), uint16),
-    ...
-}
-```
+The default training observation is a `Dict` of five tensors:
 
-**Validate observations:**
+| key | shape | dtype | notes |
+|---|---|---|---|
+| `tile_grid` | `(42, 23)` | int8 | tile-type ids (0 to 37) |
+| `entity_overlays` | `(5, 42, 23)` | float32 | per-type entity presence (ninja, switch, exit, deadly/safe mine density) |
+| `hazard_map` | `(2, 168, 92)` | float32 | deadly-mine and safe-mine signed distance fields, in [-1, 1] |
+| `game_state` | `(261,)` | float32 | flat physics/proprio/goal vector (grows with opt-in exposure flags) |
+| `action_mask` | `(6,)` | int8 | valid primitive actions |
+
+The authoritative spec, including the full `game_state` index map and opt-in keys (cost-to-go
+map, ego crops, waypoint/lattice nav), is in
+[OBSERVATION_SPACE_README.md](OBSERVATION_SPACE_README.md). Validate a live env with:
+
 ```bash
 python tools/validate_observations.py --episodes 3
 ```
 
-**Full documentation:** [OBSERVATION_SPACE_README.md](OBSERVATION_SPACE_README.md)
+### Reward structure
 
-### Frame Stacking
-
-Frame stacking provides temporal information to the policy by stacking consecutive observations. This technique, popularized by DQN (Mnih et al., 2015), allows the agent to infer velocity, acceleration, and motion dynamics.
-
-**Configuration:**
-
-```python
-from nclone.gym_environment import create_training_env, EnvironmentConfig, FrameStackConfig
-
-# Enable frame stacking
-config = EnvironmentConfig.for_training()
-config.frame_stack = FrameStackConfig(
-    enable_visual_frame_stacking=True,
-    visual_stack_size=4,  # Stack 4 visual frames
-    enable_state_stacking=True,
-    state_stack_size=4,  # Stack 4 game states
-    padding_type="zero"  # or "repeat"
-)
-
-env = create_training_env(config)
-```
-
-**Key Features:**
-- **Independent stacking**: Visual frames and game states can be stacked independently with different stack sizes (2-12 frames)
-- **Consistent augmentation**: When frame augmentation is enabled, the same transform is applied across all frames in the stack to maintain temporal coherence
-- **Configurable padding**: Choose between zero padding or repeating the initial frame
-
-**References:**
-- Mnih et al. (2015). "Human-level control through deep reinforcement learning." *Nature* 518, 529-533. https://doi.org/10.1038/nature14236
-- Machado et al. (2018). "Revisiting the Arcade Learning Environment." *IJCAI* 61, 523-562.
-
-### Reward Structure
-
-nclone implements a multi-component reward system designed for effective RL training, following best practices from reward shaping research.
-
-**Quick Reference:**
-
-| Component | Value | Description |
-|-----------|-------|-------------|
-| **Level Completion** | +1.0 | Primary success signal |
-| **Death** | -0.5 | Moderate penalty for failure |
-| **Switch Activation** | +0.1 | Intermediate milestone |
-| **Time Penalty** | -0.01/step | Encourages efficiency |
-| **Navigation** | ~0.0001 | Distance-based shaping |
-| **Exploration** | 0.001-0.004 | Multi-scale spatial coverage |
-
-```python
-from nclone.gym_environment.reward_calculation.reward_constants import (
-    get_completion_focused_config,  # Fast completion (default)
-    get_safe_navigation_config,      # Safety-constrained navigation
-    get_exploration_focused_config,  # Maximum exploration
-    get_minimal_shaping_config,      # Sparse rewards only
-)
-
-### Curriculum Levels
-
-Progressive difficulty stages:
-
-| Level | Description | Entity Count | Complexity |
-|-------|-------------|--------------|------------|
-| 0 | Simple navigation | Exit only | Low |
-| 1 | Switch activation | Exit + Switch | Low-Med |
-| 2 | Basic hazards | + 2-3 Mines | Medium |
-| 3 | Complex hazards | + 5-7 Mines | Med-High |
-| 4 | Advanced puzzles | + Locked doors | High |
+Multi-component reward: level completion (+1.0), death (-0.5), switch activation (+0.1), a small
+per-step time penalty, distance-based navigation shaping, and exploration bonuses. PBRS shaping and
+component weights are configured through `EnvironmentConfig.reward_config`; the training-side
+reward design is documented in npp-rl (`docs/REWARD_SYSTEM_DOCUMENTATION.md`).
 
 ## Performance
 
-### Benchmarks
-
-| Mode | FPS | Use Case |
-|------|-----|----------|
-| Headless (grayscale_array) | 1000-2000 | RL training |
-| Rendered (human) | 60 | Interactive play/debug |
+| Mode | FPS | Use case |
+|---|---|---|
+| Headless | 1000-2000 | RL training |
+| Rendered (human) | 60 | Interactive play / debug |
 | Multi-process (64 envs) | 30K+ steps/sec | Distributed training |
 
-**Reachability Analysis:**
-- Computation time: <1ms per step
-- Uses OpenCV flood fill for efficiency
-- Cached and updated incrementally
-
-### Memory Usage
-
-- Single environment: ~200MB RAM
-- 64 parallel environments: ~6GB RAM
-- Graph observations add ~10% overhead
+Reachability analysis runs in under 1ms per step (OpenCV flood fill, cached and updated
+incrementally). Memory: ~200MB per environment, ~6GB for 64 parallel environments.
 
 ## Datasets
 
-### Level Format
-
-Levels stored as JSON with Metanet format compatibility:
-
-```json
-{
-    "id": "level_001",
-    "tiles": [...],
-    "objects": [
-        {"type": "exit", "position": [x, y]},
-        {"type": "switch", "position": [x, y]},
-        {"type": "mine", "position": [x, y], "active": true}
-    ],
-    "spawn_point": [x, y]
-}
-```
-
-### Creating Custom Datasets
-
-```python
-from nclone.level_loader import LevelLoader
-
-# Load custom levels
-loader = LevelLoader(dataset_dir="my_levels/")
-levels = loader.load_all_levels()
-
-# Use in environment
-env = NPPEnvironment(dataset_dir="my_levels/")
-```
-
-## Advanced Features
-
-### Graph Observations
-
-Enable structural level understanding:
-
-```python
-env = NPPEnvironment(
-    config=EnvironmentConfig(
-        graph=GraphConfig()
-    ),
-    graph_config={
-        'node_features': 56,    # Comprehensive node features (reduced from 61)
-        'edge_features': 6,     # Comprehensive edge features
-        'max_nodes': 100,       # Maximum nodes in graph
-        'max_edges': 400        # Maximum edges in graph
-    }
-)
-
-# Note: Feature dimensions come from nclone.graph.common:
-# - NODE_FEATURE_DIM = 50 (3 spatial + 7 type + 5 entity + 34 tile + 1 reachability)
-# - EDGE_FEATURE_DIM = 6 (edge type, connectivity)
-```
-
-Graph structure:
-- Nodes represent level geometry and entities
-- Edges represent spatial relationships
-- Automatically computed and cached
+Levels are stored in the simulator `map_data` integer format read from official `.map` binaries
+and produced by the map generators. The benchmark dataset and its layout are documented in
+[docs/BENCHMARK_DATASET.md](docs/BENCHMARK_DATASET.md); generate one with
+`scripts/generate_benchmark_dataset.py`.
 
 ## Development
 
-### Running Tests
-
 ```bash
-# Run test suite
-pytest tests/
+pytest tests/                                   # test suite
+pytest tests/test_native_backend_parity.py -xvs # one module
+pytest --cov=nclone --cov-report=html           # with coverage
 
-# Run specific test
-pytest tests/test_npp_environment.py -xvs
-
-# With coverage
-pytest --cov=nclone --cov-report=html
+make dev-setup   # install dev tools
+make lint        # lint
+make fix         # lint and auto-fix
+make imports     # remove unused imports
 ```
 
-### Code Quality
-
+Profiling:
 ```bash
-# Install dev tools
-make dev-setup
-
-# Lint code
-make lint
-
-# Auto-fix issues
-make fix
-
-# Remove unused imports
-make imports
-```
-
-### Profiling
-
-```bash
-# Profile environment performance
 python -m cProfile -o profile.out -m nclone.test_environment
 python -m pstats profile.out
-
-# Log frame times
 python -m nclone.test_environment --log-frametimes
 ```
 
 ## Integration with npp-rl
 
-This simulator is designed to work with the `npp-rl` training framework:
+This simulator is the training environment for the `npp-rl` framework:
 
 ```bash
-# Install both repositories
 git clone https://github.com/Tetramputechture/nclone.git
 git clone https://github.com/Tetramputechture/npp-rl.git
-
 cd nclone && pip install -e . && cd ..
-cd npp-rl && pip install -r requirements.txt && cd ..
+cd npp-rl && pip install -e . && cd ..
 
-# Train agent (see npp-rl for full options and the reference v22 launcher)
+# Train (see npp-rl for full options and the reference v22 launcher)
 cd npp-rl
 python scripts/train.py \
     --experiment-name quickstart \
@@ -326,4 +148,4 @@ python scripts/train.py \
     --total-timesteps 20_000_000
 ```
 
-See `npp-rl/README.md` for full training instructions.
+See `npp-rl/README.md` for training instructions.

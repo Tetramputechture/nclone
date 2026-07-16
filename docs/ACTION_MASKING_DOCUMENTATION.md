@@ -2,29 +2,29 @@
 
 ## Overview
 
-Action masking is a technique used to prevent the reinforcement learning agent from selecting provably suboptimal or useless actions. This improves sample efficiency by focusing exploration on valid actions and accelerates learning by eliminating obvious mistakes.
+Action masking prevents the agent from selecting provably useless actions. This improves sample efficiency by focusing exploration on valid actions and eliminating obvious mistakes.
 
-Our implementation features **annealed action masking** that transitions from hard constraints (early training) through soft guidance (mid training) to full autonomy (late training), allowing the agent to progressively gain independence from scaffolding.
+The implementation uses annealed action masking: hard constraints (early training), then soft guidance (mid training), then full autonomy (late training). The agent progressively gains independence from the scaffolding.
 
 ## Action Space
 
 N++ has 6 discrete actions:
-- **Action 0**: NOOP (no input)
-- **Action 1**: LEFT (press 'A')
-- **Action 2**: RIGHT (press 'D')
-- **Action 3**: JUMP (press Space)
-- **Action 4**: JUMP+LEFT (press Space + 'A')
-- **Action 5**: JUMP+RIGHT (press Space + 'D')
+- Action 0: NOOP (no input)
+- Action 1: LEFT (press 'A')
+- Action 2: RIGHT (press 'D')
+- Action 3: JUMP (press Space)
+- Action 4: JUMP+LEFT (press Space + 'A')
+- Action 5: JUMP+RIGHT (press Space + 'D')
 
 ## Hard Action Masking
 
 ### Implementation Location
-- **Core Logic**: `nclone/ninja.py::Ninja.get_valid_action_mask()`
-- **Environment Integration**: `nclone/gym_environment/base_environment.py::_get_action_mask_with_path_update()`
-- **Mode Control**: `nclone/gym_environment/reward_calculation/reward_config.py::RewardConfig.action_masking_mode`
+- Core Logic: `nclone/ninja.py::Ninja.get_valid_action_mask()`
+- Environment Integration: `nclone/gym_environment/base_environment.py::_get_action_mask_with_path_update()`
+- Mode Control: `nclone/gym_environment/reward_calculation/reward_config.py::RewardConfig.action_masking_mode`
 
 ### When Applied
-Hard masking is applied during **early training** when:
+Hard masking is applied during early training when:
 - Curriculum progress < 30% OR
 - Success rate < 15%
 
@@ -58,13 +58,13 @@ if jump_useless:
     mask[5] = False  # JUMP+RIGHT
 ```
 
-**Key Insight**: The mask predicts buffer activation. If the agent presses jump while airborne for the first time (transitioning from `jump_input==0` to `jump_input==1`), it activates the jump buffer, making the action useful even though the jump won't execute immediately.
+Key Insight: The mask predicts buffer activation. If the agent presses jump while airborne for the first time (transitioning from `jump_input==0` to `jump_input==1`), it activates the jump buffer, making the action useful even though the jump won't execute immediately.
 
-**Buffer System**:
-- **Jump Buffer**: 5-frame window activated by pressing jump while airborne
-- **Floor Buffer**: 5-frame window after touching floor
-- **Wall Buffer**: 5-frame window after touching wall  
-- **Launch Pad Buffer**: 4-frame window after hitting launch pad
+Buffer System:
+- Jump Buffer: 5-frame window activated by pressing jump while airborne
+- Floor Buffer: 5-frame window after touching floor
+- Wall Buffer: 5-frame window after touching wall  
+- Launch Pad Buffer: 4-frame window after hitting launch pad
 
 ##### Wall Movement Masking
 Masks directional inputs into walls based on ninja state:
@@ -98,8 +98,8 @@ if self.walled:
                     mask[2] = False  # Mask RIGHT
 ```
 
-**Rationale**: 
-- Jump+direction combos are NOT masked (they trigger wall jumps)
+Rationale:
+- Jump+direction combos stay unmasked (they trigger wall jumps)
 - Pure directional inputs are masked when they provide no benefit
 - Wall sliding is useful (slows descent), so inputs that trigger it are allowed
 
@@ -136,7 +136,7 @@ if enable_path_masking and masking_mode == "hard":
         # Keep: NOOP (0), LEFT (1), RIGHT (2)
 ```
 
-**Path Straightness Detection** (`base_environment.py::_detect_straight_path_direction()`):
+Path Straightness Detection (`base_environment.py::_detect_straight_path_direction()`):
 
 Uses multi-hop direction (8 hops ahead, ~96-192px lookahead) to detect trivial paths:
 
@@ -203,17 +203,17 @@ def _apply_action_mask(
     return masked_logits
 ```
 
-After softmax, masked actions have **exactly zero probability** of being selected.
+After softmax, masked actions have exactly zero probability of being selected.
 
 ## Soft Action Masking (Logit Biasing)
 
 ### Implementation Location
-- **Bias Computation**: `npp_rl/training/heuristic_action_guidance.py::compute_heuristic_logit_bias()`
-- **Policy Integration**: `npp_rl/agents/masked_ppo.py::collect_rollouts()`
-- **Controller**: `npp_rl/training/adaptive_guidance_controller.py`
+- Bias Computation: `npp_rl/training/heuristic_action_guidance.py::compute_heuristic_logit_bias()`
+- Policy Integration: `npp_rl/agents/masked_ppo.py::collect_rollouts()`
+- Controller: `npp_rl/training/adaptive_guidance_controller.py`
 
 ### When Applied
-Soft masking (logit biasing) is applied during **mid training** when:
+Soft masking (logit biasing) is applied during mid training when:
 - Curriculum progress 30-70% OR
 - Success rate 15-40%
 
@@ -332,9 +332,9 @@ actions, values, log_probs = self.policy.forward(
 )
 ```
 
-**Key Difference from Hard Masking**:
-- Hard masking: `logits[masked] = -inf` → **zero probability**
-- Soft masking: `logits += bias` → **adjusts probability** but doesn't eliminate
+Key Difference from Hard Masking:
+- Hard masking: `logits[masked] = -inf` → zero probability
+- Soft masking: `logits += bias` → adjusts probability but doesn't eliminate
 
 #### 4. Bias Strength Schedule
 
@@ -355,12 +355,12 @@ def logit_bias_strength(self) -> float:
     return 2.0 - 1.5 * t  # 2.0 at t=0, 0.5 at t=1
 ```
 
-**Example**: At 27.5% success (midpoint of soft mode), bias_strength = 1.25, creating moderate guidance without heavy constraints.
+Example: At 27.5% success (midpoint of soft mode), bias_strength = 1.25, creating moderate guidance without heavy constraints.
 
 ## No Masking (Full Autonomy)
 
 ### When Applied
-No masking/biasing is applied during **late training** when:
+No masking/biasing is applied during late training when:
 - Curriculum progress > 70% AND
 - Success rate > 40%
 
@@ -515,9 +515,9 @@ def action_masking_mode(self) -> str:
     return "none"
 ```
 
-**Design Philosophy**:
-- Use **OR** for hard/soft (guidance when either condition met)
-- Use **AND** for none (full autonomy only when both conditions met)
+Design Philosophy:
+- Use OR for hard/soft (guidance when either condition met)
+- Use AND for none (full autonomy only when both conditions met)
 - Ensures guidance persists through curriculum difficulty spikes
 
 ### Example Progression
@@ -531,24 +531,24 @@ def action_masking_mode(self) -> str:
 | 8 | 89% | 45% | none | Physics masking only |
 | 9 | 100% | 60% | none | Physics masking only |
 
-**Note**: Physics-based masking (useless jumps, wall collisions) is **always active** to prevent obvious mistakes, even in "none" mode.
+Note: Physics-based masking (useless jumps, wall collisions) is always active to prevent obvious mistakes, even in "none" mode.
 
 ## Performance Impact
 
 ### Hard Masking Benefits
-- **Sample Efficiency**: 30-50% faster learning on early curriculum stages
-- **Success Rate**: 100% on trivial straight-path levels (vs ~85% without masking)
-- **Exploration Focus**: Reduces wasted samples on provably wrong actions
+- Sample Efficiency: 30-50% faster learning on early curriculum stages
+- Success Rate: 100% on trivial straight-path levels (vs ~85% without masking)
+- Exploration Focus: Reduces wasted samples on provably wrong actions
 
 ### Soft Masking Benefits
-- **Smooth Transition**: Gradual guidance removal prevents performance collapse
-- **Preserved Exploration**: Unlike hard masking, doesn't eliminate actions entirely
-- **Generalization**: Agent learns when to ignore guidance (important for complex paths)
+- Smooth Transition: Gradual guidance removal prevents performance collapse
+- Preserved Exploration: Unlike hard masking, doesn't eliminate actions entirely
+- Generalization: Agent learns when to ignore guidance (important for complex paths)
 
 ### No Masking Benefits
-- **Full Autonomy**: Agent must handle all scenarios independently
-- **Robustness**: Forces policy to develop comprehensive decision-making
-- **Transfer Learning**: Better generalization to unseen levels
+- Full Autonomy: Agent must handle all scenarios independently
+- Robustness: Forces policy to develop comprehensive decision-making
+- Transfer Learning: Better generalization to unseen levels
 
 ## Debugging and Monitoring
 
@@ -619,23 +619,23 @@ Key metrics logged during training:
 
 ## Summary
 
-Our action masking strategy provides **progressive guidance** that adapts to agent competence:
+Our action masking strategy provides progressive guidance that adapts to agent competence:
 
-1. **Early Training (Hard Mode)**:
+1. Early Training (Hard Mode):
    - Eliminates provably wrong actions
    - Ensures 100% success on trivial paths
    - Focuses exploration on valid action sequences
 
-2. **Mid Training (Soft Mode)**:
+2. Mid Training (Soft Mode):
    - Guides without eliminating options
    - Smoothly transitions to autonomy
    - Preserves exploration while reducing mistakes
 
-3. **Late Training (No Guidance)**:
+3. Late Training (No Guidance):
    - Full policy autonomy
    - Robust decision-making
    - Strong generalization
 
 The physics-based masking (useless jumps, wall collisions) remains active throughout, preventing obvious mistakes while allowing the policy to develop sophisticated strategies.
 
-This approach balances **sample efficiency** (faster early learning) with **robustness** (autonomous late-stage policy) through curriculum-aware annealing.
+This approach balances sample efficiency (faster early learning) with robustness (autonomous late-stage policy) through curriculum-aware annealing.

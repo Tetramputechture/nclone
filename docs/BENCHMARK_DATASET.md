@@ -8,13 +8,13 @@ and consumed by the npp-rl training / evaluation stack
 
 ## Goals
 
-1. **Single-mechanic baselines.** Every generated level isolates one
-   primary mechanic from `BucketType` so progression (T1 → T4) is an
-   almost-pure difficulty signal, not a confound with other mechanics.
-2. **Reproducible difficulty curve.** Tier semantics and seed math are
+1. Single-mechanic baselines. Every generated level isolates one
+   primary mechanic from `BucketType` so progression (T1 to T4) is an
+   almost-pure difficulty signal rather than a confound with other mechanics.
+2. Reproducible difficulty curve. Tier semantics and seed math are
    deterministic so the same commit produces the same dataset bit-for-bit
    every run.
-3. **Value-based PBRS ready.** Levels carry stable integer `level_id`s
+3. Value-based PBRS ready. Levels carry stable integer `level_id`s
    so BSRS's `V(s)` / `V(s')` caches and `AStarDistanceMapCache` can key
    into them without any external bookkeeping.
 
@@ -47,7 +47,7 @@ Schema `mechanic_primary_v1`. Captures the full generation run:
 | `source`                      | Script path that produced the dataset.                    |
 | `buckets`                     | Buckets included (subset of `BUCKET_CATALOG`).            |
 | `tiers`                       | Tiers included (subset of `BUCKET_TIERS`).                |
-| `seed_bases`                  | `{"train": int, "test": int}` — see seed math below.      |
+| `seed_bases`                  | `{"train": int, "test": int}`; see seed math below.       |
 | `counts_per_bucket_per_tier`  | `{"train": N_train, "test": N_test}`.                     |
 | `splits`                      | Per-split summary: total levels, per-bucket totals.       |
 | `catalog`                     | Snapshot of `BUCKET_CATALOG` with dataclass configs.      |
@@ -82,7 +82,7 @@ Each pickle is a Python `dict`:
 | `level_id`  | `int` (63-bit)       | SHA-1 of `(split, bucket, tier, index)`.     |
 | `seed`      | `int`                | Generator seed (see seed math below).        |
 | `bucket`    | `str`                | e.g. `"BASIC_JUMP"`.                         |
-| `tier`      | `int`                | 1–4.                                         |
+| `tier`      | `int`                | 1-4.                                         |
 | `generator` | `str`                | Registry key (`basic_jump`, `mine_path`, …). |
 | `preset`    | `str`                | Preset name in `GENERATOR_PRESETS`.          |
 | `map_data`  | `List[int \| float]` | Full N++ map array (tile + entity).          |
@@ -90,7 +90,7 @@ Each pickle is a Python `dict`:
 | `metadata`  | `dict`               | `description`, `split`, `source`, `map_hash`, `index`. |
 
 `map_data` follows the exact same convention as
-`Map.map_data()` (header 0–183, tile grid 184–1149, entity section from
+`Map.map_data()` (header 0-183, tile grid 184-1149, entity section from
 byte 1235 onward). Dedicated generators emit only integer coordinates;
 legacy generators (`horizontal_corridor`, `single_chamber`) occasionally
 emit sub-pixel floats, which the npp-rl runner rounds to the nearest
@@ -115,8 +115,8 @@ Out-of-scope buckets (`SWITCH_PUZZLE`, `LAUNCH_PAD`, `THWUMP`, `DRONE`,
 their generators come online. See
 [`docs/MECHANIC_SUPPORT_MATRIX.md`](MECHANIC_SUPPORT_MATRIX.md).
 
-**Tier 3/4 mixed mechanics (Layer 1 only):** T1–T2 presets stay
-single-mechanic-pure. Some T3/T4 catalog entries add exactly *one*
+Tier 3/4 mixed mechanics (Layer 1 only): T1-T2 presets stay
+single-mechanic-pure. Some T3/T4 catalog entries add exactly one
 secondary in-scope mechanic (toggle mines and/or a short step-up) so
 learned value / BSRS sees combined states without new entity types.
 
@@ -155,13 +155,13 @@ Collision-free offsets: with `BUCKET_STRIDE` = 10 M and `TIER_STRIDE` =
 1 M, neighboring buckets/tiers never overlap for plausible dataset
 sizes (N ≤ 1 M per bucket-tier-split).
 
-**Dedup retry.** If the generated `map_data` hashes to an already-seen
+Dedup retry. If the generated `map_data` hashes to an already-seen
 level, the script retries with `seed + 1_000_000` up to `max_retry`
 (default 10) times. Retries are counted in
 `manifest.generation_info.duplicates_retried`; exhausted slots are
 reported in `skipped`.
 
-**`level_id`.** `SHA1(f"{split}:{bucket}:{tier}:{index}")[:8]` masked
+`level_id`: `SHA1(f"{split}:{bucket}:{tier}:{index}")[:8]` masked
 to 63 bits. Stable across runs; split-disambiguated so train/test never
 collide.
 
@@ -191,7 +191,7 @@ python -m scripts.generate_benchmark_dataset \
     --output_dir ./datasets/mechanic_benchmark
 ```
 
-Smoke run (small, fast — matches the smoke test fixture):
+Smoke run (small and fast, matches the smoke test fixture):
 
 ```bash
 python -m scripts.generate_benchmark_dataset \
@@ -266,7 +266,7 @@ loaders consume it correctly.
 
 ## Notes & future work
 
-- Validation is currently **hash-dedup only** (fast path). A future
+- Validation is currently hash-dedup only (fast path). A future
   iteration may add optional A\* solvability / baseline-playout
   verification behind a flag.
 - Phase-1 includes `FLAT_RUN`, `BASIC_JUMP`, `WALL_JUMP`, `MINE_NAVIGATION`,
