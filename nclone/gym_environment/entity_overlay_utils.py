@@ -197,7 +197,14 @@ def _inner_tile_bounds_for_kill_zone(
 # step. Keyed by (mx, my) floats: positions are deterministic and repeat exactly
 # each step, and the footprint depends only on position so it is safe to share
 # across envs/levels.
+# Capped like its two siblings below. The key is a *float* pixel position, so the
+# key space is unbounded in principle: every newly generated procgen level can
+# introduce positions never seen before, and mirror augmentation reflects each one
+# to a second distinct position. Entries are tiny (a few dozen intp indices), so
+# this grows slowly rather than explosively -- but "slowly unbounded" over a 30M-step
+# run is still a leak, and an uncapped dict next to two capped ones was an oversight.
 _MINE_FOOTPRINT_CACHE: dict[Tuple[float, float], np.ndarray] = {}
+_MINE_FOOTPRINT_CACHE_CAP = 65536
 
 
 def _mine_kill_zone_footprint(mx: float, my: float) -> np.ndarray:
@@ -231,7 +238,8 @@ def _mine_kill_zone_footprint(mx: float, my: float) -> np.ndarray:
         gtx = tx_min + oi
         gty = ty_min + oj
         fp = (gtx * MAP_TILE_HEIGHT + gty).astype(np.intp)
-    _MINE_FOOTPRINT_CACHE[key] = fp
+    if len(_MINE_FOOTPRINT_CACHE) < _MINE_FOOTPRINT_CACHE_CAP:
+        _MINE_FOOTPRINT_CACHE[key] = fp
     return fp
 
 
