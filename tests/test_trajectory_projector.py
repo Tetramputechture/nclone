@@ -17,6 +17,7 @@ import pytest
 from nclone.constants.physics_constants import MAX_JUMP_DURATION  # noqa: F401
 from nclone.gym_environment.constants import (
     GAME_STATE_CHANNELS,
+    GAME_STATE_EMITTED_CHANNELS,
     GAME_STATE_GHOST_ARC_DIM,
     GAME_STATE_GHOST_ARC_IDX,
     GAME_STATE_GHOST_ARC_PER_ARC,
@@ -308,7 +309,9 @@ class TestPassiveArc:
         env = self._env()
         obs, _ = env.reset()
         gs = np.asarray(obs["game_state"])
-        assert gs.shape[0] == GAME_STATE_CHANNELS  # 237
+        # EMITTED width: the always-on gold-fraction scalar sits after the
+        # base block, so the vector is GAME_STATE_CHANNELS + 1 wide.
+        assert gs.shape[0] == GAME_STATE_EMITTED_CHANNELS
         i = GAME_STATE_PASSIVE_ARC_IDX
         # Fresh spawn: ninja is grounded -> passive block is all zeros.
         assert np.all(gs[i : i + GAME_STATE_PASSIVE_ARC_DIM] == 0.0)

@@ -44,10 +44,13 @@ from nclone_native import MineThreatMap
 from nclone.gym_environment.config import EnvironmentConfig
 from nclone.gym_environment.constants import (
     GAME_STATE_CHANNELS,
+    GAME_STATE_EMITTED_CHANNELS,
     GAME_STATE_SWITCH_ACTIVATED_IDX,
     HAZARD_MAP_CHANNELS,
     HAZARD_MAP_HEIGHT,
     HAZARD_MAP_WIDTH,
+    HAZARD_MAP_OBS_HEIGHT,
+    HAZARD_MAP_OBS_WIDTH,
 )
 from nclone.gym_environment.entity_overlay_utils import ENTITY_OVERLAY_CHANNELS
 from nclone.gym_environment.npp_environment import NppEnvironment
@@ -67,11 +70,19 @@ LAYER1_KEY_CONTRACT: Dict[str, Dict[str, object]] = {
         "shape": (ENTITY_OVERLAY_CHANNELS, 42, 23),
         "dtype": np.float32,
     },
+    # Policy-facing resolution: the 6px field is pooled to HAZARD_MAP_OBS_* on
+    # the way into the observation (the ego crops and PBRS still read it at full
+    # 6px). The raw-engine assertions further down deliberately keep using
+    # HAZARD_MAP_WIDTH/HEIGHT — they test the Rust SDF, not the obs.
     "hazard_map": {
-        "shape": (HAZARD_MAP_CHANNELS, HAZARD_MAP_WIDTH, HAZARD_MAP_HEIGHT),
+        "shape": (HAZARD_MAP_CHANNELS, HAZARD_MAP_OBS_WIDTH, HAZARD_MAP_OBS_HEIGHT),
         "dtype": np.float32,
     },
-    "game_state": {"shape": (GAME_STATE_CHANNELS,), "dtype": np.float32},
+    # EMITTED, not the base: the gold-fraction scalar is appended
+    # unconditionally, so the vector the env produces is always one wider than
+    # GAME_STATE_CHANNELS. Asserting the base silently failed this contract
+    # check for every run since the gold obs landed.
+    "game_state": {"shape": (GAME_STATE_EMITTED_CHANNELS,), "dtype": np.float32},
 }
 
 
@@ -168,7 +179,7 @@ def test_switch_collection_flag_layout(shared_env: NppEnvironment):
     obs = _resilient_reset(shared_env, FIXTURE_SEEDS[0])
     assert "game_state" in obs
     gs = np.asarray(obs["game_state"], dtype=np.float32)
-    assert gs.shape == (GAME_STATE_CHANNELS,)
+    assert gs.shape == (GAME_STATE_EMITTED_CHANNELS,)
     # switch_activated sits right after the base ninja state + physics-derived
     # block (its definition in gym_environment.constants). The old
     # ``GAME_STATE_CHANNELS - 19`` form encoded the pre-v8 46-dim layout and

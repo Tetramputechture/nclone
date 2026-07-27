@@ -36,7 +36,23 @@ python -m nclone.test_environment
 #   Arrow keys / WASD: move
 #   Space / Up: jump
 #   R: reset level
+#   O: mirror the level horizontally (map-augmentation check)
+#   Mouse wheel / PgUp / PgDn: scroll the dev panel
 ```
+
+### 3D view
+
+An optional moderngl frontend renders the same simulation as a 2.5D extruded
+diorama, for interactive play, MP4 capture, or a live panel beside the 2D dev
+tool. It reads sim state and never touches physics.
+
+```bash
+pip install -e ".[render3d]"
+python -m nclone.render3d.app --map nclone/test_maps/squiggly --follow
+```
+
+See [nclone/render3d/README.md](nclone/render3d/README.md) for cameras, recording,
+stacked multi-level mode, and the dev-tool panel.
 
 ### RL training
 

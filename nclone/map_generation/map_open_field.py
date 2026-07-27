@@ -38,6 +38,11 @@ class MapOpenField(Map):
     MIN_SEPARATION = 3
     MAX_SEPARATION = 8
 
+    # Gold count range (SPREAD regime); overwritten by OpenFieldConfig via the
+    # factory. 0/0 disables gold. See docs/GOLD_AND_SCORE_OPTIMIZATION.md.
+    MIN_GOLD_COUNT = 5
+    MAX_GOLD_COUNT = 16
+
     def generate(self, seed: Optional[int] = None) -> "MapOpenField":
         if seed is not None:
             self.rng.seed(seed)
@@ -80,4 +85,21 @@ class MapOpenField(Map):
         self.set_ninja_spawn(ninja_x, floor_row, orientation)
         self.add_entity(3, door_x, floor_row, 0, 0, switch_x, floor_row)
 
+        # SPREAD gold: scatter across the full run width at/just above the floor so
+        # the score objective rewards sweeping the whole open arena (the large-open
+        # case). Reachable by construction — on or a hop above the continuous floor.
+        self._place_spread_gold(left, right, floor_row, {ninja_x, switch_x, door_x})
+
         return self
+
+    def _place_spread_gold(self, left, right, floor_row, occupied):
+        n_gold = self.rng.randint(self.MIN_GOLD_COUNT, self.MAX_GOLD_COUNT)
+        if n_gold <= 0:
+            return
+        cand_x = [x for x in range(left, right + 1) if x not in occupied]
+        self.rng.shuffle(cand_x)
+        for gx in cand_x[:n_gold]:
+            # Floor level or one/two tiles above — all jump-reachable in open space.
+            gy = floor_row - self.rng.randint(0, 2)
+            gx2, gy2 = self._find_closest_valid_tile(gx, gy, 0)
+            self.add_entity(2, gx2, gy2)

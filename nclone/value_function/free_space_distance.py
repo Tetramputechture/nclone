@@ -129,6 +129,68 @@ _CELL = TILE_PIXEL_SIZE / 4.0
 # (c+1,r+1) (see map_loader), so playable pixels span [0, (MAP_TILE_WIDTH+1)*24].
 _W = int((MAP_TILE_WIDTH + 1) * TILE_PIXEL_SIZE / _CELL) + 2
 _H = int((MAP_TILE_HEIGHT + 1) * TILE_PIXEL_SIZE / _CELL) + 2
+
+# HORIZONTAL_AUGMENTATION_PLAN §2. Process-wide toggle (a run has one setting,
+# and threading it through a disk/mem-cached constructor would buy nothing).
+#
+# When True this module becomes exactly equivariant under a left-right
+# reflection of the level, via two changes:
+#
+#   1. ``_field_at`` interpolates against cell CENTRES instead of cell left/top
+#      edges. A registration FIX in its own right -- ``_dijkstra`` seeds cells by
+#      their centres, so the legacy read-out is offset by half a cell (3 px).
+#   2. The whole field is BUILT on the level's canonical orientation and
+#      reflected back (see ``_build_cached``). Dijkstra's heap breaks ties on
+#      ``(cost, x, y)``, so the two orientations relax cells in a different order
+#      and their float sums differ in the last bits; the nav hint's ``argmin``
+#      over 8 near-tied hops turns that into a different direction. Building once
+#      and reflecting the answer removes the whole class.
+#
+# Default False: the field is a PBRS potential, so changing it changes shaped
+# rewards, and a run resumed from a checkpoint trained without it would see a
+# different potential. Opt in for fresh trains via
+# ``ReachabilityConfig.mirror_equivariant_obs``.
+_REFLECTION_EQUIVARIANT = False
+
+#: Reflection axis in pixels -- the full bordered level width.
+_AXIS_PX = float((MAP_TILE_WIDTH + 2) * TILE_PIXEL_SIZE)
+
+
+def set_reflection_equivariant(enabled: bool) -> None:
+    """Enable/disable reflection-equivariant field construction process-wide."""
+    global _REFLECTION_EQUIVARIANT
+    _REFLECTION_EQUIVARIANT = bool(enabled)
+
+
+def reflection_equivariant() -> bool:
+    """Current reflection-equivariance setting."""
+    return _REFLECTION_EQUIVARIANT
+
+
+def _reflect_point(p):
+    """Reflect a ``(x, y)`` pixel pair about the level's vertical axis."""
+    if p is None:
+        return None
+    return (_AXIS_PX - float(p[0]), float(p[1]))
+
+
+def _mirror_grid_x(arr: np.ndarray, fill) -> np.ndarray:
+    """Reflect a ``(_W, ...)`` sub-cell grid about the level's vertical axis.
+
+    Not a plain ``np.flip``: the grid is ``_W = 174`` cells wide (px ``[0,
+    1044)``) while the level is 1056 px, so cell ``i`` (centre ``(i+0.5)*_CELL``)
+    reflects to index ``175 - i`` -- two columns past the end. Pad to the full
+    176-cell span, flip, and truncate. The padded columns cover px ``[1044,
+    1056)``, which is inside the solid right border, so ``fill`` is the genuine
+    value there (not free / zero density / infinite cost) rather than a
+    convenience.
+    """
+    full = int(round(_AXIS_PX / _CELL))  # 176
+    padded = np.full((full,) + arr.shape[1:], fill, dtype=arr.dtype)
+    padded[: arr.shape[0]] = arr
+    return np.ascontiguousarray(padded[::-1][: arr.shape[0]])
+
+
 _MINE_KILL = 14.0          # NINJA_RADIUS + TOGGLE_MINE_RADIUS_TOGGLED
 _MINE_STATE_DEADLY = 0
 _MINE_SOFT_K = 8.0         # mine-density penalty on grid edges
@@ -171,11 +233,14 @@ def _fs_cache_dir() -> Optional[str]:
         return None
 
 
-def _fs_cache_key(map_data: List[int]) -> str:
+def _fs_cache_key(map_data: List[int], mine_hard: bool = False) -> str:
     h = hashlib.md5()
     h.update(_FS_CACHE_VERSION.encode())
     # Grid/build params are part of the key so a param change can't return stale.
-    h.update(repr((_CELL, _W, _H, _MINE_KILL, _MINE_SOFT_K)).encode())
+    # ``mine_hard`` selects the mine-FAITHFUL variant (deadly-mine cells cut from
+    # the free mask, so the field routes AROUND mines instead of soft-costing
+    # through them); it is a distinct field, so it must key distinctly.
+    h.update(repr((_CELL, _W, _H, _MINE_KILL, _MINE_SOFT_K, bool(mine_hard))).encode())
     h.update(np.asarray([int(v) for v in map_data], dtype=np.int64).tobytes())
     return h.hexdigest()
 
@@ -186,8 +251,14 @@ class FreeSpaceDistanceSource:
     Best-effort: any failure leaves ``available == False`` so the caller falls back.
     """
 
-    def __init__(self, map_data: List[int], *, name: Optional[str] = None):
+    def __init__(self, map_data: List[int], *, name: Optional[str] = None,
+                 mine_hard: bool = False):
         self.available = False
+        # Mine-FAITHFUL mode (v24, for the POLICY observation): cut deadly-mine
+        # cells from the free mask so the cost-to-go / nav gradient the policy
+        # sees routes AROUND mines. Default False keeps the legacy mine-SOFT
+        # field (mines traversable at ~9x cost) that every existing caller uses.
+        self._mine_hard = bool(mine_hard)
         self.switch: Optional[Tuple[float, float]] = None
         self.exit: Optional[Tuple[float, float]] = None
         self._d_switch: Optional[np.ndarray] = None
@@ -218,17 +289,38 @@ class FreeSpaceDistanceSource:
         Lookup order: per-process LRU -> shared on-disk cache -> compute. A hit
         avoids the ~0.1s Dijkstra rebuild entirely (the per-reset bottleneck under
         multi-level training). Cache failures degrade silently to a live build.
+
+        With :func:`set_reflection_equivariant` on, the build runs on the level's
+        CANONICAL orientation and the resulting fields are reflected back. That
+        is what makes the field exactly equivariant: Dijkstra's heap breaks ties
+        on ``(cost, x, y)``, so a level and its mirror relax cells in a different
+        ORDER and their float sums differ in the last bits -- enough for the nav
+        hint's ``argmin`` over 8 near-tied hops to pick a different direction. No
+        tie-break rule fixes that; running the search once and reflecting the
+        answer does. It also makes a level and its mirror SHARE a cache entry.
         """
+        mirrored = False
+        if _REFLECTION_EQUIVARIANT:
+            try:
+                from ..map_augmentation.transforms import canonical_map_data
+
+                map_data, mirrored = canonical_map_data(map_data)
+            except Exception:  # noqa: BLE001 - never fail a build over this
+                mirrored = False
+        self._built_mirrored = mirrored
+
         try:
-            key = _fs_cache_key(map_data)
+            key = _fs_cache_key(map_data, self._mine_hard)
         except Exception:
             self._build(map_data)
+            self._reflect_state_if_mirrored()
             return
 
         cached = _FS_MEM_CACHE.get(key)
         if cached is not None:
             _FS_MEM_CACHE.move_to_end(key)
             self._restore_state(cached)
+            self._reflect_state_if_mirrored()
             return
 
         cache_dir = _fs_cache_dir()
@@ -239,12 +331,15 @@ class FreeSpaceDistanceSource:
                     state = pickle.load(f)
                 self._restore_state(state)
                 self._mem_put(key, state)
+                self._reflect_state_if_mirrored()
                 return
             except Exception:
                 pass  # corrupt/partial cache file -> rebuild
 
         self._build(map_data)
 
+        # Capture BEFORE reflecting: the cache holds the canonical state, which
+        # is what both orientations of the level look it up by.
         state = self._capture_state()
         self._mem_put(key, state)
         if path:
@@ -255,6 +350,31 @@ class FreeSpaceDistanceSource:
                 os.replace(tmp, path)
             except Exception:
                 pass
+        self._reflect_state_if_mirrored()
+
+    def _reflect_state_if_mirrored(self) -> None:
+        """Reflect the canonical-orientation build back into the level's frame.
+
+        Only the OUTPUT state is reflected. The directional blocked-edge masks
+        (``_block_r`` / ``_block_u`` / ``_block_dr`` / ``_block_ur``) are
+        deliberately left in the canonical frame: they are consumed only by
+        ``_dijkstra`` during the build, which has already run, and reflecting a
+        directional mask means re-deriving four index-shifted neighbours -- new
+        code with a real off-by-one surface, for state nothing reads afterwards.
+
+        Never mutates in place: ``_capture_state`` hands the cache references to
+        these very arrays, so an in-place flip would poison the shared cache
+        entry with one orientation's fields.
+        """
+        if not getattr(self, "_built_mirrored", False):
+            return
+        self.switch = _reflect_point(self.switch)
+        self.exit = _reflect_point(self.exit)
+        self._deadly = [_reflect_point(p) for p in self._deadly]
+        self._d_switch = _mirror_grid_x(self._d_switch, np.inf)
+        self._d_exit = _mirror_grid_x(self._d_exit, np.inf)
+        self._free = _mirror_grid_x(self._free, False)
+        self._mden = _mirror_grid_x(self._mden, 0.0)
 
     @staticmethod
     def _mem_put(key: str, state: dict) -> None:
@@ -320,6 +440,16 @@ class FreeSpaceDistanceSource:
                 for iy in range(max(0, cy - kc), min(_H, cy + kc + 1)):
                     if (ix * _CELL + _CELL / 2 - mx) ** 2 + (iy * _CELL + _CELL / 2 - my) ** 2 <= (_MINE_KILL + _CELL) ** 2:
                         mden[ix, iy] += 1.0
+        # Mine-FAITHFUL variant (v24 policy obs): CUT every cell whose centre lies
+        # within a deadly-mine kill disc from the free mask, so backward Dijkstra
+        # routes strictly AROUND mines and the gradient the policy follows never
+        # points through a kill zone. (Legacy mine-SOFT mode leaves these cells
+        # free at ~9x cost, which is exactly what steered the agent into mines.)
+        # On a mine-severed level the goals become unreachable -> available=False,
+        # and the obs falls back to the Euclidean field (same as a failed build);
+        # the REWARD path still uses the 2px MineThreadingDistanceSource there.
+        if self._mine_hard:
+            free = free & (mden == 0.0)
         self._free, self._mden = free, mden
 
         # Segment-aware blocked-edge masks: for every step between two free cells,
@@ -555,8 +685,19 @@ class FreeSpaceDistanceSource:
         # boundary (which would make the dense signal "steppy"). Falls back to the
         # nearest-cell / nearest-finite-in-window logic when any of the 4 corners
         # is non-finite (ninja inside a mine band / tile sliver / level edge).
-        gx, gy = x / _CELL, y / _CELL
-        ix, iy = int(gx), int(gy)
+        # Cell (i, j) carries the value at its CENTRE, ``(i + 0.5) * _CELL``
+        # (see _dijkstra's activation disc). Interpolating with ``x / _CELL``
+        # therefore reads the field half a cell (3 px) to the left/up of where it
+        # actually lives. ``reflection_equivariant`` corrects the offset,
+        # which also makes the field exactly equivariant under a left-right
+        # reflection: ``gx -> (_W_SYM - 1) - gx`` maps cell centres onto cell
+        # centres, whereas the legacy anchor set is not closed under reflection.
+        # Off by default because it shifts a PBRS potential (see the setter).
+        if _REFLECTION_EQUIVARIANT:
+            gx, gy = x / _CELL - 0.5, y / _CELL - 0.5
+        else:
+            gx, gy = x / _CELL, y / _CELL
+        ix, iy = int(math.floor(gx)), int(math.floor(gy))
         if not (0 <= ix < _W and 0 <= iy < _H):
             return float("inf")
         if 0 <= ix < _W - 1 and 0 <= iy < _H - 1:

@@ -401,10 +401,13 @@ class ReachabilityMixin:
             want_gold_nav = bool(getattr(reach_cfg, "lattice_gold_potential", False))
             if want_obs:
                 if want_gold_nav:
+                    # Live per-tick gold (backend-uniform; the once-cached
+                    # _cached_gold is stale on the native backend — see
+                    # NPlayHeadless.get_gold_state).
                     rem_gold_nav = [
-                        (float(g.xpos), float(g.ypos))
-                        for g in (getattr(self, "_cached_gold", None) or [])
-                        if getattr(g, "active", True)
+                        (float(gx), float(gy))
+                        for (gx, gy, active) in self.nplay_headless.get_gold_state()
+                        if active
                     ]
                     gfv = float(getattr(reach_cfg, "lattice_gold_value", 120.0))
                     self._cached_lattice_nav = src.nav_feature(
@@ -426,9 +429,9 @@ class ReachabilityMixin:
                 want_gold = bool(getattr(reach_cfg, "lattice_gold_potential", False))
                 if want_gold:
                     rem_gold = [
-                        (float(g.xpos), float(g.ypos))
-                        for g in (getattr(self, "_cached_gold", None) or [])
-                        if getattr(g, "active", True)
+                        (float(gx), float(gy))
+                        for (gx, gy, active) in self.nplay_headless.get_gold_state()
+                        if active
                     ]
                     gw = float(getattr(reach_cfg, "lattice_gold_weight", 1.0))
                     gfv = float(getattr(reach_cfg, "lattice_gold_value", 120.0))
@@ -731,15 +734,26 @@ class ReachabilityMixin:
             return None
         reach_cfg = getattr(getattr(self, "config", None), "reachability", None)
         cls = self._potential_source_cls(reach_cfg)
-        # Key on the source CLASS too so a jump-potential run never reads back a
-        # geometric free-space source (and vice-versa) for the same map.
-        key = (cls.__name__, hash(tuple(int(v) for v in md)))
+        # v24: route the POLICY-OBSERVED nav/cost-to-go through the MINE-FAITHFUL
+        # free-space field (deadly-mine cells cut, so the gradient the policy
+        # follows routes AROUND mines) when ``mine_faithful_obs`` is set. Only the
+        # plain geometric FreeSpaceDistanceSource takes the mine_hard kwarg; the
+        # jump-potential source keeps its own physics-faithful handling.
+        mine_hard = bool(getattr(getattr(self, "config", None),
+                                 "mine_faithful_obs", False))
+        use_hard = mine_hard and cls.__name__ == "FreeSpaceDistanceSource"
+        # Key on the source CLASS + mine_hard so variants never alias in the LRU.
+        key = (cls.__name__, bool(use_hard), hash(tuple(int(v) for v in md)))
         src = _FREE_SPACE_NAV_CACHE.get(key)
         if src is None:
             # The jump source is slow to build but disk-cached (jumpfield/ subdir),
             # so a cold worker pays once per level; the free-space source builds in
             # ~0.1-0.5 s. Both expose the identical nav_feature / cost-to-go API.
-            src = cls(list(md), name=self._free_space_nav_map_name)
+            if use_hard:
+                src = cls(list(md), name=self._free_space_nav_map_name,
+                          mine_hard=True)
+            else:
+                src = cls(list(md), name=self._free_space_nav_map_name)
             if len(_FREE_SPACE_NAV_CACHE) >= _FREE_SPACE_NAV_CACHE_CAP:
                 _FREE_SPACE_NAV_CACHE.clear()
             _FREE_SPACE_NAV_CACHE[key] = src
@@ -816,9 +830,11 @@ class ReachabilityMixin:
         gold_key = 0
         _reach_cfg = getattr(getattr(self, "config", None), "reachability", None)
         if _reach_cfg is not None and getattr(_reach_cfg, "lattice_gold_potential", False):
+            # Live active-gold count (backend-uniform); _cached_gold is stale on
+            # native so it would never invalidate the cell cache on a pickup.
             gold_key = sum(
-                1 for g in (getattr(self, "_cached_gold", None) or [])
-                if getattr(g, "active", True)
+                1 for (_gx, _gy, active) in self.nplay_headless.get_gold_state()
+                if active
             )
         cache_key = (ninja_cell, switch_activated, gold_key)
 
@@ -1026,14 +1042,53 @@ class ReachabilityMixin:
         big = float(LEVEL_DIAGONAL * 2.0)
         x, y = float(ninja_pos[0]), float(ninja_pos[1])
 
-        def _fs(activated: bool) -> float:
-            if src is None or not getattr(src, "available", False):
-                return big
+        # Lever 4a: straight-line (Euclidean) distance to the phase goal, the
+        # LAST-RESORT finite substitute when BOTH the lattice/graph AND the
+        # free-space cost-to-go are non-finite at this position — the ~8% OPEN
+        # official maps (e.g. "288 ironic nostalgia", "096 look around you") where
+        # the surface lattice is severed and the free-space flood cannot reach the
+        # ninja's region. The prior fallback was a per-level CONSTANT (``big``, or
+        # the field's flat ``dmax`` filler), which left ``hwm_progress`` and the
+        # PBRS potential FLAT — zero dense progress signal. Euclidean VARIES with
+        # position (monotone-decreasing toward the goal center), so a gradient is
+        # restored; it is always finite so no NaN/inf reaches the reward. Applied
+        # ONLY when free-space genuinely fails, so maps where the lattice/free-space
+        # cost-to-go is available are untouched.
+        nh = getattr(self, "nplay_headless", None)
+
+        def _goal(activated: bool):
+            if nh is None:
+                return None
             try:
-                c = float(src.cost_to_go(x, y, activated)) * float(_CELL)
+                return (
+                    nh.exit_door_position() if activated
+                    else nh.exit_switch_position()
+                )
             except Exception:
+                return None
+
+        def _eucl(activated: bool) -> float:
+            g = _goal(activated)
+            if g is None:
                 return big
-            return c if np.isfinite(c) else big
+            e = ((x - float(g[0])) ** 2 + (y - float(g[1])) ** 2) ** 0.5
+            return float(e) if np.isfinite(e) else big
+
+        def _fs(activated: bool) -> float:
+            # Use the free-space cost-to-go only where it GENUINELY reaches this
+            # position. ``cost_at_nearest_free`` returns inf (not the flat ``dmax``
+            # filler ``cost_to_go`` substitutes) on a real severance, so it cleanly
+            # distinguishes "free-space has a real answer here" from "free-space
+            # failed" — only the latter falls through to the Euclidean gradient.
+            if src is not None and getattr(src, "available", False):
+                try:
+                    if np.isfinite(src.cost_at_nearest_free(x, y, activated)):
+                        c = float(src.cost_to_go(x, y, activated)) * float(_CELL)
+                        if np.isfinite(c):
+                            return c
+                except Exception:
+                    pass
+            return _eucl(activated)
 
         if sw_bad:
             # phase-0 cost-to-go = distance to the exit SWITCH (switch_activated=False)

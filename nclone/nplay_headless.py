@@ -700,6 +700,19 @@ class NPlayHeadless:
         entity_dic = self.sim.entity_dic
         return (entity_dic.get(1, []), entity_dic.get(21, []))
 
+    def get_gold_state(self) -> List[Tuple[float, float, bool]]:
+        """Return ``[(x, y, active), ...]`` for every gold entity (type 2).
+
+        Backend-uniform accessor mirrored by ``NativePlayHeadless.get_gold_state``.
+        The python sim's gold objects mutate in place, so ``active`` reflects live
+        collection; positions are static, so the list length is the original gold
+        count (collected gold stays in the list with ``active=False``).
+        """
+        return [
+            (float(g.xpos), float(g.ypos), bool(getattr(g, "active", True)))
+            for g in self.sim.entity_dic.get(2, [])
+        ]
+
     def get_goal_positions_for_features(self) -> Dict[str, Any]:
         """Return pre-computed goal positions for reachability features (O(1) lookups).
 

@@ -15,6 +15,7 @@ from typing import Dict, Any, Optional, Tuple
 
 
 from ..constants import MAP_TILE_HEIGHT, MAP_TILE_WIDTH
+from ..ninja import jump_is_useless as _jump_is_useless
 from ..constants.physics_constants import (
     LEVEL_WIDTH_PX,
     LEVEL_HEIGHT_PX,
@@ -72,12 +73,26 @@ from .constants import (
     EGO_CROP_ROUTE_CHANNELS,
     EGO_CROP_ROUTE_FINE_CHANNELS,
     EGO_CROP_ROUTE_FINE_SIZE,
+    EGO_CROP_MINES_FINE_CHANNELS,
+    EGO_CROP_MINES_FINE_SIZE,
+    EGO_CROP_FALL_FINE_CHANNELS,
+    EGO_CROP_FALL_FINE_SIZE,
+    MINE_PROXIMITY_DIM,
+    MINE_PROXIMITY_K,
+    MINE_PROXIMITY_FEATURES,
+    MINE_PROXIMITY_KILL_RADIUS_PX,
+    MINE_PROXIMITY_RANGE_PX,
+    MINE_PROXIMITY_SPEED_NORM_PX,
+    MINE_PROXIMITY_TTC_TAU_FRAMES,
     LEVEL_WIDTH,
     LEVEL_HEIGHT,
     LEVEL_DIAGONAL,
     HAZARD_MAP_CHANNELS,
     HAZARD_MAP_HEIGHT,
     HAZARD_MAP_WIDTH,
+    HAZARD_MAP_OBS_DOWNSAMPLE,
+    HAZARD_MAP_OBS_WIDTH,
+    HAZARD_MAP_OBS_HEIGHT,
     COST_TO_GO_MAP_DOWNSAMPLE,
     COST_TO_GO_MAP_WIDTH,
     COST_TO_GO_MAP_HEIGHT,
@@ -102,12 +117,25 @@ from .constants import (
 )
 from ..constants.entity_types import EntityType
 from .base_environment import BaseNppEnvironment
+from .reflection import quantize_cell, reflection_odd_direction
 from .entity_overlay_utils import (
     classify_mines_by_state,
     ENTITY_OVERLAY_CH_MINE_DEADLY,
     ENTITY_OVERLAY_CH_MINE_SAFE,
 )
+from .fall_lethality import (
+    BORDER_CELLS as FALL_BORDER_CELLS,
+    CELL_PX as FALL_CELL_PX,
+    FALL_LETHALITY_CHANNELS,
+    compute_fall_lethality_map,
+    crop_fall_lethality,
+)
 from .layer3_macro_action_mask import Layer3MacroActionMasker
+from .obs_map_pooling import pool_channels
+from .region_novelty import label_regions
+
+# Cache sentinel for "no level has been loaded into this cache slot yet".
+_UNSET_MAP_NAME = object()
 from .mixins import GraphMixin, ReachabilityMixin, DebugMixin
 from .config import EnvironmentConfig
 from .precomputed_door_features import PrecomputedDoorFeatureCache
@@ -119,6 +147,29 @@ except ImportError:  # pragma: no cover - stale native build
     TrajectoryProjector = None
 
 logger = logging.getLogger(__name__)
+
+
+def _cell_x(px: float, cell_px: float, odd_dir: int) -> int:
+    """Ninja x -> grid column, equivariant under a left-right reflection.
+
+    Thin wrapper over :func:`.reflection.quantize_cell` so the call sites read as
+    the plain ``floor`` they replace. With ``odd_dir`` at its ``+1`` default this
+    IS the plain floor; only the exact-cell-boundary case differs, which is the
+    only case where reflection equivariance can break (see reflection.py).
+    """
+    return quantize_cell(px, cell_px, odd_dir)
+
+
+def _map_data_curriculum_key(map_data) -> str:
+    """Stable content key for a level's map_data, used to match demo-built
+    reverse-curricula to the current level regardless of how the loader named
+    it (the packed pool names by integer level_id, not the map name). MUST stay
+    byte-for-byte identical to build_demo_curricula._map_data_curriculum_key so
+    the keys agree across the builder, the trainer loader, and this lookup."""
+    import hashlib
+
+    b = bytes(int(v) & 0xFF for v in map_data)
+    return "md:" + hashlib.md5(b).hexdigest()
 
 
 class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMixin):
@@ -179,6 +230,12 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             self.layer3_masker = Layer3MacroActionMasker(
                 duration_bins=self.config.layer3_duration_bins,
                 fallback_mode=self.config.layer3_all_masked_fallback,
+                include_lethal_impact=getattr(
+                    self.config, "layer3_mask_lethal_impact", False
+                ),
+                lethal_impact_lookahead=getattr(
+                    self.config, "layer3_lethal_impact_lookahead", 0
+                ),
             )
         else:
             self.layer3_masker = None
@@ -228,6 +285,13 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         # Cached tile grid for the current level (computed once per level load, reused each step)
         self._cached_tile_grid: Optional[np.ndarray] = None
+        # v26 W6a: static fall-lethality field. Depends only on tile geometry, so
+        # it is computed once per level load and invalidated with the map name —
+        # the same treatment the tile grid gets. (2, HAZARD_W, HAZARD_H).
+        self._fall_lethality_map: Optional[np.ndarray] = None
+        # Sentinel, not None: a level can legitimately have current_map_name None
+        # and must still build (and then reuse) its field.
+        self._fall_lethality_map_name: object = _UNSET_MAP_NAME
         # Stable integer level ID derived from map name hash (for cache keying in the encoder)
         self._cached_level_id_int: Optional[np.ndarray] = None
 
@@ -246,6 +310,16 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         self._visit_reachable_cache: tuple = (None, 0, None)
         # Enabled iff either the reward bonus or the obs channel is requested.
         _reach_cfg = getattr(self.config, "reachability", None)
+        # v26 W4: room-discovery bonus coefficient (0 = off).
+        self._region_novelty_coef = float(
+            getattr(self.config, "region_novelty_coef", 0.0)
+        )
+        self._regions_visited: set = set()
+        self._region_new = False
+        self._region_bonus = 0.0
+        self._region_coverage = 0.0
+        self._region_count = 0
+        self._region_label_cache = None
         self._visitation_bonus_coef = float(
             getattr(self.config, "visitation_bonus_coef", 0.0)
         )
@@ -402,10 +476,12 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         """
         obs_spaces = dict(self.observation_space.spaces)
 
+        # Emitted at HAZARD_MAP_OBS_* (pooled from the 6px field the env computes
+        # internally); the ego crops and PBRS still read full resolution.
         obs_spaces["hazard_map"] = box.Box(
             low=-1.0,
             high=1.0,
-            shape=(HAZARD_MAP_CHANNELS, HAZARD_MAP_WIDTH, HAZARD_MAP_HEIGHT),
+            shape=(HAZARD_MAP_CHANNELS, HAZARD_MAP_OBS_WIDTH, HAZARD_MAP_OBS_HEIGHT),
             dtype=np.float32,
         )
 
@@ -527,6 +603,77 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 dtype=np.float32,
             )
 
+        # v24: fine ego MINE crop (2ch signed-distance, ninja-centered 6px window).
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_ego_crop_mines_fine", False):
+            obs_spaces["ego_crop_mines_fine"] = box.Box(
+                low=-1.0, high=1.0,
+                shape=(EGO_CROP_MINES_FINE_CHANNELS,
+                       EGO_CROP_MINES_FINE_SIZE, EGO_CROP_MINES_FINE_SIZE),
+                dtype=np.float32,
+            )
+
+        # v26 W6a: static fall-lethality field (global 6px + fine ego crop).
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_fall_lethality_map", False):
+            obs_spaces["fall_lethality_map"] = box.Box(
+                low=-1.0, high=1.0,
+                shape=(FALL_LETHALITY_CHANNELS,
+                       HAZARD_MAP_OBS_WIDTH, HAZARD_MAP_OBS_HEIGHT),
+                dtype=np.float32,
+            )
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_ego_crop_fall_fine", False):
+            obs_spaces["ego_crop_fall_fine"] = box.Box(
+                low=-1.0, high=1.0,
+                shape=(EGO_CROP_FALL_FINE_CHANNELS,
+                       EGO_CROP_FALL_FINE_SIZE, EGO_CROP_FALL_FINE_SIZE),
+                dtype=np.float32,
+            )
+
+        # v25: directional nearest-mine bearing + closing speed.
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_mine_proximity", False):
+            obs_spaces["mine_proximity"] = box.Box(
+                low=-1.0, high=1.0,
+                shape=(MINE_PROXIMITY_DIM,),
+                dtype=np.float32,
+            )
+
+        # Gold-fraction-remaining scalar, appended UNCONDITIONALLY right after the
+        # base game_state (docs/GOLD_AND_SCORE_OPTIMIZATION.md part b): a global
+        # "how much gold is left" signal complementing the spatial gold-density
+        # overlay channel. Always present (independent of enable_gold_rewards) so
+        # the obs contract is fixed; reads 0.0 on levels with no gold. This is the
+        # FIRST game_state append, so the value layout is
+        # [... base ..., gold_frac, blocked_goal?, wall_tau?, precision_state?, time_phase?].
+        _gs = obs_spaces["game_state"]
+        obs_spaces["game_state"] = box.Box(
+            low=-1.0, high=1.0,
+            shape=(int(_gs.shape[0]) + 1,),
+            dtype=np.float32,
+        )
+
+        # Precision-state block appended to game_state (+PRECISION_STATE_DIM).
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_precision_state", False):
+            _gs = obs_spaces["game_state"]
+            obs_spaces["game_state"] = box.Box(
+                low=-1.0, high=1.0,
+                shape=(int(_gs.shape[0]) + self.PRECISION_STATE_DIM,),
+                dtype=np.float32,
+            )
+
+        # Frames-to-wall-contact scalar appended to game_state (+1).
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_wall_contact_tau", False):
+            _gs = obs_spaces["game_state"]
+            obs_spaces["game_state"] = box.Box(
+                low=-1.0, high=1.0,
+                shape=(int(_gs.shape[0]) + 1,),
+                dtype=np.float32,
+            )
+
         # v22 §3-B: append the derived blocked-toward-goal scalar to game_state.
         if getattr(getattr(self.config, "reachability", None),
                    "expose_blocked_goal", False):
@@ -534,6 +681,29 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             obs_spaces["game_state"] = box.Box(
                 low=-1.0, high=1.0,
                 shape=(int(_gs.shape[0]) + 1,),
+                dtype=np.float32,
+            )
+
+        # EXECUTION_PRECISION_PLAN §6: time/phase block (+TIME_PHASE_DIM). Grown
+        # LAST so the documented game_state layout stays
+        # [... base ..., blocked_goal?, wall_tau?, precision_state?, time_phase?].
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_time_phase", False):
+            _gs = obs_spaces["game_state"]
+            obs_spaces["game_state"] = box.Box(
+                low=-1.0, high=1.0,
+                shape=(int(_gs.shape[0]) + self.TIME_PHASE_DIM,),
+                dtype=np.float32,
+            )
+
+        # v26 W6c: commitment/irreversibility block (+COMMITMENT_STATE_DIM).
+        # Grown after time_phase, matching the re-attach order.
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_commitment_state", False):
+            _gs = obs_spaces["game_state"]
+            obs_spaces["game_state"] = box.Box(
+                low=-1.0, high=1.0,
+                shape=(int(_gs.shape[0]) + self.COMMITMENT_STATE_DIM,),
                 dtype=np.float32,
             )
 
@@ -588,6 +758,33 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         info["visit_cells"] = int(getattr(self, "_visit_cells", 0))
         info["visit_coverage"] = float(getattr(self, "_visit_coverage", 0.0))
         info["visitation_bonus"] = float(getattr(self, "_visitation_bonus", 0.0))
+        # v26 W4: room-discovery telemetry. region_coverage is the metric that
+        # says whether maze exploration is actually working — cell coverage can
+        # look healthy while the agent loops one wing of the maze forever.
+        # v26 W5: the level's optimal route length, in FRAMES. gamma = 0.998 gives
+        # an effective horizon of ~500 frames against 1612-frame LOOP_CORRIDOR T4
+        # routes and 3027-frame mazes, so a horizon-matched per-level gamma needs
+        # to know how long THIS level's route actually is. The reward calculator
+        # already has the d* cost in pixels; converting with the same par speed
+        # the completion-speed bonus uses keeps the two definitions of "par" from
+        # drifting apart. 0.0 = unknown (the consumer falls back to a fixed gamma).
+        _opl = getattr(self.reward_calculator, "optimal_path_length", None)
+        if _opl:
+            _par_px = max(
+                float(
+                    getattr(self.config, "completion_speed_par_speed_px", 1.0)
+                    or 1.0
+                ),
+                1e-6,
+            )
+            info["optimal_path_frames"] = float(_opl) / _par_px
+        else:
+            info["optimal_path_frames"] = 0.0
+
+        info["region_bonus"] = float(getattr(self, "_region_bonus", 0.0))
+        info["region_new"] = bool(getattr(self, "_region_new", False))
+        info["region_coverage"] = float(getattr(self, "_region_coverage", 0.0))
+        info["region_count"] = int(getattr(self, "_region_count", 0))
         info["visit_directed_wt"] = float(getattr(self, "_visit_directed_wt", 1.0))
 
         # v18 C1 frontier telemetry (updated in _pre_reward_hook this step).
@@ -709,6 +906,9 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # duration when this drops below its threshold, so landing re-decision
         # happens BEFORE contact (one frame after is too late for impact/
         # overshoot control). Stashed by the obs pass this same step.
+        info["wall_contact_tau_frames"] = float(
+            getattr(self, "_last_wall_contact_tau_frames", float("inf"))
+        )
         info["time_to_contact_frames"] = float(
             getattr(self, "_last_time_to_contact_frames", float("inf"))
         )
@@ -722,6 +922,14 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # hazard-free bucket). Stashed by the obs pass this same step.
         info["lethal_landing_tau"] = float(
             getattr(self, "_lethal_landing_tau", float("inf"))
+        )
+
+        # v26 W6c: the point-of-no-return bit (every applicable arc from this
+        # state is fatal). Emitted regardless of whether the obs block is on, so
+        # a probe run can measure how often the agent is already doomed WITHOUT
+        # paying the breaking obs change. Always False when the block is off.
+        info["commitment_no_escape"] = bool(
+            getattr(self, "_commitment_no_escape", False)
         )
 
         # Graph size info for level-size-aware optimizations
@@ -1350,21 +1558,67 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # reset() with no options -- this is what drives it during RL rollouts.
         if ss is None:
             cur = getattr(self, "_ssc", None)
+            # Which store the curriculum came from decides which difficulty knob
+            # anneals it. Tracked explicitly rather than inferred from whether a
+            # demo map exists at all — both stores can be populated at once.
+            from_demo_map = False
             if cur is None:
                 ssc_map = getattr(self, "_ssc_map", None)
                 if ssc_map:
+                    from_demo_map = True
                     lvl = getattr(
                         getattr(self, "map_loader", None), "current_map_name", None
                     )
                     cur = ssc_map.get(lvl)
+                    # v24 lever-2: fall back to a map_data CONTENT-HASH key. The
+                    # packed-pool training path keys current_map_name by the integer
+                    # pool level_id (str), NOT the map name the demo curricula were
+                    # built under, so a name lookup misses. A content hash matches
+                    # the level regardless of how the loader named it. Keys are
+                    # "md:<md5(map_data bytes)>" (see build_demo_curricula._index +
+                    # the trainer's curricula loader).
+                    if cur is None:
+                        md = getattr(
+                            getattr(self, "nplay_headless", None),
+                            "current_map_data", None,
+                        )
+                        if md is not None:
+                            cur = ssc_map.get(_map_data_curriculum_key(md))
+            # v25: a demo-curriculum entry may carry BOTH legs
+            # ({"switch": cur, "exit": cur}); alternate per reset so the
+            # switch->exit RETURN leg is practised too. The builder always wrote
+            # both legs but only the approach leg was ever loaded, so the return
+            # leg (exit_given_switch = 0.65) was never seeded.
+            demo_leg = None
+            if isinstance(cur, dict):
+                legs = [k for k in ("switch", "exit") if cur.get(k) is not None]
+                if legs:
+                    demo_leg = legs[self.rng.randrange(len(legs))]
+                    cur = cur[demo_leg]
+                else:
+                    cur = None
+            if cur is None:
+                from_demo_map = False
             if cur is not None and hasattr(cur, "sample"):
-                # Stored single-level curricula (PLATFORM_STAIRS etc.) are
-                # toward-goal/approach-style -> treat as the pre-switch leg. For
-                # single-leg levels the two knobs move together (set_start_state_
-                # difficulty sets both), so this is unchanged for them.
-                difficulty = float(self._pre_switch_difficulty())
+                if from_demo_map:
+                    # Demo curricula (verified official routes) anneal on their
+                    # OWN difficulty knob. Sharing the pre-switch knob let the
+                    # easy procgen buckets ratchet it to 1.0 and switch the
+                    # official curriculum off — see
+                    # set_start_state_difficulty_demo.
+                    difficulty = float(self._demo_curriculum_difficulty())
+                    self._episode_seeded_leg = (
+                        "demo_post" if demo_leg == "exit" else "demo_pre"
+                    )
+                else:
+                    # Stored single-level curricula (PLATFORM_STAIRS etc.) are
+                    # toward-goal/approach-style -> treat as the pre-switch leg.
+                    # For single-leg levels the two knobs move together
+                    # (set_start_state_difficulty sets both), so this is
+                    # unchanged for them.
+                    difficulty = float(self._pre_switch_difficulty())
+                    self._episode_seeded_leg = "pre"
                 ss = cur.sample(difficulty)
-                self._episode_seeded_leg = "pre"
         if not ss:
             return
         actions = ss.get("start_actions") if isinstance(ss, dict) else ss
@@ -1516,9 +1770,15 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         self._ssc = cur
 
     def set_start_state_curricula(self, mapping: dict) -> None:
-        """Store a {level_id: StartStateCurriculum} map (multi-level/curriculum
-        reverse curriculum). The env applies the curriculum matching the level it
-        just loaded, so only the hard levels we precomputed routes for get it."""
+        """Store the multi-level/curriculum reverse curriculum.
+
+        Accepts either ``{level_id: StartStateCurriculum}`` (single leg, legacy)
+        or ``{level_id: {"switch": cur, "exit": cur}}`` (v25, per-leg). The env
+        applies the curriculum matching the level it just loaded, so only the
+        hard levels we precomputed routes for get it. With both legs present the
+        env alternates per reset, so the switch->exit RETURN leg is practised too
+        — the demo builder always wrote both, but only the approach leg was ever
+        loaded, leaving exit_given_switch (0.65) unaddressed."""
         self._ssc_map = dict(mapping or {})
 
     def set_start_state_difficulty(self, d: float) -> None:
@@ -1550,6 +1810,27 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
     def _post_switch_difficulty(self) -> float:
         return float(getattr(self, "_ssc_post_difficulty",
                              getattr(self, "_ssc_difficulty", 1.0)))
+
+    def set_start_state_difficulty_demo(self, d: float) -> None:
+        """DEMO-curriculum (``set_start_state_curricula``) difficulty only.
+
+        v25 fix. The demo curricula are built from verified winning routes on the
+        OFFICIAL maps, while the pre/post knobs above are driven by the procgen
+        start-state pools (PRECISION / CHAMBER_MAZE / LOOP_CORRIDOR). Sharing one
+        knob was a measured failure: the easy procgen buckets won ~0.92 of their
+        seeded episodes and ratcheted the shared difficulty to 1.0 (= start at
+        spawn), which silently switched the OFFICIAL demo curriculum off long
+        before the agent could use it — while official seeded episodes were
+        themselves filtered out of the anneal signal by the bucket filter. Giving
+        the demo leg its own knob makes official difficulty anneal on official
+        success."""
+        self._ssc_demo_difficulty = float(d)
+
+    def _demo_curriculum_difficulty(self) -> float:
+        # Falls back to the pre-switch knob (then the global one) so an older
+        # callback that never calls the demo setter behaves exactly as before.
+        return float(getattr(self, "_ssc_demo_difficulty",
+                             self._pre_switch_difficulty()))
 
     def _get_observation(self) -> Dict[str, Any]:
         """Get the current observation from the game state."""
@@ -1600,6 +1881,22 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             (ey - ny) / LEVEL_HEIGHT, -1.0, 1.0
         )
 
+        # HORIZONTAL_AUGMENTATION_PLAN: one reflection-ODD sign for the whole
+        # observation, resolving the exact-cell-boundary tie in every
+        # ninja-centred readout below (crops, raycast march, scandot fan, visit
+        # cell). It MUST be computed before any of them and shared, or two
+        # readouts could disagree about which side of a boundary the ninja is on.
+        # Off => +1, which is the plain floor these call sites had before.
+        self._mirror_odd_dir = (
+            reflection_odd_direction(
+                self.nplay_headless.ninja_velocity()[0],
+                (ex if switch_activated else sx) - nx,
+                float(getattr(self.nplay_headless.sim.ninja, "floor_normalized_x", 0.0)),
+            )
+            if self._mirror_equivariant_obs
+            else 1
+        )
+
         # Surface ray-casts: distance to the nearest grounded platform in 8 compass
         # directions (blind-jump / gap verification beyond the 24px tile view).
         t_ray = self._profile_start("obs_npp_raycasts")
@@ -1646,25 +1943,48 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         self._game_state_buffer[GAME_STATE_JUMP_HELD_IDX] = (
             1.0 if _ninja.jump_input_old != 0 else -1.0
         )
-        _has_buf = (
-            -1 < _ninja.jump_buffer < 5
-            or -1 < _ninja.floor_buffer < 5
-            or -1 < _ninja.wall_buffer < 5
-            or -1 < _ninja.launch_pad_buffer < 4
+        # jump-useless (idx 47) and the launch-pad buffer (idx 48) below are
+        # CORRECTNESS fixes that change the VALUE of two long-standing
+        # game_state slots, so they are gated on expose_precision_state rather
+        # than applied unconditionally. Existing checkpoints (v22 and every run
+        # warm-started from it) were trained against the legacy values; flipping
+        # them for free would feed a subtly different distribution into two slots
+        # of an otherwise-unchanged policy. Runs that opt into the precision
+        # block already re-initialize the game_state MLP, so they absorb the
+        # corrected semantics cleanly.
+        _precision = getattr(
+            getattr(self.config, "reachability", None), "expose_precision_state", False
         )
-        _jump_useless = (
-            bool(_ninja.airborn)
-            and _ninja.state != 3
-            and _ninja.jump_input_old != 0
-            and not _has_buf
-        )
+        if _precision:
+            # Shared predicate: the old local copy added a ``jump_input_old != 0``
+            # term the ACTION MASK does not have, so the policy could perceive
+            # "a jump would work" on frames the mask had already forbidden it.
+            _jump_useless_val = _jump_is_useless(_ninja)
+        else:
+            _has_buf = (
+                -1 < _ninja.jump_buffer < 5
+                or -1 < _ninja.floor_buffer < 5
+                or -1 < _ninja.wall_buffer < 5
+                or -1 < _ninja.launch_pad_buffer < 4
+            )
+            _jump_useless_val = (
+                bool(_ninja.airborn)
+                and _ninja.state != 3
+                and _ninja.jump_input_old != 0
+                and not _has_buf
+            )
         self._game_state_buffer[GAME_STATE_JUMP_USELESS_IDX] = (
-            1.0 if _jump_useless else -1.0
+            1.0 if _jump_useless_val else -1.0
         )
         # (b + 1)/(window + 1) like the jump/floor/wall buffers so INACTIVE (-1)
         # maps to -1.0 and "just armed" (b=0, ACTIVE) stays distinct from it.
+        # Window is 4 for the launch pad (``-1 < lp < 4``, ninja.think), NOT the
+        # 5 used by jump/floor/wall; dividing by 5.0 capped the encoded value at
+        # 0.6 of its range. Gated for the same backward-compatibility reason as
+        # the jump-useless fix above.
+        _lp_window = 4.0 if _precision else 5.0
         self._game_state_buffer[GAME_STATE_LAUNCHPAD_BUFFER_IDX] = (
-            (max(_ninja.launch_pad_buffer, -1) + 1) / 5.0
+            (max(_ninja.launch_pad_buffer, -1) + 1) / _lp_window
         ) * 2 - 1
 
         # Slope/curve EXECUTION features. The look-ahead landing-surface normal
@@ -1719,7 +2039,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         self._game_state_buffer[GAME_STATE_ACCEL_IDX + 1] = float(np.clip(_ay / 2.0, -1.0, 1.0))
 
         # Forward-biased terrain scandots (floor-gap, ceiling-gap per column).
-        _scan = self._compute_scandots(int(np.sign(_vx)) or 1)
+        _scan = self._compute_scandots(self._scandot_direction(_vx, gdx))
         self._game_state_buffer[
             GAME_STATE_SCANDOTS_IDX:GAME_STATE_SCANDOTS_IDX + GAME_STATE_SCANDOTS_DIM
         ] = _scan
@@ -1735,6 +2055,39 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         self._fill_ghost_arc_bundle(_ninja, _vx, _vy)
 
         obs["game_state"] = np.array(self._game_state_buffer, copy=True)
+
+        # Precision-state block (stashed; appended in _process_observation).
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_precision_state", False):
+            self._precision_state_feat = self._compute_precision_state(_ninja)
+
+        # v26 W6c commitment/irreversibility block. MUST run after
+        # _fill_ghost_arc_bundle — it reads the arc rows straight out of the
+        # game_state buffer that call just filled.
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_commitment_state", False):
+            self._commitment_state_feat = self._compute_commitment_state(_ninja)
+            self._commitment_no_escape = bool(
+                self._commitment_state_feat[4] >= 0.5
+            )
+
+        # Frames-to-WALL-contact scalar (stashed; appended in _process_observation).
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_wall_contact_tau", False):
+            _wt = self._compute_wall_contact_tau(nx, ny, _vx, _vy, _ninja)
+            self._wall_tau_feat = np.array([_wt], dtype=np.float32)
+            # Raw FRAMES-to-wall-contact for the FiGAR wall-approach interrupt.
+            # The normalized scalar is the obs; the interrupt needs real frames so
+            # its threshold is expressed in the same units as the other interrupts.
+            self._last_wall_contact_tau_frames = float(
+                _wt * self.WALL_TAU_LOOKAHEAD_FRAMES
+            )
+
+        # EXECUTION_PRECISION_PLAN §6 time/phase block (stashed; appended in
+        # _process_observation).
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_time_phase", False):
+            self._time_phase_feat = self._compute_time_phase()
 
         # v22 §3-B: derived blocked-toward-goal scalar (stashed; appended to the
         # policy game_state in _process_observation, after the base truncation).
@@ -1793,7 +2146,13 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         self._profile_end("obs_npp_switch_adj", t_sa)
 
         t_haz = self._profile_start("obs_npp_hazard")
-        obs["hazard_map"] = self._compute_hazard_map()
+        # Both channels are SDFs where LOWER means nearer a mine, so min-pooling
+        # keeps the nearest hazard in each block (never averages one away).
+        obs["hazard_map"] = pool_channels(
+            self._compute_hazard_map(),
+            HAZARD_MAP_OBS_DOWNSAMPLE,
+            ("min", "min"),
+        )
         self._profile_end("obs_npp_hazard", t_haz)
 
         # Optional physics-aware nav hint (lattice d*).  ``_cached_lattice_nav``
@@ -1863,6 +2222,37 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             obs["ego_crop_route_fine"] = self._compute_ego_crop_route_fine(
                 nx, ny, switch_activated
             )
+
+        # v24: fine (6px) ego MINE-SDF crop — sub-tile mine geometry around the ninja.
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_ego_crop_mines_fine", False):
+            obs["ego_crop_mines_fine"] = self._compute_ego_crop_mines_fine(nx, ny)
+
+        # v26 W6a: static fall-lethality field. Impact deaths are ~40% of v25's
+        # losses and are committed at TAKEOFF, so this is the one impact signal
+        # that arrives while the decision is still open.
+        _reach_cfg = getattr(self.config, "reachability", None)
+        if getattr(_reach_cfg, "expose_fall_lethality_map", False) or getattr(
+            _reach_cfg, "expose_ego_crop_fall_fine", False
+        ):
+            _fall = self._get_fall_lethality_map()
+            if getattr(_reach_cfg, "expose_fall_lethality_map", False):
+                # ch0 = signed survivable margin (lower = more lethal) -> min;
+                # ch1 = normalized drop distance (higher = longer fall) -> max.
+                # The ego crop below keeps the full-resolution field.
+                obs["fall_lethality_map"] = pool_channels(
+                    _fall, HAZARD_MAP_OBS_DOWNSAMPLE, ("min", "max")
+                )
+            if getattr(_reach_cfg, "expose_ego_crop_fall_fine", False):
+                obs["ego_crop_fall_fine"] = crop_fall_lethality(
+                    _fall, nx, ny, EGO_CROP_FALL_FINE_SIZE, self._mirror_odd_dir
+                )
+
+        # v25: directional mine bearing + CLOSING SPEED — the motion-relative
+        # terms the (still-frame) mine crop above cannot carry.
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_mine_proximity", False):
+            obs["mine_proximity"] = self._compute_mine_proximity(nx, ny)
 
         # Coarse far ego crop (Audit II P1-6): +-21-tile Chebyshev window at
         # 2-tile pooling — see _compute_ego_crop_coarse.
@@ -2021,7 +2411,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             return np.ones(GAME_STATE_RAYCAST_DIM, dtype=np.float32)
 
         ninja = self.nplay_headless.sim.ninja
-        ntx = int(ninja.xpos / TILE_PIXEL_SIZE) - 1
+        ntx = _cell_x(ninja.xpos, TILE_PIXEL_SIZE, self._mirror_odd_dir) - 1
         nty = int(ninja.ypos / TILE_PIXEL_SIZE) - 1
 
         graph_data = getattr(self, "current_graph_data", None)
@@ -2086,7 +2476,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             return (0.0, 0.0, 1.0)
 
         ninja = self.nplay_headless.sim.ninja
-        ntx = int(ninja.xpos / TILE_PIXEL_SIZE) - 1
+        ntx = _cell_x(ninja.xpos, TILE_PIXEL_SIZE, self._mirror_odd_dir) - 1
         nty = int(ninja.ypos / TILE_PIXEL_SIZE) - 1
         vx, vy = self.nplay_headless.ninja_velocity()
         if (vx * vx + vy * vy) < 0.09:  # ~stationary -> look straight down
@@ -2120,6 +2510,29 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
     _SCANDOT_COL_OFFSETS = (-1, 0, 1, 2, 3, 4)  # tile columns, * travel direction
     _SCANDOT_MAX_TILES = 12.0
 
+    def _scandot_direction(self, vx: float, goal_dx: float) -> int:
+        """Travel direction the forward-biased scandots fan out along.
+
+        The legacy rule is ``sign(vx) or 1``. That tie-break is EVEN: at
+        ``vx == 0`` it resolves to +1 in a level and in its mirror image alike,
+        so the two runs sample columns that are not each other's reflection —
+        and ``vx == 0`` is not a corner case (every spawn frame, every frame the
+        ninja stands still). Since scandots are defined RELATIVE to the travel
+        direction, that is the difference between the block being invariant
+        under reflection and being quietly wrong.
+
+        With ``mirror_equivariant_obs`` this returns the same reflection-odd
+        sign every other ego-centric readout ties on (``self._mirror_odd_dir``),
+        so the scandot fan and the crop windows can never disagree about which
+        way the ninja is facing at rest.
+        """
+        d = int(np.sign(vx))
+        if d:
+            return d
+        if self._mirror_equivariant_obs:
+            return self._mirror_odd_dir
+        return 1
+
     def _compute_scandots(self, facing: int) -> np.ndarray:
         """Forward-biased terrain height samples: per column, tile-distance DOWN to
         the next floor and UP to the next ceiling, relative to the ninja, normalized.
@@ -2139,7 +2552,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         if grid is None:
             return out
         ninja = self.nplay_headless.sim.ninja
-        ntx = int(ninja.xpos / TILE_PIXEL_SIZE) - 1
+        ntx = _cell_x(ninja.xpos, TILE_PIXEL_SIZE, self._mirror_odd_dir) - 1
         nty = int(ninja.ypos / TILE_PIXEL_SIZE) - 1
         mx = self._SCANDOT_MAX_TILES
         for i, off in enumerate(self._SCANDOT_COL_OFFSETS):
@@ -2539,6 +2952,17 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         src = src_for_key
         if src is None or not getattr(src, "available", False):
+            # Lever 4a: the free-space flood could not build (the ~8% OPEN official
+            # maps). Fall back to a straight-line (Euclidean) cost-to-go field so
+            # the channel carries a monotone gradient toward the goal instead of a
+            # FLAT all-unreachable map (zero routing signal). Registered identically
+            # to the free-space map. NOT cached (the None source key is not a valid
+            # per-level identity — different levels share it), so each level gets its
+            # own straight-line field. Falls through to the flat map only when the
+            # goal positions are unavailable.
+            eucl = self._euclidean_cost_to_go_map(bool(switch_activated))
+            if eucl is not None:
+                return eucl
             out = np.ones((3, W, H), dtype=np.float32)
             out[2] = 0.0  # reachable mask: nothing reachable when no source
             result = _downsample(out)
@@ -2661,6 +3085,63 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         cache[bool(switch_activated)] = (src, result)
         return result
 
+    def _euclidean_cost_to_go_map(self, switch_activated: bool):
+        """Lever 4a: a straight-line (Euclidean) cost-to-go FIELD for
+        ``cost_to_go_map`` when the free-space source is unavailable (the OPEN
+        official maps where the flood cannot build a finite field).
+
+        Registered IDENTICALLY to the free-space map — same 6px grid over raw sim
+        px, same 24px border strip (``_off``), same 12px downsample — so the channel
+        stays co-registered with ``tile_grid`` / ``visitation_map``. Channels: 0 =
+        active-phase straight-line cost, 1 = other-phase straight-line cost, 2 =
+        reachable mask (1 everywhere: a straight-line estimate exists at every
+        cell). Uses the fixed-K soft-saturating norm (``m/(m+K)``) so the gradient
+        is monotone-decreasing toward the goal at any distance. Returns ``None``
+        when the goal positions are unavailable so the caller keeps the flat map."""
+        try:
+            nh = self.nplay_headless
+            sw = nh.exit_switch_position()
+            ex = nh.exit_door_position()
+        except Exception:
+            return None
+        if sw is None or ex is None:
+            return None
+        from ..value_function.free_space_distance import (
+            _CELL as FS_CELL, _W as FS_W, _H as FS_H,
+        )
+
+        W, H = HAZARD_MAP_WIDTH, HAZARD_MAP_HEIGHT
+        K = float(getattr(self, "_cost_to_go_map_k", 1000.0))
+        ds = COST_TO_GO_MAP_DOWNSAMPLE
+        _off = int(TILE_PIXEL_SIZE // 6)
+        # Free-space grid cell centers in raw sim px along each axis.
+        xs = np.arange(FS_W, dtype=np.float32) * FS_CELL + FS_CELL / 2.0
+        ys = np.arange(FS_H, dtype=np.float32) * FS_CELL + FS_CELL / 2.0
+        active_goal = ex if switch_activated else sw
+        other_goal = sw if switch_activated else ex
+
+        def _field(goal):
+            gx, gy = float(goal[0]), float(goal[1])
+            dxs = xs[:, None] - gx
+            dys = ys[None, :] - gy
+            m = np.sqrt(dxs * dxs + dys * dys)  # (FS_W, FS_H) straight-line px
+            m = m[_off : _off + W, _off : _off + H]
+            return (m / (m + K)).astype(np.float32)
+
+        out = np.ones((3, W, H), dtype=np.float32)
+        out[0] = _field(active_goal)
+        out[1] = _field(other_goal)
+        out[2] = 1.0  # best-effort: a straight-line estimate exists everywhere
+        if ds <= 1:
+            return out
+        W2, H2 = W // ds, H // ds
+        r = out[:, : W2 * ds, : H2 * ds].reshape(3, W2, ds, H2, ds)
+        pooled = np.empty((3, W2, H2), dtype=np.float32)
+        pooled[0] = r[0].min(axis=(1, 3))  # cost: shortest straight-line in block
+        pooled[1] = r[1].min(axis=(1, 3))
+        pooled[2] = r[2].max(axis=(1, 3))
+        return pooled
+
     # ------------------------------------------------------------------
     # v17 episodic visitation (count-based exploration + obs channel)
     # ------------------------------------------------------------------
@@ -2671,6 +3152,14 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         self._visit_novelty = 0.0
         self._visit_new_cell = False
         self._visit_cells = 0
+        # v26 W4: room discovery is strictly episodic — the whole point is that a
+        # room is novel again next episode even though the level's partition is a
+        # per-level constant.
+        self._regions_visited = set()
+        self._region_new = False
+        self._region_bonus = 0.0
+        self._region_coverage = 0.0
+        self._region_count = 0
         self._visit_coverage = 0.0
         self._visitation_bonus = 0.0
         self._visit_directed_wt = 1.0
@@ -2709,7 +3198,9 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
     def _visit_cell_of(self, nx: float, ny: float):
         """Map raw sim px (x, y) to the (cx, cy) visitation cell, co-registered
         with cost_to_go_map (12px cells past the 24px border), clipped to grid."""
-        cx = int((nx - VISITATION_ORIGIN_PX) // VISITATION_CELL_PX)
+        cx = _cell_x(
+            nx - VISITATION_ORIGIN_PX, VISITATION_CELL_PX, self._mirror_odd_dir
+        )
         cy = int((ny - VISITATION_ORIGIN_PX) // VISITATION_CELL_PX)
         cx = 0 if cx < 0 else (VISITATION_MAP_WIDTH - 1 if cx >= VISITATION_MAP_WIDTH else cx)
         cy = 0 if cy < 0 else (VISITATION_MAP_HEIGHT - 1 if cy >= VISITATION_MAP_HEIGHT else cy)
@@ -2772,6 +3263,55 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         playable cell count when no source is available."""
         self._visit_reachable_mask()  # refresh the (src, count, mask) cache
         return getattr(self, "_visit_reachable_cache", (None, 0, None))[1]
+
+    # ------------------------------------------------------------------
+    # v26 W4 topological region novelty
+    # ------------------------------------------------------------------
+    def _region_labels(self) -> Tuple[Optional[np.ndarray], int]:
+        """Room partition of the reachable space, computed once per level.
+
+        Cached on the free-space nav source's identity, exactly like
+        ``_visit_reachable_mask`` — a new level builds a new source.
+        """
+        src = getattr(self, "_free_space_nav_source", None)
+        cached = getattr(self, "_region_label_cache", None)
+        if cached is not None and cached[0] is src:
+            return cached[1], cached[2]
+        labels, n = label_regions(self._visit_reachable_mask())
+        self._region_label_cache = (src, labels, n)
+        return labels, n
+
+    def _update_region_novelty(self, nx: float, ny: float) -> None:
+        """Reward the FIRST entry to each room this episode.
+
+        Cell-count novelty saturates in a maze — once every corridor has been
+        walked the bonus is uniformly near zero, yet the agent still does not
+        know which room to try next. A room stays novel until it is entered no
+        matter how stale the corridor leading to it is, so this signal survives
+        precisely where the cell-level one dies.
+
+        Runs from ``_pre_reward_hook`` alongside ``_update_visit_counts`` so
+        ``_region_bonus`` is ready before the reward hook consumes it.
+        """
+        self._region_new = False
+        self._region_bonus = 0.0
+        if self._region_novelty_coef <= 0.0:
+            return
+        labels, n_regions = self._region_labels()
+        self._region_count = n_regions
+        if labels is None or n_regions == 0:
+            self._region_coverage = 0.0
+            return
+        cx, cy = self._visit_cell_of(nx, ny)
+        rid = int(labels[cx, cy])
+        # rid 0 means the ninja is on a cell the reachability field calls
+        # unreachable (it disagrees with the sim near geometry edges). Not a
+        # room, so not a discovery.
+        if rid > 0 and rid not in self._regions_visited:
+            self._regions_visited.add(rid)
+            self._region_new = True
+            self._region_bonus = float(self._region_novelty_coef)
+        self._region_coverage = len(self._regions_visited) / float(n_regions)
 
     def _visit_reachable_mask(self) -> Optional[np.ndarray]:
         """Pooled (84, 46) bool reachable mask on the SAME 12px grid as the
@@ -2981,6 +3521,13 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             self._update_visit_counts(nx, ny)
             if getattr(self, "_frontier_enabled", False):
                 self._update_frontier_bonus(nx, ny)
+        # v26 W4: room-level novelty. Deliberately NOT gated on
+        # _visit_map_enabled — it needs only the reachable mask, not the visit
+        # grid, and must be usable on its own for a clean A/B against the
+        # cell-count bonus it is meant to outlive.
+        if self._region_novelty_coef > 0.0:
+            nx, ny = self.nplay_headless.ninja_position()
+            self._update_region_novelty(nx, ny)
 
     def _modify_reward_hook(
         self,
@@ -2999,6 +3546,9 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # v18 C1 go-to-frontier shaping (same post-clawback slot).
         if getattr(self, "_frontier_approach_coef", 0.0) > 0.0:
             reward = reward + float(getattr(self, "_frontier_bonus", 0.0))
+        # v26 W4 room-discovery bonus (same post-clawback slot).
+        if self._region_novelty_coef > 0.0:
+            reward = reward + float(getattr(self, "_region_bonus", 0.0))
         return reward
 
     def _compute_ego_crop(self, nx: float, ny: float) -> np.ndarray:
@@ -3025,7 +3575,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                            dtype=np.int8)
 
         # Ninja tile in tile_grid coordinates (strip the sim's +1 border).
-        tx = int(nx / TILE_PIXEL_SIZE) - 1
+        tx = _cell_x(nx, TILE_PIXEL_SIZE, self._mirror_odd_dir) - 1
         ty = int(ny / TILE_PIXEL_SIZE) - 1
 
         out = np.full((size, size), EGO_CROP_PAD_TILE, dtype=np.int8)
@@ -3062,7 +3612,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         safe = entity_overlays[ENTITY_OVERLAY_CH_MINE_SAFE]
 
         # Same window / coordinate mapping as _compute_ego_crop (strip +1 border).
-        tx = int(nx / TILE_PIXEL_SIZE) - 1
+        tx = _cell_x(nx, TILE_PIXEL_SIZE, self._mirror_odd_dir) - 1
         ty = int(ny / TILE_PIXEL_SIZE) - 1
         sx0, sy0 = tx - half, ty - half
         gx0, gy0 = max(0, sx0), max(0, sy0)
@@ -3159,7 +3709,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         grad = self._get_tile_route_gradient(switch_activated)
 
         # Same window / coordinate mapping as _compute_ego_crop (strip +1 border).
-        tx = int(nx / TILE_PIXEL_SIZE) - 1
+        tx = _cell_x(nx, TILE_PIXEL_SIZE, self._mirror_odd_dir) - 1
         ty = int(ny / TILE_PIXEL_SIZE) - 1
         sx0, sy0 = tx - half, ty - half
         gx0, gy0 = max(0, sx0), max(0, sy0)
@@ -3196,7 +3746,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             return 0.0
 
         grad = self._get_tile_route_gradient(switch_activated)
-        tx = int(nx / TILE_PIXEL_SIZE) - 1
+        tx = _cell_x(nx, TILE_PIXEL_SIZE, self._mirror_odd_dir) - 1
         ty = int(ny / TILE_PIXEL_SIZE) - 1
         rdx = 0.0
         if 0 <= tx < grad.shape[1] and 0 <= ty < grad.shape[2]:
@@ -3211,6 +3761,297 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         if cur is not None and prev is not None:
             stalled = 1.0 if cur >= prev - 1e-4 else 0.0
         return float(np.clip(into_wall * stalled, 0.0, 1.0))
+
+    # Horizontal lookahead for the wall-contact tau probe, in frames. 12 frames
+    # at MAX_HOR_SPEED is ~40px -- long enough to telegraph an approaching wall a
+    # few frames early (the walljump window), short enough that the scalar is
+    # saturated at 1.0 almost everywhere and so carries little noise.
+    WALL_TAU_LOOKAHEAD_FRAMES = 12.0
+
+    def _compute_wall_contact_tau(self, nx, ny, vx, vy, ninja) -> float:
+        """Normalized frames until this ninja runs into a WALL, in [0, 1].
+
+        1.0 = no wall within the lookahead (the common case); 0.0 = in contact.
+
+        Why this exists: ``time_to_contact_frames`` is computed from the LANDING
+        surface normal for an AIRBORNE ninja, so a GROUNDED ninja running
+        horizontally at a wall has no contact-time signal at all. That is exactly
+        the state a corner walljump is entered from -- the maneuver requires
+        pressing RIGHT+JUMP ~2 frames BEFORE contact while still moving left at
+        MAX_HOR_SPEED. Without a tau that is a frame-perfect guess; with it, it is
+        the far more learnable "when tau is small, jump".
+
+        Uses the physics sweep so the answer respects real level geometry
+        (slopes, thin walls) rather than a tile-grid approximation.
+        """
+        if abs(vx) < 0.5:
+            # Not meaningfully moving horizontally -> nothing approaching.
+            return 1.0
+        # Tile march rather than the physics segment sweep: the NATIVE backend's
+        # _SimProxy carries tile_dic but no segment_dic, and sweep_circle_vs_tiles
+        # needs segments. Training runs on native, so a segment-based probe would
+        # be dead exactly where it matters. tile_dic exists on both backends.
+        #
+        # Approximation: any non-empty tile blocks. Exact for full tiles (type 1),
+        # conservative for slopes/half-tiles, which can read "wall" slightly early.
+        # Acceptable because this scalar is a TIMING HINT, not physics -- the sim
+        # remains the authority on what actually collides.
+        from ..constants.physics_constants import NINJA_RADIUS
+
+        sim = getattr(self.nplay_headless, "sim", None)
+        tile_dic = getattr(sim, "tile_dic", None)
+        if not tile_dic:
+            return 1.0
+
+        max_px = abs(float(vx)) * self.WALL_TAU_LOOKAHEAD_FRAMES
+        if max_px <= 1e-6:
+            return 1.0
+        step = 1 if vx > 0 else -1
+        tx = _cell_x(float(nx), TILE_PIXEL_SIZE, self._mirror_odd_dir)
+        ty = int(float(ny) // TILE_PIXEL_SIZE)
+
+        # Only need to march as far as the lookahead can reach.
+        max_tiles = int(max_px // TILE_PIXEL_SIZE) + 2
+        for k in range(1, max_tiles + 1):
+            cx = tx + step * k
+            # Missing key = outside the map = solid border.
+            if tile_dic.get((cx, ty), 1) != 0:
+                edge = cx * TILE_PIXEL_SIZE if step > 0 else (cx + 1) * TILE_PIXEL_SIZE
+                gap = abs(edge - float(nx)) - NINJA_RADIUS
+                if gap <= 0.0:
+                    return 0.0
+                if gap >= max_px:
+                    return 1.0
+                return float(np.clip(gap / max_px, 0.0, 1.0))
+        return 1.0
+
+    # Frames used to normalize the dwell/recency counters below. 30 frames is
+    # half a second at 60fps -- long enough to cover any contact dwell that
+    # matters for a maneuver, short enough that the common case uses the full range.
+    PRECISION_STATE_DWELL_CAP = 30.0
+    # Number of scalars appended by _compute_precision_state. Keep in sync with
+    # the vector built there AND with the observation-space growth.
+    PRECISION_STATE_DIM = 10
+
+    # EXECUTION_PRECISION_PLAN §6 time/phase block. Keep in sync with
+    # _compute_time_phase AND with the observation-space growth.
+    TIME_PHASE_DIM = 6
+    # Periods (frames) of the sinusoidal clock components. A bare t/T ramp moves
+    # ~0.002 per frame over a ~485-frame route, which a network cannot key
+    # frame-precise timing on; the sinusoids give the same clock at usable
+    # resolution. 64 separates route SEGMENTS, 16 separates individual inputs
+    # within a maneuver. Coprime-ish periods so (ramp, sin/cos pairs) stay a
+    # unique code over the episode rather than repeating.
+    TIME_PHASE_PERIODS = (64.0, 16.0)
+
+    def _compute_time_phase(self) -> np.ndarray:
+        """Frame index and switch phase, as a fixed-length feature block.
+
+        Layout (TIME_PHASE_DIM = 6):
+            0   t / time_phase_norm_frames, clipped to [0, 1]
+            1   switch phase: 0.0 before the exit switch is hit, 1.0 after
+            2-5 sin/cos of t at TIME_PHASE_PERIODS
+
+        The switch phase is the disambiguator that mattered for the pace table:
+        the route passes through the same cells outbound and returning, and only
+        the switch bit tells those two visits apart.
+        """
+        try:
+            t = float(self.nplay_headless.sim.frame)
+        except Exception:  # noqa: BLE001
+            t = 0.0
+        norm = float(
+            getattr(
+                getattr(self.config, "reachability", None),
+                "time_phase_norm_frames",
+                600,
+            )
+        ) or 600.0
+        feats = [min(1.0, max(0.0, t / norm))]
+        # NOTE: read the live switch state, NOT self._switch_activation_frame --
+        # that attribute is only ever assigned None, so it would pin this bit to
+        # 0.0 forever and silently give us a clock with no phase.
+        try:
+            sw = bool(self.nplay_headless.exit_switch_activated())
+        except Exception:  # noqa: BLE001
+            sw = False
+        feats.append(1.0 if sw else 0.0)
+        for period in self.TIME_PHASE_PERIODS:
+            ang = 2.0 * np.pi * t / period
+            feats.append(float(np.sin(ang)))
+            feats.append(float(np.cos(ang)))
+        return np.array(feats, dtype=np.float32)
+
+    # v26 W6c. Keep in sync with _compute_commitment_state.
+    COMMITMENT_STATE_DIM = 6
+
+    @staticmethod
+    def _arc_fatal_and_margin(arc) -> Tuple[bool, float]:
+        """Classify one 15-dim ghost arc as fatal, with a survivability margin.
+
+        Mirrors the sim's two kill paths exactly, using the same fields
+        ``arc_doomed`` keys on: ``[4]`` deadly-mine landing, ``[5]`` no-contact
+        flag, ``[7]`` impact_ratio/2 (so > 0.5 means the normal impact speed
+        exceeds that surface's survivable threshold).
+
+        The margin is ``1 - impact_ratio`` in ``[0, 1]``: 1.0 = arrives at rest,
+        0.0 = arrives exactly at the kill threshold. An arc that never contacts
+        within the horizon is not a death, so it scores a full margin.
+        """
+        if arc[4] >= 0.5:
+            return True, 0.0
+        if arc[5] >= 0.5:
+            return False, 1.0
+        ratio = 2.0 * float(arc[7])
+        return ratio > 1.0, float(np.clip(1.0 - ratio, 0.0, 1.0))
+
+    def _compute_commitment_state(self, ninja) -> np.ndarray:
+        """v26 W6c: "is every option from here fatal?" — the point of no return.
+
+        Impact deaths are committed at TAKEOFF (V26 §1.8), and the per-arc
+        fatality bits the policy needs to answer this are already in game_state —
+        spread across five 3-arc bundles (committed / jump-now / tap / wall-jump)
+        plus the passive fall, 45 dims each. Asking the policy to learn the
+        CONJUNCTION across those rows, and to learn which rows are even active in
+        the current contact regime, is asking it to rediscover the level's
+        irreversibility structure from scratch. This block computes it directly.
+
+        Only the rows valid for the current regime are counted: the others are
+        zero-filled by ``_fill_ghost_arc_bundle`` and a zero arc reads as a
+        perfectly safe landing, which would make ``no_escape`` unreachable.
+
+        All six dims are polarized so that ZERO IS SAFE, matching
+        ``mine_proximity``: an all-zero block is the genuine "nothing is
+        committing me" reading, so the fallback for a missing block is correct
+        rather than merely conventional.
+
+          [0] air_trapped_frac     fraction of COMMITTED arcs that are fatal
+          [1] takeoff_trapped_frac fraction of (full-hold + tap) jump arcs fatal
+          [2] wall_trapped_frac    fraction of WALL-JUMP arcs that are fatal
+          [3] passive_fatal        1.0 = the do-nothing fall kills
+          [4] no_escape            1.0 = EVERY applicable arc is fatal
+          [5] escape_deficit       1 - best margin over applicable arcs
+        """
+        out = np.zeros(self.COMMITMENT_STATE_DIM, dtype=np.float32)
+        buf = self._game_state_buffer
+        airborne = bool(getattr(ninja, "airborn", False))
+        walled = bool(getattr(ninja, "walled", False))
+        pa = GAME_STATE_GHOST_ARC_PER_ARC
+
+        def _row(idx0):
+            return [
+                buf[idx0 + a * pa : idx0 + (a + 1) * pa]
+                for a in range(GAME_STATE_GHOST_ARC_ARCS)
+            ]
+
+        # (slot, arcs) for every row that is actually live this frame.
+        groups = []
+        if airborne:
+            groups.append((0, _row(GAME_STATE_GHOST_ARC_IDX)))
+            if walled:
+                groups.append((2, _row(GAME_STATE_WALL_ARC_IDX)))
+        else:
+            groups.append(
+                (
+                    1,
+                    _row(GAME_STATE_JUMP_ARC_IDX) + _row(GAME_STATE_TAP_ARC_IDX),
+                )
+            )
+
+        any_applicable = False
+        any_safe = False
+        best_margin = 0.0
+        for slot, arcs in groups:
+            if not arcs:
+                continue
+            fatals = 0
+            for arc in arcs:
+                fatal, margin = self._arc_fatal_and_margin(arc)
+                fatals += int(fatal)
+                if not fatal:
+                    any_safe = True
+                    best_margin = max(best_margin, margin)
+            out[slot] = fatals / len(arcs)
+            any_applicable = True
+
+        # The passive fall is its own 6-dim block with an explicit fatal flag —
+        # the one arc that is always available while airborne, since it is what
+        # happens if the policy simply stops acting.
+        if airborne:
+            p0 = GAME_STATE_PASSIVE_ARC_IDX
+            passive_fatal = buf[p0 + 4] >= 0.5
+            out[3] = 1.0 if passive_fatal else 0.0
+            any_applicable = True
+            if not passive_fatal:
+                any_safe = True
+                best_margin = max(best_margin, 1.0 if buf[p0 + 5] >= 0.5 else 0.5)
+
+        if any_applicable and not any_safe:
+            out[4] = 1.0
+        out[5] = float(np.clip(1.0 - best_margin, 0.0, 1.0)) if any_applicable else 0.0
+        return out
+
+    def _compute_precision_state(self, ninja) -> np.ndarray:
+        """Ninja state a feed-forward policy needs for FRAME-PRECISE maneuvers.
+
+        Ten scalars in [-1, 1], all read straight off the ninja (python + native
+        both expose them). Each entry closes a specific, verified hole:
+
+        0  wall_normal_buffered  The shipped ``wall_normal`` (game_state idx 16) is
+           gated on ``walled``, so it reads 0 during the wall_buffer COYOTE window
+           -- exactly the frames when a walljump is still legal after leaving the
+           wall. The policy could see "a walljump is available" (idx 9) without
+           seeing WHICH WAY it would launch. Retained here across the window.
+        1  is_jumping           The state one-hot (idx 2-5) collapses Jumping(3)
+           and Falling(4) into one bucket, so "still rising, can extend" is
+           indistinguishable from "falling, jump over".
+        2  jump_duration_norm   Shipped idx 10 is masked to 0 unless state==3, and
+           state 3 is not itself observable -- so 0 is ambiguous. Unmasked here.
+        3  airborn_old          Landing/takeoff transition edge.
+        4  floor_dwell          consecutive_floor_frames (grounded dwell).
+        5  wall_dwell           consecutive_wall_frames (wall-slide dwell).
+        6  state_recency        frames since the last state change.
+        7  state_norm           FULL-resolution state (0-9), not the 4 buckets.
+        8  prev_state_norm      previous frame's state at full resolution.
+        9  last_jump_buffered   whether the last jump consumed a buffer.
+           (``facing`` was considered here and REJECTED: the native _NinjaProxy
+           does not carry it, so exposing it would make the observation differ
+           between the python and native backends -- a silent parity break worse
+           than the missing feature.)
+
+        Entries 3-6 and 8 are the quantities otherwise only recoverable by frame
+        stacking; exposing them directly removes that dependency.
+        """
+        cap = self.PRECISION_STATE_DWELL_CAP
+
+        # A walljump stays legal while walled OR while the wall coyote buffer is
+        # live; ninja.wall_normal is never cleared, only overwritten on contact,
+        # so it still holds the correct direction throughout that window.
+        walled = bool(getattr(ninja, "walled", False))
+        wall_buf_active = -1 < getattr(ninja, "wall_buffer", -1) < 5
+        wn = float(getattr(ninja, "wall_normal", 0.0) or 0.0)
+        wall_normal_buffered = wn if (walled or wall_buf_active) else 0.0
+
+        state = int(getattr(ninja, "state", 0) or 0)
+        prev_state = int(getattr(ninja, "previous_state", state) or 0)
+        jump_duration = float(getattr(ninja, "jump_duration", 0.0) or 0.0)
+
+        def _dwell(v):
+            return float(np.clip(v / cap, 0.0, 1.0)) * 2.0 - 1.0
+
+        vec = np.array([
+            float(np.clip(wall_normal_buffered, -1.0, 1.0)),
+            1.0 if state == 3 else -1.0,
+            float(np.clip(jump_duration / max(MAX_JUMP_DURATION, 1), 0.0, 1.0)) * 2.0 - 1.0,
+            1.0 if bool(getattr(ninja, "airborn_old", False)) else -1.0,
+            _dwell(float(getattr(ninja, "consecutive_floor_frames", 0) or 0)),
+            _dwell(float(getattr(ninja, "consecutive_wall_frames", 0) or 0)),
+            _dwell(float(getattr(ninja, "state_change_frame", 0) or 0)),
+            (state / 9.0) * 2.0 - 1.0,
+            (prev_state / 9.0) * 2.0 - 1.0,
+            1.0 if bool(getattr(ninja, "last_jump_was_buffered", False)) else -1.0,
+        ], dtype=np.float32)
+        return vec
 
     def _compute_ego_crop_route_fine(
         self, nx: float, ny: float, switch_activated: bool
@@ -3235,7 +4076,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 src._d_exit if switch_activated else src._d_switch, dtype=np.float64
             )
             W, H = field.shape
-            cx = int(nx / _CELL)
+            cx = _cell_x(nx, _CELL, self._mirror_odd_dir)
             cy = int(ny / _CELL)
             # Padded window (1-cell border for the 8-neighbor diff), inf outside.
             win = np.full((size + 2, size + 2), np.inf)
@@ -3268,6 +4109,158 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             out[1] = np.where(live, bdy, 0.0).astype(np.float32)
         except Exception:
             out[:] = 0.0
+        return out
+
+    def _compute_ego_crop_mines_fine(self, nx: float, ny: float) -> np.ndarray:
+        """v24: (2, S, S) fine ego MINE-SDF crop (S = EGO_CROP_MINES_FINE_SIZE at
+        6px/cell). Slices the 6px hazard_map (ch0 deadly, ch1 safe; signed distance
+        clip((d-14)/24,-1,1)) in a ninja-centered window so the policy sees sub-tile
+        mine geometry locally — the global hazard_map is average-pooled to a ~7-tile
+        embedding before the policy sees it, so the lethal 14px disc is otherwise
+        unresolvable. Off-grid cells fill +1.0 (max "safe": the border is a wall, no
+        mine there). Co-registered with ego_crop_route_fine (same window, same 6px
+        playable frame as tile_grid/entity_overlays/hazard_map)."""
+        size = EGO_CROP_MINES_FINE_SIZE
+        half = size // 2
+        # Off-grid = far from any mine = +1.0 (the SDF "safe" asymptote).
+        out = np.ones((EGO_CROP_MINES_FINE_CHANNELS, size, size), dtype=np.float32)
+        try:
+            hazard = self._compute_hazard_map()  # (2, HW, HH) 6px, playable frame
+        except Exception:
+            return out
+        if hazard is None:
+            return out
+        C, W, H = hazard.shape
+        # World px -> 6px playable-frame cell: strip the 1-tile (24px = 4 cells) sim
+        # border, matching hazard_map's frame (co-registered with tile_grid).
+        cell6 = TILE_PIXEL_SIZE / 4.0  # 6px
+        border_cells = int(TILE_PIXEL_SIZE / cell6)  # 4
+        hx = _cell_x(nx, cell6, self._mirror_odd_dir) - border_cells
+        hy = int(ny / cell6) - border_cells
+        sx0, sy0 = hx - half, hy - half
+        gx0, gy0 = max(0, sx0), max(0, sy0)
+        gx1, gy1 = min(W, sx0 + size), min(H, sy0 + size)
+        if gx1 > gx0 and gy1 > gy0:
+            dx0, dy0 = gx0 - sx0, gy0 - sy0
+            dx1, dy1 = gx1 - sx0, gy1 - sy0
+            nchan = min(EGO_CROP_MINES_FINE_CHANNELS, C)
+            out[:nchan, dx0:dx1, dy0:dy1] = hazard[:nchan, gx0:gx1, gy0:gy1]
+        return out
+
+    def _get_fall_lethality_map(self) -> np.ndarray:
+        """v26 W6a: the current level's fall-lethality field, computed once.
+
+        Pure tile geometry, so it is cached for the lifetime of the level and
+        invalidated on map change — same contract as ``_get_cached_tile_grid``.
+        The cache is keyed on the map NAME alone (not on the array being
+        non-None) so a level whose surface extraction fails is not retried every
+        single step.
+
+        On failure the field degrades to "solid ground everywhere, no drop"
+        rather than raising: a missing hazard signal costs the agent a lever, a
+        raised exception costs the rollout.
+        """
+        current_map_name = getattr(self.map_loader, "current_map_name", None)
+        if current_map_name == self._fall_lethality_map_name:
+            return self._fall_lethality_map
+
+        try:
+            tile_dict = self.nplay_headless.get_tile_data()
+            # No mine_positions: a mine does not stop a fall, and splitting the
+            # floor at one would punch a phantom bottomless hole in the field.
+            field = compute_fall_lethality_map(
+                tile_dict,
+                HAZARD_MAP_WIDTH,
+                HAZARD_MAP_HEIGHT,
+                center_registered=self._mirror_equivariant_obs,
+                canonical=self._mirror_equivariant_obs,
+            )
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "fall-lethality field could not be built for %s; the fall obs "
+                "streams will read as 'no drop anywhere' this level.",
+                current_map_name,
+                exc_info=True,
+            )
+            field = np.empty(
+                (FALL_LETHALITY_CHANNELS, HAZARD_MAP_WIDTH, HAZARD_MAP_HEIGHT),
+                dtype=np.float32,
+            )
+            field[0].fill(1.0)
+            field[1].fill(0.0)
+        self._fall_lethality_map = field
+        self._fall_lethality_map_name = current_map_name
+        return field
+
+    def _compute_mine_proximity(self, nx: float, ny: float) -> np.ndarray:
+        """v25: (MINE_PROXIMITY_DIM,) bearing + closing-speed vector for the K
+        nearest deadly mines.
+
+        The v24 fine mine crop restored sub-tile mine *geometry*, but it is a
+        still frame: it cannot distinguish drifting harmlessly past a mine from
+        falling into one. That gap shows up exactly where it hurts — mine-death
+        is ~2% on the easy procgen buckets but ~0.51 on OFFICIAL layouts, with
+        only 0.52 of official episodes reaching the switch at all.
+
+        Per mine, ninja-centered and all bounded to [-1, 1]:
+          [0,1] dx_hat, dy_hat  unit bearing to the mine
+          [2]   proximity       1.0 at the 14px kill disc -> 0.0 at/past range
+          [3]   closing         v . bearing / speed norm; > 0 = closing
+          [4]   ttc             1/(1 + t/TAU) while closing, else 0.0
+
+        Mines are ordered nearest-first. Unused slots (fewer than K deadly mines,
+        or mines past range) stay all-zero, which is also the no-threat reading,
+        so a mine-free level is indistinguishable from a mine-far-away level —
+        the correct semantics for a *threat* signal.
+        """
+        out = np.zeros(MINE_PROXIMITY_DIM, dtype=np.float32)
+        arr = self._get_deadly_mine_xy()
+        if arr.shape[0] == 0:
+            return out
+        dx = arr[:, 0] - float(nx)
+        dy = arr[:, 1] - float(ny)
+        dist = np.hypot(dx, dy)
+        # Only mines inside the reaction window are threats; the rest stay zero
+        # rather than filling the slots with far-away noise.
+        in_range = dist <= MINE_PROXIMITY_RANGE_PX
+        if not np.any(in_range):
+            return out
+        idx = np.flatnonzero(in_range)
+        idx = idx[np.argsort(dist[idx])[:MINE_PROXIMITY_K]]
+
+        vx, vy = self.nplay_headless.ninja_velocity()
+        for slot, i in enumerate(idx):
+            d = float(dist[i])
+            # At d == 0 the bearing is undefined; the ninja is already inside the
+            # kill disc, so report maximum threat with a zero bearing.
+            if d > 1e-6:
+                ux, uy = float(dx[i]) / d, float(dy[i]) / d
+            else:
+                ux = uy = 0.0
+            # Surface distance to the kill disc, not center distance: 0 = contact.
+            gap = max(0.0, d - MINE_PROXIMITY_KILL_RADIUS_PX)
+            span = max(1e-6, MINE_PROXIMITY_RANGE_PX - MINE_PROXIMITY_KILL_RADIUS_PX)
+            proximity = float(np.clip(1.0 - gap / span, 0.0, 1.0))
+            # Positive = the velocity component points AT the mine.
+            closing_px = float(vx) * ux + float(vy) * uy
+            closing = float(
+                np.clip(closing_px / MINE_PROXIMITY_SPEED_NORM_PX, -1.0, 1.0)
+            )
+            if closing_px > 1e-6:
+                t_frames = gap / closing_px
+                ttc = float(1.0 / (1.0 + t_frames / MINE_PROXIMITY_TTC_TAU_FRAMES))
+            else:
+                # Receding or moving tangentially: no contact on the current
+                # heading, so no time-to-contact pressure.
+                ttc = 0.0
+            base = slot * MINE_PROXIMITY_FEATURES
+            out[base : base + MINE_PROXIMITY_FEATURES] = (
+                ux,
+                uy,
+                proximity,
+                closing,
+                ttc,
+            )
         return out
 
     def _get_coarse_solid_grid(self) -> np.ndarray:
@@ -3347,7 +4340,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         coarse_solid = self._get_coarse_solid_grid()
         CW, CH = coarse_solid.shape
 
-        tx = int(nx / TILE_PIXEL_SIZE) - 1
+        tx = _cell_x(nx, TILE_PIXEL_SIZE, self._mirror_odd_dir) - 1
         ty = int(ny / TILE_PIXEL_SIZE) - 1
         ccx, ccy = tx // P, ty // P
         sx0, sy0 = ccx - half, ccy - half
@@ -3536,6 +4529,42 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
     # u=-1 -> action 5 (jump+left), u=0 -> action 3 (jump), u=+1 -> action 4.
     _JUMP_ARC_ACTION = {0: 5, 1: 3, 2: 4}
 
+    # Half-width (px) of the fall-field window the Layer-3 impact gate inspects.
+    # The longest duration bin is 64 frames; free fall covers ~138 px in that
+    # time and the horizontal reach at MAX_HOR_SPEED is comparable, so a ~7-tile
+    # box around the ninja bounds anywhere a single macro can put it.
+    _FALL_RISK_PROBE_PX = 168.0
+
+    def _fall_risk_nearby(self) -> bool:
+        """Is there any fatal drop within reach of one macro from here?
+
+        Layer-3 impact masking removes the "no deadly mines -> nothing to check"
+        early-out, so without a gate every decision point on a mine-free level
+        would pay a full forward simulation. The W6a fall field is already
+        cached and static, so answering this is a slice and a comparison.
+
+        Fails OPEN (returns True) whenever the field is unavailable — a missed
+        early-out costs compute, a missed mask costs a death.
+        """
+        if not getattr(self.config, "layer3_mask_lethal_impact", False):
+            return False
+        try:
+            field = self._get_fall_lethality_map()
+            nx, ny = self.nplay_headless.ninja_position()
+        except Exception:
+            return True
+        if field is None:
+            return True
+        half = int(self._FALL_RISK_PROBE_PX / FALL_CELL_PX)
+        cx = int(nx / FALL_CELL_PX) - FALL_BORDER_CELLS
+        cy = int(ny / FALL_CELL_PX) - FALL_BORDER_CELLS
+        _, W, H = field.shape
+        x0, x1 = max(0, cx - half), min(W, cx + half + 1)
+        y0, y1 = max(0, cy - half), min(H, cy + half + 1)
+        if x1 <= x0 or y1 <= y0:
+            return True
+        return bool((field[0, x0:x1, y0:y1] < 0.0).any())
+
     def _apply_takeoff_arc_gap_mask(self, action_mask, duration_mask):
         """v16 PRECISION: veto a jump whose takeoff arc falls into a mine.
 
@@ -3571,13 +4600,35 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         except Exception:
             return action_mask, duration_mask
         pa = GAME_STATE_GHOST_ARC_PER_ARC
-        # Per-direction: mine landing ([4]==1) in BOTH full-hold and tap.
+        # v26 W6b: the arc's fatality test. Historically mine-landing only
+        # ([4] == 1) — the takeoff-commitment machinery existed and was keyed on
+        # the wrong hazard, so a jump that commits to a fatal FALL was never
+        # vetoed even though ~40% of losses are exactly that. With
+        # ``takeoff_arc_lethal_impact`` an arc also counts as fatal when it makes
+        # contact ([5] none_flag == 0) at a lethal normal speed ([7] carries
+        # impact_ratio/2, so > 0.5 means the impact exceeds the surface's
+        # survivable threshold — the same predicate `arc_doomed` already uses).
+        _impact = bool(getattr(self.config, "takeoff_arc_lethal_impact", False))
+
+        def _arc_fatal(bundle, arc_i: int) -> bool:
+            b = arc_i * pa
+            if (b + 4) >= len(bundle):
+                return False
+            if bundle[b + 4] >= 0.5:
+                return True
+            return (
+                _impact
+                and (b + 7) < len(bundle)
+                and bundle[b + 5] <= 0.5
+                and bundle[b + 7] > 0.5
+            )
+
+        # Per-direction: fatal in BOTH the full-hold and tap extremes, i.e. no
+        # hold clears it, so the answer is to build speed rather than re-time.
         fatal_actions = [
             act
             for arc_i, act in self._JUMP_ARC_ACTION.items()
-            if (arc_i * pa + 4) < len(full)
-            and full[arc_i * pa + 4] >= 0.5
-            and tap[arc_i * pa + 4] >= 0.5
+            if _arc_fatal(full, arc_i) and _arc_fatal(tap, arc_i)
         ]
         if not fatal_actions:
             return action_mask, duration_mask
@@ -3619,12 +4670,15 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             headless=self.nplay_headless,
             base_action_mask=action_mask,
             actions_to_execute=self._actions_to_execute,
+            fall_risk_nearby=self._fall_risk_nearby(),
         )
 
         self._layer3_decision_points += 1
         self._layer3_masked_actions_total += layer3_result.masked_actions
         self._layer3_masked_candidates_total += layer3_result.masked_candidates
         self._layer3_mask_override_count += layer3_result.mask_overrides
+        self._layer3_masked_by_mine_total += layer3_result.masked_by_mine
+        self._layer3_masked_by_impact_total += layer3_result.masked_by_impact
         if layer3_result.all_masked_event:
             self._layer3_all_masked_events += 1
 
@@ -4026,6 +5080,19 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         """
         processed_obs = super()._process_observation(obs)
 
+        # Gold-fraction-remaining scalar (docs/GOLD_AND_SCORE_OPTIMIZATION.md part b),
+        # appended UNCONDITIONALLY right after the base game_state truncation and
+        # BEFORE the optional expose_* blocks, so the policy game_state length
+        # matches the (+1) Box in _build_extended_observation_space. Global "how much
+        # gold is left" signal (in [0, 1]; 0.0 on no-gold levels), complementing the
+        # spatial gold-density overlay channel. Read from the raw obs dict, which
+        # base_environment populates on both the python and native backends.
+        _gf = float(obs.get("gold_fraction_remaining", 0.0))
+        processed_obs["game_state"] = np.append(
+            np.asarray(processed_obs["game_state"], dtype=np.float32),
+            np.float32(_gf),
+        ).astype(np.float32)
+
         # v22 §3-B: re-attach the blocked-toward-goal scalar AFTER the base
         # process_game_state truncates game_state to GAME_STATE_CHANNELS. The
         # policy game_state length then matches the (+1) Box in
@@ -4039,11 +5106,63 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 np.asarray(processed_obs["game_state"], dtype=np.float32), feat
             ).astype(np.float32)
 
+        # Wall-contact tau re-attached AFTER blocked_goal so the game_state layout
+        # is a stable, documented order: [... base ..., blocked_goal?, wall_tau?].
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_wall_contact_tau", False):
+            feat = getattr(self, "_wall_tau_feat", None)
+            if feat is None:
+                feat = np.ones(1, dtype=np.float32)
+            processed_obs["game_state"] = np.append(
+                np.asarray(processed_obs["game_state"], dtype=np.float32), feat
+            ).astype(np.float32)
+
+        # Precision block re-attached LAST, so the documented game_state layout is
+        # [... base ..., blocked_goal?, wall_tau?, precision_state?].
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_precision_state", False):
+            feat = getattr(self, "_precision_state_feat", None)
+            if feat is None:
+                feat = np.zeros(self.PRECISION_STATE_DIM, dtype=np.float32)
+            processed_obs["game_state"] = np.append(
+                np.asarray(processed_obs["game_state"], dtype=np.float32), feat
+            ).astype(np.float32)
+
+        # Time/phase block re-attached after precision_state, matching the growth
+        # order in _build_extended_observation_space. Full layout:
+        # [... base ..., blocked_goal?, wall_tau?, precision_state?, time_phase?].
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_time_phase", False):
+            feat = getattr(self, "_time_phase_feat", None)
+            if feat is None:
+                feat = np.zeros(self.TIME_PHASE_DIM, dtype=np.float32)
+            processed_obs["game_state"] = np.append(
+                np.asarray(processed_obs["game_state"], dtype=np.float32), feat
+            ).astype(np.float32)
+
+        # v26 W6c commitment block re-attached LAST. Full layout:
+        # [... base ..., blocked_goal?, wall_tau?, precision_state?, time_phase?,
+        #  commitment_state?]. Zeros are the genuine "nothing is committing me"
+        # reading (every dim is polarized so zero is safe), so the fallback is
+        # correct and not merely conventional.
+        if getattr(getattr(self.config, "reachability", None),
+                   "expose_commitment_state", False):
+            feat = getattr(self, "_commitment_state_feat", None)
+            if feat is None:
+                feat = np.zeros(self.COMMITMENT_STATE_DIM, dtype=np.float32)
+            processed_obs["game_state"] = np.append(
+                np.asarray(processed_obs["game_state"], dtype=np.float32), feat
+            ).astype(np.float32)
+
         if "hazard_map" not in processed_obs:
             processed_obs["hazard_map"] = obs.get(
                 "hazard_map",
                 np.zeros(
-                    (HAZARD_MAP_CHANNELS, HAZARD_MAP_WIDTH, HAZARD_MAP_HEIGHT),
+                    (
+                        HAZARD_MAP_CHANNELS,
+                        HAZARD_MAP_OBS_WIDTH,
+                        HAZARD_MAP_OBS_HEIGHT,
+                    ),
                     dtype=np.float32,
                 ),
             )

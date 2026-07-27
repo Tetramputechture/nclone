@@ -113,6 +113,38 @@ class RewardConfig:
     #         potential, so completion's +w bonus is unaffected.)
     pbrs_death_clawback: float = 0.0
 
+    # Fraction of the gold reward BANKED THIS EPISODE that is clawed back on DEATH.
+    #   0.0 = disabled / legacy (DEFAULT): gold collected en route stays banked even
+    #         if the ninja then dies, so a "grab-gold-then-mine-die" trajectory nets
+    #         +gold - death_penalty, making risky gold detours look cheaper than they
+    #         are (the agent chases gold into hazards).
+    #   1.0 = claw back 100%: on death, SUBTRACT the full episode-cumulative gold
+    #         reward from the terminal reward so the episode return contains no net
+    #         gold contribution -> dying erases the gold's value and the policy stops
+    #         treating hazardous gold as free. Fractional values (e.g. 0.5) claw back
+    #         a proportion. Applies ONLY on death (has_died) — a WIN or a truncation
+    #         always keeps the full gold, so completing the level with gold is
+    #         rewarded exactly as before.
+    gold_death_clawback: float = 0.0
+
+    # Completion-primary gold BANKING (V25). Strictly stronger than the death
+    # clawback above, which only covers deaths.
+    #   False = legacy (DEFAULT): gold pays the moment it is picked up, so a
+    #         gold detour that ends in a TIMEOUT still banks the gold. Measured
+    #         consequence (v24 scratch, 18M -> 21M): det-eval completion fell
+    #         18.8% -> 16.1% while gold/solve rose 7.0 -> 17.4 and timeouts
+    #         nearly doubled — gold was outcompeting completion even at
+    #         gold_death_clawback=1.0.
+    #   True  = bank the per-gold pickup reward for the whole episode and pay it
+    #         out ONLY on a completing episode (real exit, or the
+    #         reverse-curriculum intermediate goal). A death or a truncation
+    #         pays exactly 0 gold. Gold therefore can never trade against
+    #         completion: an unfinished gold grab is worth nothing, while a win
+    #         still collects the full gold value.
+    # When True, ``gold_death_clawback`` becomes a no-op (nothing was paid to
+    # claw back) and is ignored.
+    gold_bank_until_completion: bool = False
+
     # --- Goal-distance reverse curriculum ---
     # Move the GOAL closer to spawn early, then outward. The "near goal" is a
     # cost-to-go THRESHOLD on the (reachable) free-space path: the episode SUCCEEDS
@@ -272,6 +304,87 @@ class RewardConfig:
     # because the bonus is a RATIO this only sets where the gradient is steepest,
     # not the ceiling, so mild misspecification is harmless.
     completion_speed_par_speed_px: float = 2.5
+    # SINGLE-LEVEL SPEEDRUN: reference the speed bonus to the fastest win this
+    # env has ever recorded on the level (a personal-best RECORD) instead of a
+    # static par. Motivation: both the par and budget forms clamp at 1.0, so once
+    # the policy is at/under par the time gradient VANISHES -- fine for generalist
+    # training (it removes any pull toward risky sub-par shortcuts) but fatal when
+    # the whole objective is to grind toward the theoretical minimum frame count.
+    #   frac = best_frames_so_far / frames_used     (best = record BEFORE this ep)
+    #   bonus = completion_speed_bonus * clip(frac, 0, completion_speed_record_cap)
+    # Tying the record pays 1.0x; BEATING it pays >1.0x, and the record then
+    # ratchets down, so there is always a live gradient no matter how fast the
+    # policy already is. The first win pays 1.0x and seeds the record.
+    # Safety: still terminal-only and win-gated (never farmed, never paid on
+    # death/timeout), so PBRS telescoping/policy-invariance is untouched. The cap
+    # bounds it: keep completion_speed_bonus * cap < R_EXIT (10.0, see
+    # reward_constants.R_EXIT) so a slow win still strictly beats dying
+    # (3.0 * 1.5 = 4.5 << 10.0). NOTE: the module docstring above says
+    # "R_EXIT = 5.0"; that is stale -- the shipped constant is 10.0.
+    completion_speed_record_norm: bool = False
+    completion_speed_record_cap: float = 1.5
+    # DISCRETE new-record bonus, paid once when a genuine spawn-to-exit run beats
+    # the standing record. Motivation (measured on SI-000 at a 479-frame record):
+    # the record-RATIO form is almost flat near the record, because 479/465 =
+    # 1.03 -- so closing the ENTIRE remaining 14-frame gap to optimal was worth
+    # only +0.26 on a ~14.0 episode return (1.86%; 0.13% per frame). That is
+    # below what PPO can resolve against episode-to-episode variance, which is
+    # why every configuration converged to ~479-486 and stopped. The ratio form
+    # tells the agent how good it is; it does not pay it enough to improve.
+    #
+    # Safety: terminal-only, win-gated, and SPAWN-gated (a checkpoint-restored
+    # episode cannot claim it). Unfarmable by construction -- claiming it raises
+    # the bar, so each payment requires a strictly new best, and the total number
+    # of payments over a run is bounded by the number of genuine improvements.
+    # It is NOT potential-based, so it does shift the optimum: deliberately, and
+    # toward faster completion. Watch success_rate for risk-taking regressions.
+    completion_speed_record_bonus: float = 0.0
+
+    # --- PACE (split-time) PBRS ------------------------------------------
+    # Dense per-frame answer to "am I ahead of or behind the reference run's
+    # pace at my current progress?", using a table of cost-to-go -> reference
+    # frame built by scripts/build_pace_table.py.
+    #
+    #   Phi(s) = -(frames_elapsed - reference_frame_at(cost_to_go)) / pace_scale
+    #
+    # Why this and not just a bigger terminal bonus: the completion-time
+    # objective is TERMINAL, so the agent learns whether it was fast ~480 frames
+    # after the maneuver that decided it. Measured on SI-000, closing the entire
+    # remaining 479->465 gap was worth 1.86% of episode return (0.13%/frame) --
+    # below what PPO resolves against episode variance, which is what pinned
+    # every configuration at 479-507.
+    #
+    # It telescopes to Phi_T - Phi_0 = -(total_frames - reference_total), i.e.
+    # the dense signal sums to EXACTLY the time saved versus the reference, so
+    # it is policy-invariant and cannot be farmed: standing still grows elapsed
+    # while progress does not, so loitering is strictly penalised. Unlike the
+    # flat time penalty it pays AT the frames where time is actually lost.
+    enable_pace_pbrs: bool = False
+    pace_pbrs_weight: float = 1.0
+    pace_scale: float = 60.0     # frames; normalizes the potential to ~O(1)
+    pace_table_path: Optional[str] = None
+
+    # --- MOMENTUM (closing-speed) PBRS -------------------------------------
+    # Credit-assignment aid for momentum-conversion maneuvers whose payoff is
+    # hundreds of frames away. Motivating case: a corner walljump that flips
+    # xspeed -3.19 -> +1.08, doing a turnaround, a climb and a re-acceleration in
+    # one move. Under terminal-only speed reward the agent gets no signal for
+    # ~340 frames, so it never links the 3-frame input pattern to the payoff.
+    #
+    # The potential is the CLOSING SPEED on the goal (px/frame, normalized), NOT
+    # |velocity|. Two reasons |v| would be wrong:
+    #   * the walljump momentarily REDUCES |vx| (3.19 -> 1.08), so a |v| potential
+    #     would actively penalize exactly the maneuver we want;
+    #   * speed that is not directed at the goal is worthless here.
+    #
+    # Honest limitation: PBRS telescopes to Phi_T - Phi_0 regardless of how many
+    # frames were taken, so this term CANNOT by itself reward "finish sooner" --
+    # only the per-step time penalty does that. What it buys is dense, immediate
+    # credit for recovering closing speed, which is the part the agent currently
+    # has to discover blind. Policy-invariant by construction (Ng et al.), so it
+    # cannot introduce a reward hack; worst case it is inert.
+    enable_momentum_pbrs: bool = False
+    momentum_pbrs_weight: float = 0.3
 
     # --- Grounded-landing high-water-mark bonus (safe precision-jump shaping) ---
     # Rewards the ninja for reaching a NEW closest-ever *grounded* contact with the

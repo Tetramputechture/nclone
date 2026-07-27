@@ -1,8 +1,9 @@
-"""5-channel entity overlay grid for Layer 1 observations (ninja + goals + mines).
+"""6-channel entity overlay grid for Layer 1 observations (ninja + goals + mines + gold).
 
-Builds ``(5, MAP_TILE_WIDTH, MAP_TILE_HEIGHT)`` float32 in [0, 1] from simulator
-state. The generalist agent's scope is exactly {toggle mines, one exit switch,
-one exit door, one player spawn, any tiles}, so the overlay carries only those:
+Builds ``(6, MAP_TILE_WIDTH, MAP_TILE_HEIGHT)`` float32 in [0, 1] from simulator
+state. The generalist agent's scope is {toggle mines, one exit switch, one exit
+door, one player spawn, any tiles} plus GOLD (the score objective), so the overlay
+carries:
 
     0. ``ninja_pos``           - bilinear splat at the ninja's tile-space position
     1. ``switch_pos``          - bilinear splat at the exit-switch position iff not
@@ -10,6 +11,9 @@ one exit door, one player spawn, any tiles}, so the overlay carries only those:
     2. ``exit_pos``            - bilinear splat at the exit-door position
     3. ``mine_deadly_density`` - count of deadly mines per tile, /8 clamp to [0, 1]
     4. ``mine_safe_density``   - count of safe/toggling mines per tile, /8 clamp
+    5. ``gold_density``        - count of still-ACTIVE gold per tile, /8 clamp; a
+                                 collected gold drops out (absent from the active
+                                 set) so this channel shrinks as gold is collected
 
 Channels 1/2 use the SAME bilinear sub-tile splat as the ninja channel (not a
 hard single-cell write): static entities are placed on a 6px grid, so a 24px tile
@@ -17,9 +21,12 @@ holds 16 distinguishable goal positions. The bilinear splat preserves that
 sub-tile location in the existing channel at no extra cost, instead of collapsing
 all 16 to one cell.
 
-Out-of-scope mechanics (gold, locked doors, one-way platforms) were removed
-entirely — they could never fire under the generalist scope and only added dead
-(and, for the one-way normal channels, constant-0.5) input planes.
+The gold channel is a GLOBAL, full-map tile-resolution density (N-invariant: any
+gold count — corpus max 1186 — maps to the same fixed (W, H) grid; per-gold
+observation slots are impossible). It is global rather than an ego-crop so the
+policy can see gold across a large open arena, not just around the ninja
+(docs/GOLD_AND_SCORE_OPTIMIZATION.md). Out-of-scope mechanics (locked doors,
+one-way platforms) remain removed.
 """
 
 from __future__ import annotations
@@ -38,6 +45,10 @@ from ..constants.physics_constants import (
 # Toggle mine kill zone radius (matches STRATEGY_EPIC / mine overlay spec).
 MINE_KILL_ZONE_RADIUS_PX = 14.0
 MINE_DENSITY_NORMALIZER = 8.0
+# Gold count per tile is normalized by this before the [0, 1] clamp. A single gold
+# reads 1/8 = 0.125; a dense cluster saturates at 1.0. Same scale as the mine
+# channels so the spatial extractor sees consistent density magnitudes.
+GOLD_DENSITY_NORMALIZER = 8.0
 
 # Canonical toggle-mine state semantics (see `entities/entity_toggle_mine.py`).
 # state == 0 is the lethal "toggled" phase; any non-zero state is safe or
@@ -65,8 +76,8 @@ def classify_mines_by_state(
     return deadly, safe
 
 
-# Channel count for entity_overlays (ninja + goals + toggle-mines).
-ENTITY_OVERLAY_CHANNELS = 5
+# Channel count for entity_overlays (ninja + goals + toggle-mines + gold).
+ENTITY_OVERLAY_CHANNELS = 6
 
 # Named channel indices (kept stable for downstream extractors).
 ENTITY_OVERLAY_CH_NINJA = 0
@@ -74,6 +85,7 @@ ENTITY_OVERLAY_CH_SWITCH = 1
 ENTITY_OVERLAY_CH_EXIT = 2
 ENTITY_OVERLAY_CH_MINE_DEADLY = 3
 ENTITY_OVERLAY_CH_MINE_SAFE = 4
+ENTITY_OVERLAY_CH_GOLD = 5
 
 
 def _entity_pixel_xy(entity: Any) -> Tuple[float, float]:
@@ -85,16 +97,31 @@ def _entity_pixel_xy(entity: Any) -> Tuple[float, float]:
     raise TypeError(f"Entity has no xpos/ypos or x/y: {type(entity)!r}")
 
 
-def _bilinear_splat(overlays: np.ndarray, channel: int, px: float, py: float) -> None:
+def _bilinear_splat(
+    overlays: np.ndarray,
+    channel: int,
+    px: float,
+    py: float,
+    center_anchor: bool = False,
+) -> None:
     """Splat a unit point mass at pixel (px, py) onto ``channel`` with bilinear
     sub-tile weights over the inner playable grid (0..41, 0..22).
 
     The four surrounding inner-tile cells receive weights summing to 1.0, so the
     splat's center of mass is the exact sub-tile position — preserving the 6px-grid
     location that a single-cell write would quantize to 24px.
+
+    ``center_anchor`` (ReachabilityConfig.mirror_equivariant_obs) moves the
+    interpolation anchor from a tile's LEFT/TOP EDGE to its CENTRE. The legacy
+    ``-1.0`` offset puts cell ``k``'s sample point at ``24*(k+1)`` — the tile's
+    edge — which is half a tile off the cell it is meant to register against and,
+    because the resulting anchor set is not closed under ``px -> 1056 - px``,
+    breaks reflection equivariance. Off by default: it changes observation
+    values, so only fresh trains should opt in.
     """
-    tx_f = float(px) / float(TILE_PIXEL_SIZE) - 1.0
-    ty_f = float(py) / float(TILE_PIXEL_SIZE) - 1.0
+    _anchor = 1.5 if center_anchor else 1.0
+    tx_f = float(px) / float(TILE_PIXEL_SIZE) - _anchor
+    ty_f = float(py) / float(TILE_PIXEL_SIZE) - _anchor
     x0 = int(math.floor(tx_f))
     y0 = int(math.floor(ty_f))
     wx = tx_f - x0
@@ -249,6 +276,67 @@ def _accumulate_mine_density(
     out[:] = grid
 
 
+# Cache of the finished gold density grid keyed by the ACTIVE-gold position
+# multiset. Gold positions are static; the active set only shrinks (on a pickup),
+# so the grid is recomputed only when a gold is collected — not per step.
+_GOLD_DENSITY_GRID_CACHE: dict[Tuple[Tuple[float, float], ...], np.ndarray] = {}
+_GOLD_DENSITY_GRID_CACHE_CAP = 8192
+
+
+def _accumulate_gold_density(
+    gold_positions: Sequence[Tuple[float, float]],
+    out: np.ndarray,
+    center_anchor: bool = False,
+) -> None:
+    """Fill ``out`` with active-gold counts / ``GOLD_DENSITY_NORMALIZER``, clamped
+    to [0, 1], over the full-map inner tile grid.
+
+    ``gold_positions`` is the pixel centers of still-ACTIVE gold; collected gold is
+    absent (so the channel shrinks as gold is collected). N-invariant: any count of
+    gold maps onto the fixed ``(MAP_TILE_WIDTH, MAP_TILE_HEIGHT)`` grid. Cached by
+    the active-position multiset so the rasterization only reruns on a pickup.
+
+    ``center_anchor`` (``mirror_equivariant_obs``) splats each gold bilinearly
+    instead of hard-assigning it to the tile that CONTAINS it. Containment is a
+    half-open interval, so its reflection is the other half-open interval and a
+    gold sitting exactly on a 24 px tile boundary lands in different tiles in a
+    level and its mirror. A bilinear splat is continuous in position, so it has
+    no tie set at all -- and it preserves the sub-tile gold location the way the
+    switch / exit channels already do.
+    """
+    key = (
+        tuple(sorted((round(x, 3), round(y, 3)) for x, y in gold_positions)),
+        bool(center_anchor),
+    )
+    cached = _GOLD_DENSITY_GRID_CACHE.get(key)
+    if cached is not None:
+        out[:] = cached
+        return
+    if center_anchor:
+        splat = np.zeros(
+            (1, MAP_TILE_WIDTH, MAP_TILE_HEIGHT), dtype=np.float32
+        )
+        for gx, gy in gold_positions:
+            _bilinear_splat(splat, 0, float(gx), float(gy), True)
+        grid = np.minimum(splat[0] / GOLD_DENSITY_NORMALIZER, 1.0)
+        if len(_GOLD_DENSITY_GRID_CACHE) < _GOLD_DENSITY_GRID_CACHE_CAP:
+            _GOLD_DENSITY_GRID_CACHE[key] = grid
+        out[:] = grid
+        return
+    counts = np.zeros(MAP_TILE_WIDTH * MAP_TILE_HEIGHT, dtype=np.int32)
+    for gx, gy in gold_positions:
+        tx, ty = _px_to_inner_tile(gx, gy)
+        counts[tx * MAP_TILE_HEIGHT + ty] += 1
+    grid = np.minimum(
+        counts.reshape(MAP_TILE_WIDTH, MAP_TILE_HEIGHT).astype(np.float32)
+        / GOLD_DENSITY_NORMALIZER,
+        1.0,
+    )
+    if len(_GOLD_DENSITY_GRID_CACHE) < _GOLD_DENSITY_GRID_CACHE_CAP:
+        _GOLD_DENSITY_GRID_CACHE[key] = grid
+    out[:] = grid
+
+
 def compute_entity_overlays(
     ninja_pos: Tuple[float, float],
     switch_pos: Optional[Tuple[float, float]],
@@ -257,6 +345,8 @@ def compute_entity_overlays(
     deadly_mines: Sequence[Any],
     safe_mines: Sequence[Any],
     cached_mine_channels: Optional[np.ndarray] = None,
+    active_gold: Sequence[Tuple[float, float]] = (),
+    center_anchor: bool = False,
 ) -> np.ndarray:
     """Build the entity overlay grid (``ENTITY_OVERLAY_CHANNELS`` channels).
 
@@ -265,25 +355,30 @@ def compute_entity_overlays(
     and exit channels are bilinear sub-tile splats (the switch is omitted once
     ``switch_activated``). ``cached_mine_channels`` is an optional pre-rasterized
     ``(2, W, H)`` deadly/safe block to skip the per-step mine rasterization on a
-    non-toggling field.
+    non-toggling field. ``active_gold`` is the pixel centers of still-active gold,
+    rasterized into the gold-density channel (empty when the level has no gold or
+    all gold is collected). ``center_anchor`` is
+    ``ReachabilityConfig.mirror_equivariant_obs`` — see :func:`_bilinear_splat`.
     """
     overlays = np.zeros(
         (ENTITY_OVERLAY_CHANNELS, MAP_TILE_WIDTH, MAP_TILE_HEIGHT), dtype=np.float32
     )
 
     _bilinear_splat(
-        overlays, ENTITY_OVERLAY_CH_NINJA, float(ninja_pos[0]), float(ninja_pos[1])
+        overlays, ENTITY_OVERLAY_CH_NINJA, float(ninja_pos[0]), float(ninja_pos[1]),
+        center_anchor,
     )
 
     if not switch_activated and switch_pos is not None:
         _bilinear_splat(
             overlays, ENTITY_OVERLAY_CH_SWITCH,
-            float(switch_pos[0]), float(switch_pos[1]),
+            float(switch_pos[0]), float(switch_pos[1]), center_anchor,
         )
 
     if exit_pos is not None:
         _bilinear_splat(
-            overlays, ENTITY_OVERLAY_CH_EXIT, float(exit_pos[0]), float(exit_pos[1])
+            overlays, ENTITY_OVERLAY_CH_EXIT, float(exit_pos[0]), float(exit_pos[1]),
+            center_anchor,
         )
 
     # Mine density channels are STATIC on a non-toggling field, so the caller can
@@ -295,5 +390,10 @@ def compute_entity_overlays(
     else:
         _accumulate_mine_density(deadly_mines, overlays[ENTITY_OVERLAY_CH_MINE_DEADLY])
         _accumulate_mine_density(safe_mines, overlays[ENTITY_OVERLAY_CH_MINE_SAFE])
+
+    if active_gold:
+        _accumulate_gold_density(
+            active_gold, overlays[ENTITY_OVERLAY_CH_GOLD], center_anchor
+        )
 
     return overlays

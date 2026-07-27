@@ -8,6 +8,7 @@ preserves N++ gravity physics and therefore solvability.
 
 from .transforms import (
     AUGMENTATIONS,
+    canonical_map_data,
     MIRROR_AXIS_UNITS,
     NONTRIVIAL_AUGMENTATIONS,
     augment_map_data,
@@ -19,6 +20,7 @@ from .mirror_map import mirror_map_horizontally
 
 __all__ = [
     "AUGMENTATIONS",
+    "canonical_map_data",
     "NONTRIVIAL_AUGMENTATIONS",
     "MIRROR_AXIS_UNITS",
     "augment_map_data",

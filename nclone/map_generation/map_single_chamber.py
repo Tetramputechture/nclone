@@ -20,6 +20,10 @@ class SingleChamberGenerator(Map):
     ADD_FLOOR_MINES = False
     ADD_PLATFORM_GAP = False
     ADD_CEILING_OBSTACLES = False
+    # Gold count range (SPREAD regime); overwritten by SingleChamberConfig via the
+    # factory. 0/0 disables gold. See docs/GOLD_AND_SCORE_OPTIMIZATION.md.
+    MIN_GOLD_COUNT = 3
+    MAX_GOLD_COUNT = 12
 
     def set_empty_rectangle(self, x1: int, y1: int, x2: int, y2: int):
         """Set a rectangular region of the map to empty space."""
@@ -239,5 +243,20 @@ class SingleChamberGenerator(Map):
         self.add_random_entities_outside_playspace(
             playspace[0], playspace[1], playspace[2], playspace[3]
         )
+
+        # SPREAD gold: scatter across the chamber floor (and a hop above) so the
+        # score objective rewards sweeping the whole chamber. Mirrors the
+        # add_floor_mines idiom; reachable by construction (on the walking floor).
+        n_gold = self.rng.randint(self.MIN_GOLD_COUNT, self.MAX_GOLD_COUNT)
+        if n_gold > 0:
+            avail_x = [
+                x for x in range(play_x1 + 1, play_x2) if x not in reserved_positions
+            ]
+            self.rng.shuffle(avail_x)
+            for gx in avail_x[:n_gold]:
+                floor_y = play_y2 - deviations.get(gx, 0)
+                gy = floor_y - self.rng.randint(0, 2)
+                gx2, gy2 = self._find_closest_valid_tile(gx, gy, 0)
+                self.add_entity(2, gx2, gy2)
 
         return self

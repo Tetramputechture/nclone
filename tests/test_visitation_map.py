@@ -181,11 +181,19 @@ class TestVisitationMap:
         dr.config.visitation_directed = True
         dr._visitation_directed = True
         dr.reset(options={"map_data": _map("simple"), "map_name": "d0"})
+        # SEEDED walk. The final assertion needs the walk to actually cover a
+        # range of d*, and `action_space.sample()` draws from ambient global
+        # entropy — so whether this test passed depended on how much randomness
+        # earlier tests in the session happened to consume. A walk that never
+        # leaves the far-from-goal region pins every weight to the floor and the
+        # spread assertion fails, with nothing wrong in the code under test.
+        rng = np.random.RandomState(12345)
         try:
             uw, dw = [], []
             for _ in range(250):
-                _, _, t1, tr1, iu = uni.step(int(uni.action_space.sample()))
-                _, _, t2, tr2, idd = dr.step(int(dr.action_space.sample()))
+                act = int(rng.randint(0, uni.action_space.n))
+                _, _, t1, tr1, iu = uni.step(act)
+                _, _, t2, tr2, idd = dr.step(act)
                 uw.append(iu["visit_directed_wt"])
                 dw.append(idd["visit_directed_wt"])
                 if t1 or tr1:

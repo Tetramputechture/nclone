@@ -95,8 +95,9 @@ class BinaryReplayParser:
         level_id = struct.unpack("<I", data[0:4])[0]
         size_checksum = struct.unpack("<I", data[4:8])[0]
 
-        # Extract level name (starts around offset 39)
-        string_start = 39
+        # Extract level name. The name field begins at offset 38; a prior
+        # off-by-one (39) dropped the first character of every level name.
+        string_start = 38
         string_end = data.find(0, string_start)
         if string_end == -1:
             string_end = min(string_start + 50, len(data))

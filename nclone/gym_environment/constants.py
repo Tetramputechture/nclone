@@ -263,6 +263,66 @@ EGO_CROP_ROUTE_CHANNELS = 2
 EGO_CROP_ROUTE_FINE_CHANNELS = 2
 EGO_CROP_ROUTE_FINE_SIZE = 21  # 21 * 6px = 126px window (~+-2.6 tiles)
 
+# v24 fine ego MINE crop (``ego_crop_mines_fine``): the 6px signed-distance mine
+# field (hazard_map: ch0 deadly, ch1 safe; sdf=clip((d-14)/24,-1,1)) sliced in a
+# small ninja-centered window at 6px/cell — sub-tile mine geometry exactly where
+# deaths happen (around the ninja). The policy's only other fine (6px) mine input,
+# the global hazard_map, is average-pooled to a ~7-tile-per-bin embedding before it
+# reaches the policy, so the lethal 14px disc is unresolvable; every other mine view
+# is >=24px. This crop restores sub-tile mine placement locally. Same window/frame
+# as ego_crop_route_fine so the two co-register. 2 channels (deadly, safe).
+EGO_CROP_MINES_FINE_CHANNELS = 2
+EGO_CROP_MINES_FINE_SIZE = 21  # 21 * 6px = 126px window (~+-2.6 tiles)
+
+# v26 W6a fine ego FALL-LETHALITY crop (``ego_crop_fall_fine``): the static
+# survivable-impact field (see gym_environment/fall_lethality.py) sliced in a
+# ninja-centered 6px window. Impact deaths are ~40% of v25's losses and are
+# committed at TAKEOFF — by the time the ninja is falling, no action recovers —
+# so a local view of "which cells around me are above a fatal drop" is the one
+# impact signal that arrives while the decision is still open.
+#
+# Deliberately WIDER than the mine crops: the flat-floor lethal drop is ~6.8
+# tiles, so a +-2.6-tile window cannot contain the hazard it is describing. 31
+# cells * 6px = 186px (~+-3.9 tiles) covers the near half of a lethal fall, and
+# the co-registered global fall_lethality_map carries the rest.
+EGO_CROP_FALL_FINE_CHANNELS = 2
+EGO_CROP_FALL_FINE_SIZE = 31  # 31 * 6px = 186px window (~+-3.9 tiles)
+
+# v25 directional mine bearing + CLOSING SPEED (``mine_proximity``). The v24 fine
+# mine crop above fixed *where* the mines are, but it is a still frame: it carries
+# no velocity, so the policy cannot tell "drifting past a mine" from "about to hit
+# it". After v24 mine-death fell to ~2% on the easy procgen buckets yet stayed at
+# ~0.51 on OFFICIAL layouts, and switch_reached sat at 0.52 — i.e. half of official
+# episodes die before the switch, mostly on mines. This key adds the missing
+# motion-relative terms for the K nearest deadly mines, ninja-centered:
+#   [0] dx_hat, [1] dy_hat  — unit bearing to the mine
+#   [2] proximity           — 1.0 touching the 14px kill disc, 0.0 at/past range
+#   [3] closing             — signed velocity along the bearing / speed norm,
+#                             clipped [-1, 1]; > 0 = closing on the mine
+#   [4] ttc                 — 1.0 when contact is imminent, decaying to 0.0 when
+#                             far off or receding (the term the still frame lacks)
+# Exposed as its OWN obs key rather than appended to game_state: game_state is a
+# truncation-sensitive vector with several Box variants, and a dedicated key gets
+# its own encoder branch. Empty slots (fewer than K deadly mines) read all-zero,
+# which is also the "no threat" reading, so levels with no mines are consistent.
+MINE_PROXIMITY_K = 4
+MINE_PROXIMITY_FEATURES = 5
+MINE_PROXIMITY_DIM = MINE_PROXIMITY_K * MINE_PROXIMITY_FEATURES
+# NINJA_RADIUS + toggled-mine radius: contact at or inside this distance kills.
+# Must agree with mine_threading_distance._KILL_RADIUS and the hazard SDF's
+# `clip((d - 14) / 24, -1, 1)`.
+MINE_PROXIMITY_KILL_RADIUS_PX = 14.0
+# Beyond this the mine is not an immediate threat and `proximity` reads 0.
+# ~4 tiles: far enough to react, near enough to stay a local signal.
+MINE_PROXIMITY_RANGE_PX = 96.0
+# Speed normalizer for the closing term. Vertical fall speed exceeds
+# MAX_HOR_SPEED (3.33), so use a norm that keeps a terminal-velocity dive inside
+# the clip rather than saturating every airborne frame.
+MINE_PROXIMITY_SPEED_NORM_PX = 6.0
+# Frames-to-contact scale for `ttc`: ttc = 1 / (1 + t / TAU), so t = 0 -> 1.0 and
+# t = TAU (~0.5 s) -> 0.5. Matches the FiGAR macro horizon the policy commits over.
+MINE_PROXIMITY_TTC_TAU_FRAMES = 30.0
+
 GAME_STATE_CHANNELS = (
     NINJA_STATE_DIM + PHYSICS_DERIVED_DIM + 1 + 2 + 2
     + GAME_STATE_RAYCAST_DIM + GAME_STATE_FREE_SPACE_NAV_DIM + 1 + 1
@@ -273,6 +333,17 @@ GAME_STATE_CHANNELS = (
     + GAME_STATE_TAP_ARC_DIM + GAME_STATE_WALL_ARC_DIM
     + GAME_STATE_PASSIVE_ARC_DIM
 )  # 237
+
+# Always-on gold-fraction-remaining scalar appended right after the base
+# game_state (docs/GOLD_AND_SCORE_OPTIMIZATION.md part b). It is appended
+# UNCONDITIONALLY — independent of enable_gold_rewards — so the emitted
+# game_state is ALWAYS one wider than GAME_STATE_CHANNELS. Every optional block
+# (blocked_goal, wall_tau, precision_state, time_phase) is appended after it.
+GAME_STATE_GOLD_TAIL_DIM = 1
+# The width the env actually emits with no optional blocks enabled. Assert
+# against THIS, not GAME_STATE_CHANNELS: the latter is the base the appends are
+# measured from, and comparing an emitted vector to it is off by the gold tail.
+GAME_STATE_EMITTED_CHANNELS = GAME_STATE_CHANNELS + GAME_STATE_GOLD_TAIL_DIM
 
 # Switch states array (legacy format, still used internally by reward/PBRS code)
 MAX_LOCKED_DOORS = 5  # Maximum doors for switch_states array
@@ -307,6 +378,25 @@ HAZARD_MAP_HEIGHT = 92  # 552 / 6
 COST_TO_GO_MAP_DOWNSAMPLE = 2
 COST_TO_GO_MAP_WIDTH = HAZARD_MAP_WIDTH // COST_TO_GO_MAP_DOWNSAMPLE  # 84
 COST_TO_GO_MAP_HEIGHT = HAZARD_MAP_HEIGHT // COST_TO_GO_MAP_DOWNSAMPLE  # 46
+
+# The POLICY-FACING `hazard_map` / `fall_lethality_map` observations are emitted
+# at the same coarser grid, for the same reason. Both fields are still COMPUTED
+# at 6px — the ego crops (`ego_crop_mines_fine`, `ego_crop_fall_fine`) and the
+# hazard/impact PBRS terms slice them at full fidelity, and those consumers are
+# untouched. Only the global obs keys are pooled.
+#
+# The two maps are 2 channels of 168x92 float32 each = 121 KB per env per map,
+# together ~64% of the whole observation payload, while their encoders pool to a
+# small fixed readout (AdaptiveAvgPool2d) that cannot see the difference. Every
+# per-step operation that scales with observation BYTES — GPU transfer, rollout
+# buffer write, VecNormalize copy, SIL slice — pays for that resolution. Pooling
+# 2x takes each map 121 KB -> 30 KB.
+#
+# Pooling is conservative (worst sub-cell wins), see obs_map_pooling. MUST divide
+# HAZARD_MAP_WIDTH/HEIGHT evenly.
+HAZARD_MAP_OBS_DOWNSAMPLE = 2
+HAZARD_MAP_OBS_WIDTH = HAZARD_MAP_WIDTH // HAZARD_MAP_OBS_DOWNSAMPLE  # 84
+HAZARD_MAP_OBS_HEIGHT = HAZARD_MAP_HEIGHT // HAZARD_MAP_OBS_DOWNSAMPLE  # 46
 
 # v17 episodic visitation map (``visitation_map``): a per-episode "where have I
 # been" grid co-registered EXACTLY with cost_to_go_map (same 12px cells, same

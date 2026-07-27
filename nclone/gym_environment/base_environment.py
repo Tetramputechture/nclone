@@ -6,6 +6,7 @@ mixins for graph, reachability, and debug features.
 """
 
 import logging
+import math
 import os
 import gymnasium
 from gymnasium.spaces import box, discrete, Dict as SpacesDict
@@ -225,6 +226,11 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._layer3_masked_candidates_total = 0
         self._layer3_mask_override_count = 0
         self._layer3_all_masked_events = 0
+        # v26 W6b: split the veto count by cause. Without it an over-eager impact
+        # mask (agent refuses to jump -> timeouts) is indistinguishable from the
+        # mine mask simply firing more often.
+        self._layer3_masked_by_mine_total = 0
+        self._layer3_masked_by_impact_total = 0
 
         # Action sequence tracking for Go-Explore checkpoint replay
         # Stores all actions since last reset for deterministic replay
@@ -293,6 +299,31 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self.observation_space = self._build_base_observation_space()
 
         self.mirror_map = False
+
+        # HORIZONTAL_AUGMENTATION_PLAN §2: opt-in reflection-equivariant obs
+        # conventions (centre-anchored entity splat, reflection-odd scandot
+        # tie-break). Read once — it is consulted on the per-step obs path.
+        self._mirror_equivariant_obs = bool(
+            getattr(
+                getattr(getattr(self, "config", None), "reachability", None),
+                "mirror_equivariant_obs",
+                False,
+            )
+        )
+        if self._mirror_equivariant_obs:
+            # The free-space field lives in another module and is consumed by the
+            # nav hint, the cost-to-go map, the route crops AND the PBRS
+            # potential, so the switch is process-wide. It turns on BOTH the
+            # centre-registered read-out and the canonical-orientation build.
+            from ..value_function.free_space_distance import (
+                set_reflection_equivariant,
+            )
+
+            set_reflection_equivariant(True)
+        # The shared reflection-odd tie-break sign, refreshed once per
+        # observation. +1 (plain floor) until the first _get_observation, and
+        # permanently +1 when the flag is off.
+        self._mirror_odd_dir = 1
 
         # Cache for level data and entities (invalidated only on reset)
         # PERFORMANCE: Eliminates 8217+ redundant calls to _extract_level_data()
@@ -980,8 +1011,32 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # No reward config -> use standard truncation
             multiplier = 1.0
 
-        # Check against curriculum-adjusted limit
-        return self.truncation_checker.update_and_check_for_truncation(multiplier)
+        # Check against curriculum-adjusted limit, plus any time the ninja has
+        # EARNED this episode by collecting gold (game-faithful N++ countdown).
+        return self.truncation_checker.update_and_check_for_truncation(
+            multiplier, self._gold_time_bonus_frames()
+        )
+
+    def _gold_time_bonus_frames(self) -> int:
+        """Frames of extra episode budget earned by gold collected so far.
+
+        In real N++ each gold adds a second to the countdown. The sim's truncation
+        limit is otherwise STATIC per level, so without this a gold detour is
+        punished twice: once by the frames it costs and again by the timeout it
+        brings forward. Returns 0 (and does no gold scan at all) unless
+        ``EnvironmentConfig.gold_time_bonus_frames`` is set.
+        """
+        per_gold = int(
+            getattr(getattr(self, "config", None), "gold_time_bonus_frames", 0) or 0
+        )
+        if per_gold <= 0:
+            return 0
+        try:
+            gold_state = self.nplay_headless.get_gold_state()
+        except Exception:  # noqa: BLE001 - backend without gold support
+            return 0
+        collected = sum(1 for (_x, _y, active) in gold_state if not active)
+        return per_gold * collected
 
     def _get_curriculum_aware_truncation_limit(self) -> int:
         """Get the curriculum-aware truncation limit without side effects.
@@ -1017,7 +1072,12 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # No reward config -> use standard truncation
             multiplier = 1.0
 
-        return int(base_limit * multiplier)
+        # Mirror update_and_check_for_truncation EXACTLY: the observed
+        # time_remaining must be computed from the same limit that actually
+        # truncates, or the policy's clock disagrees with the env's and the
+        # completion-speed bonus mis-pays. This is also what lets the policy SEE
+        # the extra budget it earns by collecting gold.
+        return int(base_limit * multiplier) + self._gold_time_bonus_frames()
 
     def set_goal_distance_fraction(self, fraction: float) -> float:
         """Set the goal-distance reverse-curriculum fraction (callable via
@@ -1295,6 +1355,12 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 info["layer3_all_actions_masked_events"] = (
                     self._layer3_all_masked_events
                 )
+                info["layer3_candidates_masked_by_mine_per_decision"] = (
+                    self._layer3_masked_by_mine_total / decisions
+                )
+                info["layer3_candidates_masked_by_impact_per_decision"] = (
+                    self._layer3_masked_by_impact_total / decisions
+                )
 
             # CRITICAL: Capture level data for route visualization BEFORE auto-reset
             # With VecEnv, the environment auto-resets after done=True, so by the time
@@ -1476,6 +1542,11 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         self._layer3_masked_candidates_total = 0
         self._layer3_mask_override_count = 0
         self._layer3_all_masked_events = 0
+        # v26 W6b: split the veto count by cause. Without it an over-eager impact
+        # mask (agent refuses to jump -> timeouts) is indistinguishable from the
+        # mine mask simply firing more often.
+        self._layer3_masked_by_mine_total = 0
+        self._layer3_masked_by_impact_total = 0
 
         # Reset switch activation tracking
         self._switch_activation_frame = None
@@ -2176,6 +2247,267 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 nplay.current_tick = saved_tick
         return doomed
 
+    # FiGAR duration bins. Mirrors the policy's ladder so a macro the search
+    # prefers is one the policy can actually emit; scoring a duration the head
+    # cannot select would produce an untrainable target.
+    _SEARCH_DURATIONS = (1, 2, 3, 4, 6, 8, 12, 16, 24, 32)
+    # Frames-equivalent of a FULL traverse (normalised cost-to-go == 1.0). The
+    # free-space field is normalised to [0,1], so this converts it back to a
+    # remaining-time estimate and keeps the score interpretable as a projected
+    # FINISH TIME in frames. ~500 is the right order for this level (the
+    # reference route is 465 frames end to end); the exact value only sets how
+    # strongly progress trades against frames spent.
+    _SEARCH_COST_TO_FRAMES = 500.0
+
+    def _search_cost_to_go(self, nplay) -> float:
+        """Remaining-cost estimate at the CURRENT lookahead state, in [0, 1].
+
+        Uses the mine-aware FREE-SPACE cost-to-go, queried by position. Two
+        alternatives were tried and are wrong here:
+
+        * ``_current_cost_to_go_norm()`` reads ``_cached_free_space_nav``, which
+          is refreshed only inside ``_get_observation``. Lookahead ticks without
+          building an observation, so that cache still describes the last REAL
+          step: every candidate scores identically on the cost term and the
+          search silently ranks on frames alone.
+        * Straight-line distance to the objective ignores geometry. Measured on
+          SI-A-00-00 it made NOOP the top-scoring macro at every state, because
+          the route must go AROUND walls and Euclidean proximity is not progress
+          -- the same reason §7 specified a route-based pace measure rather than
+          distance.
+
+        ``nav_feature`` is a pure function of (x, y, switch_phase) over an
+        LRU-cached per-level field, so it is both stale-proof and cheap, and it
+        is phase-aware (pre-switch it routes to the switch, post-switch the door).
+        Falls back to normalised straight-line distance only if the field is
+        unavailable, so the search degrades rather than dying.
+        """
+        try:
+            nx, ny = nplay.ninja_position()
+            sw = bool(nplay.exit_switch_activated())
+            src = getattr(self, "_free_space_nav_source", None)
+            if src is not None and getattr(src, "available", False):
+                feat = src.nav_feature(float(nx), float(ny), sw)
+                c = float(feat[2])
+                if c >= 0.0 and math.isfinite(c):
+                    return c
+            gx, gy = (
+                nplay.exit_door_position() if sw else nplay.exit_switch_position()
+            )
+            d = math.hypot(float(gx) - float(nx), float(gy) - float(ny))
+            return min(1.0, d / 1000.0)
+        except Exception:  # noqa: BLE001
+            return 1.0
+
+    def search_improved_macro(
+        self,
+        horizon: int = 60,
+        weight: Optional[float] = None,
+        durations: Optional[Tuple[int, ...]] = None,
+        action_mask: Optional[List[int]] = None,
+        depth: int = 1,
+        beam: int = 8,
+        prior: Optional[List[float]] = None,
+        prior_weight: float = 4.0,
+    ) -> Optional[Dict[str, Any]]:
+        """Score every (action, duration) macro from the CURRENT state by lookahead.
+
+        EXECUTION_PRECISION_PLAN §7 work item 2. The policy's argmax is measurably
+        worse than what this level admits (§0h: argmax stuck ~480 while 465 is
+        executable), so PPO's own rollouts are a poor source of improvement. A
+        short lookahead through the EXACT simulator produces, for each macro, a
+        strictly evidence-based estimate of how much time it costs -- a target the
+        policy provably does not already produce.
+
+        Scoring is ``frames_used + weight * free_space_cost_to_go`` (lower
+        better), with the cost normalised to [0,1] and ``weight`` converting it
+        back to frames, so the score reads as a projected FINISH TIME: time spent
+        plus estimated time remaining. §7 warns that scoring is load-bearing and that
+        ``progress - frames`` favours shallow nodes -- but that pathology is about
+        ranking a priority-queue frontier at MIXED depths. Here every candidate is
+        expanded from a common root to the same horizon, so depth is equalised by
+        construction and the linear combination is well-posed.
+
+        A macro that WINS scores its true frame count (the objective itself). A
+        macro that DIES scores +inf and is excluded.
+
+        KNOWN LIMITATION -- depth 1. This expands ONE macro then coasts, so it
+        cannot represent "tap jump 2 frames, then steer", which is exactly the
+        shape of the frame-perfect maneuvers this level turns on. Because every
+        candidate is charged the same horizon, the score reduces to "which single
+        macro makes the most progress in H frames", which systematically favours
+        the LONGEST duration bin (measured: the 32-frame bin wins at essentially
+        every state). It is therefore a useful local improvement operator and a
+        genuine source of better-than-argmax targets, but it is NOT a substitute
+        for sequence search, and it will not by itself discover a multi-macro
+        precision sequence. Depth 2 would cost ~60^2 branches (~0.8 s/state) and
+        is the natural next step if depth-1 targets plateau.
+
+        State-preserving, exactly like ``is_current_state_doomed``: snapshots,
+        branches, and restores the precise pre-call state including the tick
+        counter. Returns ``None`` when the backend cannot snapshot, so a caller
+        can degrade to "no search target this step" rather than corrupt the run.
+        """
+        nplay = self.nplay_headless
+        if getattr(nplay, "ninja_has_died", None) and nplay.ninja_has_died():
+            return None
+        if getattr(nplay, "ninja_has_won", None) and nplay.ninja_has_won():
+            return None
+        getter = getattr(nplay, "get_state_snapshot", None)
+        setter = getattr(nplay, "set_state_snapshot", None)
+        ticker = getattr(nplay, "tick", None)
+        if getter is None or setter is None or ticker is None:
+            return None
+        try:
+            snap = getter()
+        except Exception:  # noqa: BLE001
+            return None
+        if snap is None:
+            return None
+
+        w = self._SEARCH_COST_TO_FRAMES if weight is None else float(weight)
+        durs = tuple(durations) if durations else self._SEARCH_DURATIONS
+        actions = list(range(len(self._DOOMED_INPUTS)))
+        if action_mask:
+            actions = [a for a in actions if a in set(action_mask)] or actions
+
+        saved_tick = getattr(nplay, "current_tick", None)
+        H = max(1, int(horizon))
+        macros = [(a, d) for a in actions for d in durs if d <= H]
+        depth = max(1, int(depth))
+        beam = max(1, int(beam))
+        expansions = 0
+
+        def _apply(a: int, d: int, budget: int):
+            """Hold macro (a,d) then coast to ``budget``. -> (died, won, used)."""
+            hor, jump = self._DOOMED_INPUTS[a]
+            used = 0
+            for _ in range(min(d, budget)):
+                ticker(hor, jump)
+                used += 1
+                if nplay.ninja_has_died():
+                    return True, False, used
+                if nplay.ninja_has_won():
+                    return False, True, used
+            return False, False, used
+
+        def _coast(budget: int):
+            used = 0
+            for _ in range(budget):
+                ticker(0, 0)
+                used += 1
+                if nplay.ninja_has_died():
+                    return True, False, used
+                if nplay.ninja_has_won():
+                    return False, True, used
+            return False, False, used
+
+        def _terminal_score(died, won, used):
+            if died:
+                return float("inf")
+            if won:
+                return float(used)
+            return float(used) + w * self._search_cost_to_go(nplay)
+
+        results: List[Dict[str, Any]] = []
+        try:
+            # --- depth 1: score every macro, coasting to the common horizon ---
+            for (a, d) in macros:
+                setter(snap)
+                died, won, used = _apply(a, d, H)
+                expansions += 1
+                if not died and not won:
+                    cd, cw, cu = _coast(H - used)
+                    died, won, used = cd, cw, used + cu
+                results.append(
+                    {"action": a, "duration": d, "score": _terminal_score(died, won, used),
+                     "won": won, "died": died, "depth": 1}
+                )
+
+            # --- depth 2: re-evaluate a PRUNED beam as a 2-macro sequence -------
+            # Why this matters: at depth 1 every candidate is charged the same
+            # horizon, so the score collapses to "most progress in H frames" and
+            # the longest duration bin wins essentially always. It cannot express
+            # "tap jump 2 frames, THEN steer" -- the shape of the frame-precise
+            # maneuvers this level turns on. Depth 2 can.
+            #
+            # Full depth 2 is |macros|^2 (~3600 rollouts, ~0.8 s/state), too slow
+            # to run inline. §7 item 3 is the fix: use the POLICY as a prior to
+            # cut branching. The prior enters the root ordering only -- it never
+            # touches the returned scores, so a bad prior costs coverage, never
+            # correctness.
+            if depth >= 2 and results:
+                alive1 = [r for r in results if math.isfinite(r["score"])]
+                if alive1:
+                    def _rank(r):
+                        p = 0.0
+                        if prior:
+                            try:
+                                p = float(prior[int(r["action"])])
+                            except Exception:  # noqa: BLE001
+                                p = 0.0
+                        # Lower is better. prior_weight is in FRAMES, so it says
+                        # how many frames of projected finish we are willing to
+                        # concede to explore a branch the policy likes.
+                        return r["score"] - float(prior_weight) * p
+
+                    roots = sorted(alive1, key=_rank)[:beam]
+                    for r in roots:
+                        a1, d1 = int(r["action"]), int(r["duration"])
+                        setter(snap)
+                        died, won, used1 = _apply(a1, d1, H)
+                        expansions += 1
+                        if died or won or used1 >= H:
+                            continue  # already terminal / no budget for a second macro
+                        try:
+                            mid = getter()
+                        except Exception:  # noqa: BLE001
+                            continue
+                        best_child = float("inf")
+                        for (a2, d2) in macros:
+                            if d2 > H - used1:
+                                continue
+                            setter(mid)
+                            dd, ww, u2 = _apply(a2, d2, H - used1)
+                            expansions += 1
+                            tot = used1 + u2
+                            if not dd and not ww:
+                                cd, cw, cu = _coast(H - tot)
+                                dd, ww, tot = cd, cw, tot + cu
+                            s = _terminal_score(dd, ww, tot)
+                            if s < best_child:
+                                best_child = s
+                        if math.isfinite(best_child):
+                            # A root macro is worth what its BEST continuation is
+                            # worth. Depth-1 undervalues a setup macro whose payoff
+                            # only arrives after the follow-up.
+                            r["score"] = min(r["score"], best_child)
+                            r["depth"] = 2
+        except Exception:  # noqa: BLE001 - a failed search must never kill a step
+            return None
+        finally:
+            try:
+                setter(snap)
+            except Exception:  # noqa: BLE001
+                pass
+            if saved_tick is not None:
+                nplay.current_tick = saved_tick
+
+        alive = [r for r in results if math.isfinite(r["score"])]
+        if not alive:
+            return None
+        best = min(alive, key=lambda r: r["score"])
+        return {
+            "candidates": results,
+            "best_action": int(best["action"]),
+            "best_duration": int(best["duration"]),
+            "best_score": float(best["score"]),
+            "n_alive": len(alive),
+            "n_total": len(results),
+            "expansions": expansions,
+            "depth": depth,
+        }
+
     def _restore_from_snapshot(
         self, checkpoint
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
@@ -2854,12 +3186,19 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # agrees with `_compute_hazard_map` after any mid-episode toggle.
             deadly_mines, safe_mines = classify_mines_by_state((*_tog, *toggled_mines))
             _cached_mine_channels = None
-        # Gold is out of the generalist scope and no longer in the overlay, but the
-        # gold_fraction info field is still surfaced for any reward-side consumer.
-        total_gold = len(self._cached_gold or [])
-        gold_remaining = sum(
-            1 for g in (self._cached_gold or []) if getattr(g, "active", True)
-        )
+        # Gold observation (docs/GOLD_AND_SCORE_OPTIMIZATION.md). Sourced from the
+        # backend-uniform per-tick accessor so `active` reflects LIVE collection on
+        # BOTH the python and native sims: the native backend rebuilds entity_dic
+        # (new proxies) every tick, so the once-cached `_cached_gold` list freezes
+        # at spawn state and collection would never propagate to the reward or the
+        # observation. Collected gold stays in the list with active=False, so the
+        # list length is the original gold count.
+        gold_state = self.nplay_headless.get_gold_state()  # [(x, y, active), ...]
+        total_gold = len(gold_state)
+        active_gold_positions = [
+            (gx, gy) for (gx, gy, active) in gold_state if active
+        ]
+        gold_remaining = len(active_gold_positions)
         gold_fraction_remaining = (
             gold_remaining / total_gold if total_gold > 0 else 0.0
         )
@@ -2871,6 +3210,8 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             deadly_mines=deadly_mines,
             safe_mines=safe_mines,
             cached_mine_channels=_cached_mine_channels,
+            active_gold=active_gold_positions,
+            center_anchor=self._mirror_equivariant_obs,
         )
         # Cache the freshly-rasterized mine channels for reuse while unchanged.
         if _cached_mine_channels is None:
@@ -2904,6 +3245,12 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             "player_yspeed": ninja_vel[1],
             "player_xspeed_old": ninja_vel_old[0],
             "player_yspeed_old": ninja_vel_old[1],
+            # Did this episode START from a Go-Explore checkpoint restore rather
+            # than true spawn? The completion-speed RECORD must only be set by
+            # genuine spawn-to-exit runs: a demo-seeded episode is a demo prefix
+            # plus an agent suffix, so crediting it would report a time the agent
+            # cannot actually reproduce from spawn.
+            "from_checkpoint": bool(getattr(self, "_from_checkpoint", False)),
             "player_airborn_old": self.nplay_headless.ninja_airborn_old(),
             # Current-frame airborne flag (grounded = not airborn). Consumed by the
             # landing high-water-mark reward (enable_landing_pbrs). Same source as

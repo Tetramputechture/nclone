@@ -48,7 +48,9 @@ class TruncationChecker:
         )
         return self.current_truncation_limit
 
-    def update_and_check_for_truncation(self, multiplier: float) -> bool:
+    def update_and_check_for_truncation(
+        self, multiplier: float, bonus_frames: int = 0
+    ) -> bool:
         """Check if episode should be truncated based on actual frame count.
 
         Uses the simulator's frame counter directly to ensure accurate truncation
@@ -56,11 +58,20 @@ class TruncationChecker:
 
         For checkpoint episodes, only counts frames executed after checkpoint replay,
         not the frames used to replay the checkpoint itself.
+
+        Args:
+            multiplier: curriculum-aware scale on the per-level base limit.
+            bonus_frames: extra frames EARNED this episode (game-faithful gold time
+                bonus). Added after the multiplier so the reward for collecting a
+                gold is the same 1 second in every curriculum phase, and so it
+                cannot be scaled away to nothing.
         """
         total_frames = self.env.nplay_headless.sim.frame
         replay_frames = getattr(self.env, "_checkpoint_replay_frame_count", 0)
         current_frame = total_frames - replay_frames
-        effective_limit = int(self.current_truncation_limit * multiplier)
+        effective_limit = int(self.current_truncation_limit * multiplier) + int(
+            max(0, bonus_frames)
+        )
         should_truncate = current_frame >= effective_limit
 
         if self.verbose > 0:

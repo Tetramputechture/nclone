@@ -16,6 +16,14 @@ The bonus for a strict grounded improvement is
 ``landing_pbrs_weight * (best_prev - now) / D0`` where D0 is the spawn
 cost-to-completion (``_pbrs_d0``), matching the frontier bonus normalization.
 In these tests the first step seeds D0 = initial dist_switch = 100.
+
+TRANSITION-GATED: the bonus fires only on the airborne->contact EDGE (an actual
+landing or wall-catch this step), never while the ninja is already standing on
+the ground. Continuous ground running is not a landing and earns nothing. Every
+test below therefore drives an explicit airborne step before each contact it
+expects to pay -- driving only grounded steps exercises nothing and (before this
+was corrected) made the whole suite assert against semantics the calculator had
+deliberately dropped.
 """
 
 from unittest.mock import patch
@@ -74,6 +82,18 @@ def _step(calc, dist_switch, dist_exit, airborn=False, walled=False,
     return calc.last_components.get("landing_bonus", 0.0)
 
 
+def _land(calc, dist_switch, dist_exit, switch_activated=False, air_dist=None):
+    """Fly, then land: the airborne->grounded EDGE the bonus is gated on.
+
+    The airborne leg deliberately does not move the watermark, so the returned
+    value is the bonus for the landing alone.
+    """
+    _step(calc, air_dist if air_dist is not None else dist_switch, dist_exit,
+          airborn=True, switch_activated=switch_activated)
+    return _step(calc, dist_switch, dist_exit, airborn=False,
+                 switch_activated=switch_activated)
+
+
 # D0 == first step's dist_switch (100) in every test below.
 _D0 = 100.0
 
@@ -86,8 +106,8 @@ _D0 = 100.0
 def test_flag_off_pays_no_landing_bonus():
     calc = _calc(enable_landing=False)
     assert abs(_step(calc, 100.0, 200.0)) < 1e-9
-    assert abs(_step(calc, 80.0, 200.0)) < 1e-9  # grounded improvement, still 0
-    assert abs(_step(calc, 50.0, 200.0)) < 1e-9
+    assert abs(_land(calc, 80.0, 200.0)) < 1e-9  # landing improvement, still 0
+    assert abs(_land(calc, 50.0, 200.0)) < 1e-9
 
 
 # ---------------------------------------------------------------------------
@@ -97,28 +117,38 @@ def test_flag_off_pays_no_landing_bonus():
 
 def test_first_grounded_step_rebases_no_bonus():
     calc = _calc(enable_landing=True)
-    assert abs(_step(calc, 100.0, 200.0)) < 1e-9  # seeds watermark, no bonus
+    assert abs(_land(calc, 100.0, 200.0)) < 1e-9  # seeds watermark, no bonus
+
+
+def test_continuous_ground_running_never_pays():
+    """The transition gate: without a landing edge there is no landing."""
+    calc = _calc(enable_landing=True)
+    _land(calc, 100.0, 200.0)  # seed via a real landing
+    assert abs(_step(calc, 70.0, 200.0)) < 1e-9, (
+        "running along the ground toward the goal is not a landing"
+    )
+    assert abs(_step(calc, 40.0, 200.0)) < 1e-9
 
 
 def test_grounded_strict_improvement_pays_normalized_bonus():
     w = 0.5
     calc = _calc(enable_landing=True, weight=w)
-    _step(calc, 100.0, 200.0)  # seed at 100 (D0=100)
-    r = _step(calc, 70.0, 200.0)  # improve 100->70
+    _land(calc, 100.0, 200.0)  # seed at 100 (D0=100)
+    r = _land(calc, 70.0, 200.0)  # land 100->70
     assert abs(r - w * (100.0 - 70.0) / _D0) < 1e-9
-    r2 = _step(calc, 55.0, 200.0)  # improve 70->55 (vs new best)
+    r2 = _land(calc, 55.0, 200.0)  # land 70->55 (vs new best)
     assert abs(r2 - w * (70.0 - 55.0) / _D0) < 1e-9
 
 
 def test_non_improving_grounded_step_pays_zero_and_not_farmable():
     calc = _calc(enable_landing=True)
-    _step(calc, 100.0, 200.0)  # seed
-    assert _step(calc, 70.0, 200.0) > 0.0  # improve -> bonus
-    # Oscillation cannot farm: equal, then worse, then back -- all pay 0.
-    assert abs(_step(calc, 70.0, 200.0)) < 1e-9  # equal to best
-    assert abs(_step(calc, 90.0, 200.0)) < 1e-9  # worse (fell back), watermark held
-    assert abs(_step(calc, 70.0, 200.0)) < 1e-9  # returned, still not below 70
-    assert _step(calc, 60.0, 200.0) > 0.0  # only a strictly-new closest pays again
+    _land(calc, 100.0, 200.0)  # seed
+    assert _land(calc, 70.0, 200.0) > 0.0  # improve -> bonus
+    # Re-landing cannot farm: equal, then worse, then back -- all pay 0.
+    assert abs(_land(calc, 70.0, 200.0)) < 1e-9  # equal to best
+    assert abs(_land(calc, 90.0, 200.0)) < 1e-9  # worse (fell back), watermark held
+    assert abs(_land(calc, 70.0, 200.0)) < 1e-9  # returned, still not below 70
+    assert _land(calc, 60.0, 200.0) > 0.0  # only a strictly-new closest pays again
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +160,7 @@ def test_non_improving_grounded_step_pays_zero_and_not_farmable():
 def test_airborne_pays_nothing_and_does_not_move_watermark():
     w = 0.5
     calc = _calc(enable_landing=True, weight=w)
-    _step(calc, 100.0, 200.0)  # grounded seed at 100
+    _land(calc, 100.0, 200.0)  # grounded seed at 100
     # Fly closer through the air (would be a big frontier gain) -> no landing bonus.
     assert abs(_step(calc, 40.0, 200.0, airborn=True)) < 1e-9
     assert abs(_step(calc, 30.0, 200.0, airborn=True)) < 1e-9
@@ -148,22 +178,22 @@ def test_airborne_pays_nothing_and_does_not_move_watermark():
 
 def test_inf_cost_is_safe_no_bonus_no_crash():
     calc = _calc(enable_landing=True)
-    assert abs(_step(calc, float("inf"), 200.0)) < 1e-9  # unreachable -> no bonus
-    assert abs(_step(calc, 80.0, 200.0)) < 1e-9  # first finite grounded -> seeds
-    assert _step(calc, 50.0, 200.0) > 0.0  # later improvement pays
+    assert abs(_land(calc, float("inf"), 200.0)) < 1e-9  # unreachable -> no bonus
+    assert abs(_land(calc, 80.0, 200.0)) < 1e-9  # first finite landing -> seeds
+    assert _land(calc, 50.0, 200.0) > 0.0  # later landing improvement pays
 
 
 def test_switch_to_exit_transition_rebases_no_spurious_bonus():
     w = 0.5
     calc = _calc(enable_landing=True, weight=w)
-    _step(calc, 100.0, 5.0, switch_activated=False)  # seed switch watermark at 100
-    assert _step(calc, 40.0, 5.0, switch_activated=False) > 0.0  # switch approach pays
+    _land(calc, 100.0, 5.0, switch_activated=False)  # seed switch watermark at 100
+    assert _land(calc, 40.0, 5.0, switch_activated=False) > 0.0  # approach pays
     # Switch activates: live objective flips to the exit (dist 5 << 40). Must rebase
-    # to the exit basis on the next grounded step, paying 0 (no spurious bonus).
-    r_trans = _step(calc, 40.0, 5.0, switch_activated=True)
+    # to the exit basis on the next landing, paying 0 (no spurious bonus).
+    r_trans = _land(calc, 40.0, 5.0, switch_activated=True)
     assert abs(r_trans) < 1e-9
     # After the rebase, post-switch exit approach pays normally (5 -> 2).
-    r_exit = _step(calc, 40.0, 2.0, switch_activated=True)
+    r_exit = _land(calc, 40.0, 2.0, switch_activated=True)
     assert abs(r_exit - w * (5.0 - 2.0) / _D0) < 1e-9
 
 
@@ -178,7 +208,11 @@ def test_switch_to_exit_transition_rebases_no_spurious_bonus():
 def test_wall_contact_while_progressing_pays():
     w = 0.5
     calc = _calc(enable_landing=True, weight=w)
-    _step(calc, 100.0, 200.0)  # grounded spawn seed at 100 (D0=100), prev=100
+    _land(calc, 100.0, 200.0)  # grounded spawn seed at 100 (D0=100), prev=100
+    # Jump off: the wall-catch below is also a CONTACT EDGE, so it needs a
+    # preceding airborne frame. Holding cost-to-go at 100 keeps the improvement
+    # under test the wall-slide's own 100->70.
+    _step(calc, 100.0, 200.0, airborn=True, walled=False)
     # Wall-slide (airborne + walled) at 70, cost-to-go decreased 100->70 = moving
     # toward the goal -> wall progress contact -> pays the HWM improvement.
     r = _step(calc, 70.0, 200.0, airborn=True, walled=True)
@@ -190,7 +224,7 @@ def test_wall_contact_while_progressing_pays():
 
 def test_wall_contact_not_progressing_pays_zero():
     calc = _calc(enable_landing=True)
-    _step(calc, 100.0, 200.0)  # grounded seed at 100
+    _land(calc, 100.0, 200.0)  # grounded seed at 100
     # Approach to 50 through the air (not walled) -> no contact, best stays 100,
     # prev becomes 50.
     assert abs(_step(calc, 50.0, 200.0, airborn=True, walled=False)) < 1e-9

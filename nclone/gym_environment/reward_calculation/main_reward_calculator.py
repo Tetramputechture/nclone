@@ -50,6 +50,7 @@ from ..constants import GAME_STATE_NEAREST_MINE_IDX, NINJA_STATE_DIM
 from ...constants.physics_constants import (
     EXIT_SWITCH_RADIUS,
     EXIT_DOOR_RADIUS,
+    MAX_HOR_SPEED,
     NINJA_RADIUS,
 )
 from ...graph.reachability.path_distance_calculator import (
@@ -125,11 +126,26 @@ class RewardCalculator:
         self.episode_sparse_exit_reward = 0.0
         self.episode_death_penalty_reward = 0.0
         self.episode_gold_reward_total = 0.0
+        # Gold reward actually PAID into the returned rewards this episode
+        # (differs from episode_gold_reward_total under banking or a death
+        # clawback). This is the term that makes the reconciliation exact.
+        self.episode_gold_paid_total = 0.0
         self.episode_locked_door_reward_total = 0.0
         self.episode_frontier_bonus_total = 0.0
 
         self.episode_path_length = 0.0
         self.optimal_path_length: Optional[float] = None
+        # Fastest winning frame count seen on the CURRENT level, for the
+        # record-relative completion-speed bonus. Deliberately survives
+        # ``reset()`` (it is a cross-episode personal best) and is cleared only
+        # when a new level is loaded.
+        self._best_completion_frames: Optional[float] = None
+        self.episode_new_record_reward: float = 0.0
+        # Momentum-PBRS state: previous goal distance (to derive closing speed)
+        # and the previous momentum potential. Both are per-EPISODE.
+        self._prev_goal_dist: Optional[float] = None
+        self._prev_momentum_potential: Optional[float] = None
+        self.episode_momentum_pbrs_reward: float = 0.0
         self.prev_player_pos: Optional[Tuple[float, float]] = None
 
         self.spawn_position: Optional[Tuple[float, float]] = None
@@ -174,6 +190,14 @@ class RewardCalculator:
         # exposed so the trainer can use it as a cost-to-go auxiliary-task target.
         # -1.0 = no valid signal this step (mask it out of the aux loss).
         self._last_cost_to_go_norm: float = -1.0
+        # Raw (un-normalized) cost-to-go, so the pace table built offline and the
+        # runtime potential are keyed on the SAME quantity.
+        self._last_cost_to_go_raw: float = float("inf")
+        self._pace_cells = None      # (gx, gy) -> earliest reference frame
+        self._pace_grid = 12.0
+        self._pace_loaded = False
+        self._prev_pace_potential: Optional[float] = None
+        self.episode_pace_pbrs_reward: float = 0.0
 
         # Per-leg waypoint PBRS (gated by config.enable_waypoint_pbrs): previous-step
         # potential toward the CURRENT local waypoint and the waypoint index it was
@@ -282,6 +306,12 @@ class RewardCalculator:
         # before terminal branches, so gold collected on the same step the ninja
         # wins/dies still counts. No-op unless config.enable_gold_rewards.
         gold_reward = self._compute_gold_reward(obs, prev_obs)
+        # Completion-primary banking: under `gold_bank_until_completion` the
+        # pickup pays NOTHING as it happens; the whole episode's gold is paid in
+        # one lump on the winning step (and forfeited on death/timeout). Every
+        # non-win site therefore adds `gold_payout`, not `gold_reward`.
+        gold_banked = self.config.gold_bank_until_completion
+        gold_payout = 0.0 if gold_banked else gold_reward
 
         # Necessary-locked-door-switch reward (delta of opened necessary doors).
         # Computed once per step, before terminal branches, so a door opened on
@@ -452,8 +482,26 @@ class RewardCalculator:
                 terminal_reward += self.config.mine_death_penalty
             if switch_just_activated:
                 terminal_reward += self.config.switch_activation_reward
-            terminal_reward += gold_reward
+            terminal_reward += gold_payout
             terminal_reward += door_reward
+            # Gold clawback on DEATH (config.gold_death_clawback in [0, 1]): a death
+            # (especially a mine death) should erase the value of gold collected en
+            # route so the policy stops treating hazardous gold detours as cheap.
+            # ``episode_gold_reward_total`` is the episode-cumulative banked gold
+            # reward — accumulated in this method BEFORE the terminal branches (so it
+            # already includes any gold picked up on this dying step) and reset in
+            # reset(). At clawback=1.0 the full episode gold is subtracted, so the
+            # net gold contribution to the episode return is 0. Applied ONLY here on
+            # death — WIN and truncation keep the full gold. No-op when the flag is 0.
+            # Also a no-op under `gold_bank_until_completion`, which already paid
+            # nothing: clawing back on top would net a spurious gold PENALTY.
+            gold_clawback = 0.0
+            if not gold_banked and self.config.gold_death_clawback > 0.0:
+                gold_clawback = (
+                    -self.config.gold_death_clawback * self.episode_gold_reward_total
+                )
+                terminal_reward += gold_clawback
+            self.episode_gold_paid_total += gold_payout + gold_clawback
             # PBRS terminal on DEATH, scaled by config.pbrs_death_clawback:
             #   clawback=1.0 -> pay -w*Phi(s_last): telescopes to the same constant
             #     +w as a win (strict policy-invariant, but removes the approach
@@ -481,7 +529,9 @@ class RewardCalculator:
                 "terminal_reward": terminal_reward,
                 "hwm_reward": 0.0,
                 "pbrs_reward": pbrs_reward,
-                "gold_reward": gold_reward,
+                "gold_reward": gold_payout,
+                "gold_pickup_reward": gold_reward,
+                "gold_clawback": gold_clawback,
                 "locked_door_reward": door_reward,
                 "total_reward": terminal_reward,
                 "scaled_reward": scaled,
@@ -496,7 +546,15 @@ class RewardCalculator:
             terminal_reward = self.config.level_completion_reward
             if switch_just_activated:
                 terminal_reward += self.config.switch_activation_reward
-            terminal_reward += gold_reward
+            # Under banking the win is the ONLY payout point, so it pays the whole
+            # episode's banked gold (episode_gold_reward_total already includes any
+            # gold picked up on this winning step). Otherwise it pays only this
+            # step's pickup, exactly as before.
+            gold_win_payout = (
+                self.episode_gold_reward_total if gold_banked else gold_reward
+            )
+            terminal_reward += gold_win_payout
+            self.episode_gold_paid_total += gold_win_payout
             terminal_reward += door_reward
             # Completion SPEED bonus: pay extra for a faster, more direct route.
             # Terminal-only, so it never touches the per-step PBRS telescoping.
@@ -510,9 +568,63 @@ class RewardCalculator:
             # The par form falls back to the legacy form when the optimal route
             # length is unavailable, so the bonus always has a signal to pay on.
             speed_bonus = 0.0
+            # Cleared unconditionally each win, like speed_bonus: assigning it
+            # only when a record is beaten makes it STICKY across episodes and
+            # mis-reports the per-episode telemetry.
+            self.episode_new_record_reward = 0.0
             if self.config.completion_speed_bonus > 0.0:
                 frac = None  # in [0, 1]; scaled by completion_speed_bonus
-                if self.config.completion_speed_par_norm and self.optimal_path_length:
+                # Cap applied to `frac`. The par/budget forms clamp at 1.0; the
+                # record form allows >1.0 so beating your own best still pays.
+                frac_cap = 1.0
+                if getattr(self.config, "completion_speed_record_norm", False):
+                    frames_used = obs.get("sim_frame")
+                    if frames_used is not None and float(frames_used) > 0.0:
+                        frames_used = float(frames_used)
+                        frac_cap = max(
+                            1.0,
+                            float(
+                                getattr(
+                                    self.config, "completion_speed_record_cap", 1.5
+                                )
+                            ),
+                        )
+                        if self._best_completion_frames is None:
+                            # First win seeds the record and pays the 1.0x rate.
+                            frac = 1.0
+                        else:
+                            frac = self._best_completion_frames / frames_used
+                        # Only a genuine spawn-to-exit run may SET the record. A
+                        # Go-Explore/demo restore starts mid-trajectory, so its
+                        # completion time is a demo prefix + an agent suffix --
+                        # crediting it would report a time the agent cannot
+                        # reproduce from spawn, i.e. a false result against the
+                        # run's own target. Such episodes still EARN the bonus
+                        # (that is what teaches the fast continuation); they just
+                        # cannot move the high-water mark.
+                        if not bool(obs.get("from_checkpoint", False)):
+                            _prev_best = self._best_completion_frames
+                            self._best_completion_frames = min(
+                                frames_used,
+                                self._best_completion_frames
+                                if self._best_completion_frames is not None
+                                else frames_used,
+                            )
+                            # Discrete NEW-RECORD bonus. The ratio form above is
+                            # nearly flat near the record, so shaving frames off
+                            # an already-good route pays almost nothing; this
+                            # makes each genuine improvement clearly visible to
+                            # the optimizer. Ratcheting => unfarmable.
+                            _rb = float(
+                                getattr(
+                                    self.config, "completion_speed_record_bonus", 0.0
+                                )
+                            )
+                            if _rb > 0.0 and _prev_best is not None and frames_used < _prev_best:
+                                speed_bonus_extra = _rb
+                                terminal_reward += speed_bonus_extra
+                                self.episode_new_record_reward = speed_bonus_extra
+                if frac is None and self.config.completion_speed_par_norm and self.optimal_path_length:
                     par_frames = float(self.optimal_path_length) / max(
                         self.config.completion_speed_par_speed_px, 1e-6
                     )
@@ -535,7 +647,7 @@ class RewardCalculator:
                             frac = t_rem
                 if frac is not None:
                     speed_bonus = self.config.completion_speed_bonus * min(
-                        max(frac, 0.0), 1.0
+                        max(frac, 0.0), frac_cap
                     )
                     terminal_reward += speed_bonus
             self.episode_speed_bonus_reward = speed_bonus
@@ -555,7 +667,8 @@ class RewardCalculator:
                 "terminal_reward": terminal_reward,
                 "hwm_reward": 0.0,
                 "pbrs_reward": pbrs_reward,
-                "gold_reward": gold_reward,
+                "gold_reward": gold_win_payout,
+                "gold_pickup_reward": gold_reward,
                 "locked_door_reward": door_reward,
                 "total_reward": terminal_reward,
                 "scaled_reward": scaled,
@@ -571,7 +684,8 @@ class RewardCalculator:
         if switch_just_activated:
             reward += self.config.switch_activation_reward
 
-        reward += gold_reward
+        reward += gold_payout
+        self.episode_gold_paid_total += gold_payout
         reward += door_reward
 
         hwm_progress = self.hwm_state.step(
@@ -610,6 +724,7 @@ class RewardCalculator:
                 if current_goal_dist < float("inf")
                 else -1.0
             )
+            self._last_cost_to_go_raw = float(current_goal_dist)
             prev_phi = (
                 self._prev_potential if self._prev_potential is not None else phi_curr
             )
@@ -639,9 +754,31 @@ class RewardCalculator:
             self._prev_potential = phi_curr
             reward += pbrs_reward
             self.episode_pbrs_rewards.append(pbrs_reward)
+
+            if current_goal_dist < float("inf"):
+                self._prev_goal_dist = current_goal_dist
         elif self._pbrs_hwm_fallback:
             # Degraded episode: no PBRS potential -> mask the aux-task target.
             self._last_cost_to_go_norm = -1.0
+
+        # MOMENTUM + PACE shaping, applied UNCONDITIONALLY.
+        #
+        # These were originally nested inside the `enable_lattice_pbrs` branch
+        # above, which is NEVER TAKEN in the speedrun configuration
+        # (enable_lattice_pbrs is falsy there; the run uses the free-space /
+        # jump potential path instead). Both terms were therefore completely
+        # inert in every run that "enabled" them -- the trainer logged
+        # "PACE PBRS: ON", the table loaded, and reward/pace_pbrs_total was
+        # 0.0000 forever. Each guards itself on its own config flag, so hoisting
+        # them here is safe for every potential path.
+        if self.config.enable_momentum_pbrs:
+            _mom = self._momentum_shaping(obs, frames_executed)
+            reward += _mom
+            self.episode_momentum_pbrs_reward += _mom
+        if self.config.enable_pace_pbrs:
+            _pace = self._pace_shaping(obs, self._last_cost_to_go_raw)
+            reward += _pace
+            self.episode_pace_pbrs_reward += _pace
 
         # Per-leg waypoint PBRS: F = w*(gamma*Phi(s') - Phi(s)) with Phi toward the
         # CURRENT local waypoint, REBASED on each waypoint advance so every leg is
@@ -1030,7 +1167,8 @@ class RewardCalculator:
             "pbrs_reward": pbrs_reward,
             "potential": self._prev_potential,
             "completion_cost": current_goal_dist,
-            "gold_reward": gold_reward,
+            "gold_reward": gold_payout,
+            "gold_pickup_reward": gold_reward,
             "locked_door_reward": door_reward,
             "subgoal_phase": subgoal_phase,
             "beta_blend_hwm": beta_hwm,
@@ -1239,6 +1377,113 @@ class RewardCalculator:
         reward = newly * self.config.locked_door_switch_reward if newly > 0 else 0.0
         return reward, n_open
 
+    def _load_pace_table(self) -> None:
+        """Load the cost-to-go -> reference-frame table once per calculator."""
+        self._pace_loaded = True
+        path = getattr(self.config, "pace_table_path", None)
+        if not path:
+            return
+        try:
+            import json as _json
+
+            data = _json.loads(open(path).read())
+            cells = data.get("cells") or {}
+            parsed = {}
+            for k, v in cells.items():
+                gx, gy = k.split(",")
+                parsed[(int(gx), int(gy))] = float(v)
+            if len(parsed) >= 2:
+                self._pace_cells = parsed
+                self._pace_grid = float(data.get("grid", 12) or 12)
+                logger.info(
+                    "Pace table loaded: %d cells, grid %s, reference total %s frames",
+                    len(parsed), self._pace_grid, data.get("total_frames"),
+                )
+            else:
+                logger.error("Pace table at %s is malformed; pace PBRS inert.", path)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Failed to load pace table %s: %s", path, exc)
+
+    def _reference_frame_at_pos(self, x: float, y: float) -> Optional[float]:
+        """Frame at which the reference run first reached this position cell.
+
+        Returns None when the agent is on a cell the reference never visited --
+        i.e. genuinely off-route. The caller then emits NO shaping for that step
+        rather than inventing a pace, so wandering off the reference line is
+        neither rewarded nor punished by this term (the time penalty still
+        applies). A 1-cell neighbourhood search absorbs small lateral offsets,
+        taking the EARLIEST neighbouring reference: that reads as slightly
+        "behind pace", which biases toward pushing rather than coasting, and
+        never over-credits a state the reference reached later.
+        """
+        cells = self._pace_cells
+        if not cells:
+            return None
+        g = max(self._pace_grid, 1e-6)
+        gx, gy = int(x // g), int(y // g)
+        best = cells.get((gx, gy))
+        if best is not None:
+            return best
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                v = cells.get((gx + dx, gy + dy))
+                if v is not None and (best is None or v < best):
+                    best = v
+        return best
+
+    def _momentum_shaping(self, obs, frames_executed: int = 1) -> float:
+        """Closing-speed PBRS: F = w * (gamma*Phi(s') - Phi(s)), Phi = closing speed.
+
+        Uses the closing speed on the goal, NOT raw |v|: it is the component of
+        velocity that actually shortens the route, which is what a momentum
+        conversion (walljump) maximizes. Raw |v| would PENALISE a walljump, which
+        momentarily reduces |vx| (3.19 -> 1.08).
+        """
+        cur = self._last_cost_to_go_raw
+        _frames = max(int(frames_executed or 1), 1)
+        if self._prev_goal_dist is not None and cur < float("inf"):
+            closing = (self._prev_goal_dist - cur) / _frames
+            phi_mom = min(max(closing / MAX_HOR_SPEED, -1.0), 1.0)
+        else:
+            phi_mom = 0.0
+        prev = (
+            self._prev_momentum_potential
+            if self._prev_momentum_potential is not None
+            else phi_mom
+        )
+        r = float(self.config.momentum_pbrs_weight) * (
+            self.config.pbrs_gamma * phi_mom - prev
+        )
+        self._prev_momentum_potential = phi_mom
+        if cur < float("inf"):
+            self._prev_goal_dist = cur
+        return r
+
+    def _pace_shaping(self, obs, current_goal_dist) -> float:
+        """F = w * (gamma * Phi(s') - Phi(s)) with Phi = -(elapsed - reference)."""
+        if not self._pace_loaded:
+            self._load_pace_table()
+        if not self._pace_cells:
+            return 0.0
+        elapsed = obs.get("sim_frame")
+        px, py = obs.get("player_x"), obs.get("player_y")
+        if elapsed is None or px is None or py is None:
+            return 0.0
+        ref = self._reference_frame_at_pos(float(px), float(py))
+        if ref is None:
+            return 0.0  # off-route: no pace opinion, rather than a fabricated one
+        scale = max(float(getattr(self.config, "pace_scale", 60.0)), 1e-6)
+        # NEGATIVE when behind the reference, so being ahead is higher potential.
+        phi = -(float(elapsed) - ref) / scale
+        prev = self._prev_pace_potential
+        if prev is None:
+            prev = phi
+        r = float(self.config.pace_pbrs_weight) * (
+            self.config.pbrs_gamma * phi - prev
+        )
+        self._prev_pace_potential = phi
+        return r
+
     def reset(self):
         """Reset episode-level reward state."""
         self.steps_taken = 0
@@ -1254,6 +1499,12 @@ class RewardCalculator:
         self.episode_time_penalties = []
         self.episode_terminal_reward = 0.0
         self.episode_total_scaled = 0.0
+        self._prev_goal_dist = None
+        self._prev_momentum_potential = None
+        self.episode_momentum_pbrs_reward = 0.0
+        self.episode_new_record_reward = 0.0
+        self._prev_pace_potential = None
+        self.episode_pace_pbrs_reward = 0.0
         self.episode_truncation_penalty = 0.0
         self.episode_backtrack_penalty_total = 0.0
         # Per-episode reward-component breakdown (metrics/observability only;
@@ -1264,6 +1515,10 @@ class RewardCalculator:
         self.episode_sparse_exit_reward = 0.0
         self.episode_death_penalty_reward = 0.0
         self.episode_gold_reward_total = 0.0
+        # Gold reward actually PAID into the returned rewards this episode
+        # (differs from episode_gold_reward_total under banking or a death
+        # clawback). This is the term that makes the reconciliation exact.
+        self.episode_gold_paid_total = 0.0
         self.episode_locked_door_reward_total = 0.0
         self.episode_forward_steps = 0
         self.episode_backtrack_steps = 0
@@ -1366,11 +1621,14 @@ class RewardCalculator:
         # shaping lists add up to the returned episode reward. sparse_total folds
         # every non-shaping, non-time contribution (switch/exit/death/gold/door);
         # the terminal PBRS bonus lives in pbrs_total (not double-counted here).
+        # NOTE: this uses gold PAID, not gold earned. They differ whenever gold is
+        # banked-until-completion or clawed back on death; using the earned total
+        # would leave a residual equal to the unpaid gold.
         sparse_total = (
             self.episode_sparse_switch_reward
             + self.episode_sparse_exit_reward
             + self.episode_death_penalty_reward
-            + self.episode_gold_reward_total
+            + self.episode_gold_paid_total
             + self.episode_locked_door_reward_total
         )
         components_sum = (
@@ -1403,6 +1661,16 @@ class RewardCalculator:
             "landing_bonus_total": self.episode_landing_bonus_total,
             "stall_penalty_total": self.episode_stall_penalty_total,
             "speed_bonus_total": self.episode_speed_bonus_reward,
+            "momentum_pbrs_total": self.episode_momentum_pbrs_reward,
+            "new_record_bonus": self.episode_new_record_reward,
+            "pace_pbrs_total": self.episode_pace_pbrs_reward,
+            # Fastest WIN recorded on this level so far, in sim frames, measured
+            # from spawn. This is the single number a single-level speedrun is
+            # trying to drive down. Distinct from the episode-length metrics,
+            # which mix spawn-started and Go-Explore checkpoint-restored episodes
+            # (the latter begin mid-level and so look artificially short).
+            # 0.0 until the first win.
+            "best_completion_frames": float(self._best_completion_frames or 0.0),
             "waypoint_reach_bonus_total": self.episode_waypoint_reach_reward,
             # The TRUE sum of every scaled reward returned this episode. Equals the
             # VecMonitor episode return; components_sum equals this too (residual~0).
@@ -1414,6 +1682,7 @@ class RewardCalculator:
             "sparse_exit_reward": self.episode_sparse_exit_reward,
             "death_penalty_reward": self.episode_death_penalty_reward,
             "gold_reward_total": self.episode_gold_reward_total,
+            "gold_reward_paid_total": self.episode_gold_paid_total,
             "locked_door_reward_total": self.episode_locked_door_reward_total,
             "forward_steps": self.episode_forward_steps,
             "backtrack_steps": self.episode_backtrack_steps,

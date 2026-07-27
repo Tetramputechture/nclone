@@ -62,6 +62,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Render the first frame to this image file and exit.")
     p.add_argument("--no-dev-panel", dest="dev_panel", action="store_false",
                    help="Disable the right-hand dev panel (window stays game-sized).")
+    p.add_argument("--render3d", action="store_true",
+                   help="Show a live 3D view of the same sim in a middle strip.")
+    p.add_argument("--render3d-width", type=int, default=560,
+                   help="Width in px of the 3D view strip (with --render3d).")
+    p.add_argument("--render3d-fpv", action="store_true",
+                   help="Use the agent-perspective (first-person) camera in the 3D view.")
 
     # Map source.
     p.add_argument("--map", type=str, default=None,
@@ -162,6 +168,10 @@ def make_env(args, force_human=False):
         render_mode = "grayscale_array" if args.headless else "human"
         panel_active = (not args.headless) and args.dev_panel and not args.tas
         panel_width = layout.PANEL_WIDTH if panel_active else 0
+        # Reserve a middle strip for the live 3D view (drawn by the dev tool
+        # between the game and the dev panel).
+        if getattr(args, "render3d", False) and not args.headless and not args.tas:
+            panel_width += max(0, int(args.render3d_width))
 
     render_config = RenderConfig(
         render_mode=render_mode,

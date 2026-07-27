@@ -76,6 +76,40 @@ class ReplayExecutor:
         # the first DAPG minibatch against the live 262-dim policy space.
         "expose_blocked_goal",
         "expose_ego_crop_route_fine",
+        # Same requirement for the speedrun obs revision: without these the demo
+        # re-simulation produces a game_state that is 11 dims short of the live
+        # policy space (+1 wall tau, +10 precision block) and the first DAPG
+        # minibatch dies on a mat1/mat2 shape mismatch. They also change the
+        # cache tag, so stale caches re-simulate instead of being silently reused.
+        "expose_wall_contact_tau",
+        "expose_precision_state",
+        # EXECUTION_PRECISION_PLAN §6: same requirement (+TIME_PHASE_DIM dims).
+        # time_phase_norm_frames is non-bool and passed through below -- coercing
+        # it to True would normalise the demo clock by 1 frame and saturate the
+        # ramp at 1.0 from the first step.
+        "expose_time_phase",
+        "time_phase_norm_frames",
+        # v26 W6c: +COMMITMENT_STATE_DIM (6) on game_state. Omitting it here is
+        # the same crash as every entry above -- demos re-simulate at the OLD
+        # width while the live policy space is 6 wider, and the first DAPG
+        # minibatch dies with "mat1 and mat2 shapes cannot be multiplied
+        # (Nx263 and 269x64)" in the hazard encoder's FiLM. Observed for real on
+        # the v26 launch at 30k steps.
+        "expose_commitment_state",
+        # v26 W6a: new obs KEYS rather than game_state dims, so a missing one
+        # degrades instead of crashing (the extractor substitutes a neutral
+        # prior). Still required: without them every demo teaches the fall
+        # streams a constant, which is a silent quality bug rather than a loud
+        # one -- worse, not better.
+        "expose_fall_lethality_map",
+        "expose_ego_crop_fall_fine",
+        # v27 (HORIZONTAL_AUGMENTATION_PLAN): reflection-equivariant obs
+        # conventions. Same requirement as every entry above -- it changes the
+        # VALUES of entity_overlays, the free-space cost field and the scandots,
+        # so a demo simulated without it teaches the policy a subtly different
+        # distribution in three streams. It also changes the cache tag, so a
+        # stale cache re-simulates rather than being silently reused.
+        "mirror_equivariant_obs",
     )
     # Non-boolean exposure fields whose value is applied verbatim (NOT bool-coerced)
     # so a demo re-simulates the ego-crop at the SAME size as the live policy space
@@ -83,7 +117,9 @@ class ReplayExecutor:
     # cost_map_norm (v18 C3) is a mode string: it changes cost_to_go_map VALUES,
     # so demos must re-simulate under the run's normalization. A False/None value
     # (the trainer's "default fixed_k" sentinel) is skipped, keeping the default.
-    _OBS_EXPOSURE_NONBOOL = ("ego_crop_size", "cost_map_norm")
+    _OBS_EXPOSURE_NONBOOL = (
+        "ego_crop_size", "cost_map_norm", "time_phase_norm_frames",
+    )
 
     def __init__(
         self,

@@ -304,7 +304,7 @@ def test_env_observation_parity_one_way():
 
     One-way platforms are out of the generalist observation scope (not encoded in
     entity_overlays), but they ARE still simulated, so this exercises native<->python
-    physics parity: the 5-channel entity_overlays must stay byte-identical across
+    physics parity: the 6-channel entity_overlays must stay byte-identical across
     backends through a 120-step rollout."""
     from nclone.gym_environment.entity_overlay_utils import ENTITY_OVERLAY_CHANNELS
 
@@ -317,7 +317,7 @@ def test_env_observation_parity_one_way():
         py_o0, _ = py_env.reset(seed=0, options=opts)
         nat_o0, _ = nat_env.reset(seed=0, options=dict(opts))
 
-        assert py_o0["entity_overlays"].shape[0] == ENTITY_OVERLAY_CHANNELS == 5
+        assert py_o0["entity_overlays"].shape[0] == ENTITY_OVERLAY_CHANNELS == 6
         np.testing.assert_array_equal(
             np.asarray(py_o0["entity_overlays"]),
             np.asarray(nat_o0["entity_overlays"]),
@@ -335,6 +335,71 @@ def test_env_observation_parity_one_way():
             assert py_term == nat_term and py_trunc == nat_trunc
             if py_term or py_trunc:
                 break
+    finally:
+        py_env.close()
+        nat_env.close()
+
+
+def _flat_map_with_gold(gold_cells: list[tuple[int, int]]) -> list[int]:
+    """A flat floor with the ninja spawned to walk RIGHT through a line of gold."""
+    from nclone.map_generation.map import Map
+
+    m = Map()
+    for x in range(42):
+        m.set_tile(x, 11, 1)  # floor
+    m.set_ninja_spawn(5, 10, orientation=1)
+    for gx, gy in gold_cells:
+        m.add_entity(2, gx, gy)
+    m.add_entity(3, 30, 10, switch_x=25, switch_y=10)  # exit + switch
+    return [int(v) for v in m.map_data()]
+
+
+def test_gold_collection_parity_across_backends():
+    """Gold observation + collection stay byte-identical across backends.
+
+    The gold-density overlay channel and the gold_fraction/gold_collected info
+    fields are read from a backend-uniform accessor; this pins that the native and
+    python sims collect the same gold on the same frames (native tracks gold in the
+    Rust sim; the python-wrapper propagation was the fix — see get_gold_state)."""
+    from nclone.gym_environment.entity_overlay_utils import ENTITY_OVERLAY_CH_GOLD
+
+    md = _flat_map_with_gold([(10, 13), (12, 13), (14, 13), (16, 13)])
+    py_env = _make_env("python")
+    nat_env = _make_env("native")
+    try:
+        opts = {"map_data": list(md), "map_name": "parity_gold"}
+        py_env.reset(seed=0, options=opts)
+        nat_env.reset(seed=0, options=dict(opts))
+        collected_any = False
+        for t in range(40):
+            py_o, _, py_term, py_trunc, _ = py_env.step(2)  # walk right
+            nat_o, _, nat_term, nat_trunc, _ = nat_env.step(2)
+            # Full entity_overlays (incl. the gold channel) byte-identical.
+            np.testing.assert_array_equal(
+                np.asarray(py_o["entity_overlays"]),
+                np.asarray(nat_o["entity_overlays"]),
+                err_msg=f"gold entity_overlays diverged at step {t}",
+            )
+            # game_state (incl. the always-on gold-fraction tail) byte-identical.
+            np.testing.assert_allclose(
+                np.asarray(py_o["game_state"]),
+                np.asarray(nat_o["game_state"]),
+                atol=1e-6,
+                err_msg=f"game_state diverged at step {t}",
+            )
+            py_raw = py_env._get_observation()
+            nat_raw = nat_env._get_observation()
+            assert py_raw["gold_collected"] == nat_raw["gold_collected"]
+            if py_raw["gold_collected"] > 0:
+                collected_any = True
+            assert py_term == nat_term and py_trunc == nat_trunc
+            if py_term or py_trunc:
+                break
+        # The tape must actually collect gold, else the test is vacuous.
+        assert collected_any, "no gold collected — test would be vacuous"
+        assert nat_env._get_observation()["gold_collected"] == 4
+        assert float(nat_env._get_observation()["entity_overlays"][
+            ENTITY_OVERLAY_CH_GOLD].sum()) == 0.0
     finally:
         py_env.close()
         nat_env.close()

@@ -1,8 +1,9 @@
-"""entity_overlays: 5 channels (ninja + goals + toggle-mines).
+"""entity_overlays: 6 channels (ninja + goals + toggle-mines + gold).
 
 Verifies the channel layout, that the switch/exit goal channels are bilinear
-sub-tile splats, that out-of-scope channels (gold / locked doors / one-ways) are
-gone, and that mine density semantics match an independent reference.
+sub-tile splats, that the gold-density channel rasterizes active gold and drops
+collected gold, that out-of-scope channels (locked doors / one-ways) are gone,
+and that mine density semantics match an independent reference.
 """
 
 from __future__ import annotations
@@ -20,11 +21,13 @@ from nclone.constants.physics_constants import (
 )
 from nclone.gym_environment.entity_overlay_utils import (
     ENTITY_OVERLAY_CH_EXIT,
+    ENTITY_OVERLAY_CH_GOLD,
     ENTITY_OVERLAY_CH_MINE_DEADLY,
     ENTITY_OVERLAY_CH_MINE_SAFE,
     ENTITY_OVERLAY_CH_NINJA,
     ENTITY_OVERLAY_CH_SWITCH,
     ENTITY_OVERLAY_CHANNELS,
+    GOLD_DENSITY_NORMALIZER,
     MINE_DENSITY_NORMALIZER,
     MINE_KILL_ZONE_RADIUS_PX,
     MINE_STATE_DEADLY,
@@ -68,9 +71,9 @@ def test_overlay_has_expected_channel_count():
         deadly_mines=[],
         safe_mines=[],
     )
-    # 5: ninja, switch, exit, mine-deadly, mine-safe.
-    assert arr.shape[0] == 5
-    assert ENTITY_OVERLAY_CHANNELS == 5
+    # 6: ninja, switch, exit, mine-deadly, mine-safe, gold.
+    assert arr.shape[0] == 6
+    assert ENTITY_OVERLAY_CHANNELS == 6
 
 
 def test_ninja_bilinear_splat_sums_to_one_on_center():
@@ -245,9 +248,47 @@ def test_overlay_classification_agrees_with_hazard_state_filter():
     assert float(arr[ENTITY_OVERLAY_CH_MINE_SAFE].sum()) > 0.0
 
 
+def test_gold_density_channel_rasterizes_active_gold():
+    """The gold channel counts still-active gold per tile, /GOLD_DENSITY_NORMALIZER."""
+    # Two gold in one tile, one gold in another -> 2/N and 1/N.
+    tx_a, ty_a = 8, 4
+    tx_b, ty_b = 20, 10
+    pa = _px_from_inner_tile(tx_a, ty_a)
+    pb = _px_from_inner_tile(tx_b, ty_b)
+    arr = compute_entity_overlays(
+        ninja_pos=(100.0, 100.0),
+        switch_pos=None,
+        switch_activated=False,
+        exit_pos=None,
+        deadly_mines=[],
+        safe_mines=[],
+        active_gold=[pa, pa, pb],
+    )
+    ch = arr[ENTITY_OVERLAY_CH_GOLD]
+    assert math.isclose(ch[tx_a, ty_a], 2.0 / GOLD_DENSITY_NORMALIZER, abs_tol=1e-6)
+    assert math.isclose(ch[tx_b, ty_b], 1.0 / GOLD_DENSITY_NORMALIZER, abs_tol=1e-6)
+    # Exactly two tiles are populated; everything else is zero.
+    assert int((ch > 0).sum()) == 2
+
+
+def test_gold_density_channel_empty_without_gold():
+    """No active gold -> the gold channel is all zeros (dead plane on no-gold levels)."""
+    arr = compute_entity_overlays(
+        ninja_pos=(100.0, 100.0),
+        switch_pos=(200.0, 200.0),
+        switch_activated=False,
+        exit_pos=(300.0, 300.0),
+        deadly_mines=[],
+        safe_mines=[],
+        active_gold=[],
+    )
+    assert float(arr[ENTITY_OVERLAY_CH_GOLD].sum()) == 0.0
+
+
 def test_out_of_scope_kwargs_rejected():
-    """The rescoped signature must reject dropped-entity kwargs."""
-    for bad_kwarg in ("gold_positions", "locked_doors", "one_ways", "launch_pads"):
+    """The rescoped signature must reject dropped-entity kwargs (gold is now IN
+    scope via ``active_gold``; locked doors / one-ways / launch pads stay out)."""
+    for bad_kwarg in ("locked_doors", "one_ways", "launch_pads"):
         with pytest.raises(TypeError):
             compute_entity_overlays(
                 ninja_pos=(100.0, 100.0),

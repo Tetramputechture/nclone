@@ -14,7 +14,12 @@ from pathlib import Path
 from typing import List, Optional
 
 from ..evaluation.mechanic_benchmark_loader import MechanicBenchmarkLoader
+from ..map_augmentation.transforms import mirror_map_data
 from .generators import GeneratorBrowser
+
+# Suffix appended to (and stripped from) the level name of a mirrored map, so
+# name-keyed caches never serve the un-mirrored level's data for it.
+MIRROR_SUFFIX = "_mirror"
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +64,33 @@ def load_after_file(env, path: str):
     return refresh_observation(env)
 
 
+def mirror_current_map(env) -> Optional[List[int]]:
+    """Reload the level currently in ``env``, horizontally mirrored.
+
+    Works off the raw ``map_data`` the sim already holds, so it applies to every
+    map source (generator, official file, benchmark payload, ...) uniformly. The
+    transform is involutive, so calling this twice restores the original level
+    byte-for-byte -- which is exactly how the panel's mirror toggle works.
+
+    Returns:
+        The mirrored ``map_data`` that was loaded, or None if the env had no map.
+    """
+    map_data = getattr(env.nplay_headless, "current_map_data", None)
+    if map_data is None:
+        return None
+    name = getattr(getattr(env, "map_loader", None), "current_map_name", None)
+    if name is not None:
+        name = str(name)
+        name = (
+            name[: -len(MIRROR_SUFFIX)]
+            if name.endswith(MIRROR_SUFFIX)
+            else name + MIRROR_SUFFIX
+        )
+    mirrored = mirror_map_data(list(map_data))
+    load_map_data_into_env(env, mirrored, map_name=name)
+    return mirrored
+
+
 def map_file_signature(path: str):
     """Lightweight (mtime_ns, size) change signature, or None if unreadable."""
     try:
@@ -74,12 +106,52 @@ def map_file_signature(path: str):
 
 
 class MapSource:
-    """Base class: a navigable source of levels for the env."""
+    """Base class: a navigable source of levels for the env.
+
+    Subclasses implement :meth:`_load_current`; :meth:`load_current` is the
+    template method every navigation path goes through, so the horizontal-mirror
+    augmentation is re-applied to each newly loaded level while it is enabled.
+    """
 
     title = "map"
+    mirrored = False  # horizontal mirror re-applied after every load
+    _mirrored_data: Optional[List[int]] = None  # last map_data we mirrored in
 
-    def load_current(self, env) -> None:  # pragma: no cover - interface
+    def load_current(self, env) -> None:
+        self._load_current(env)
+        self._apply_mirror(env)
+
+    def _load_current(self, env) -> None:  # pragma: no cover - interface
         raise NotImplementedError
+
+    def _apply_mirror(self, env) -> None:
+        """Re-mirror a freshly loaded level (no-op while mirroring is off).
+
+        Idempotent: a plain ``env.reset()`` keeps the already-loaded map data, so
+        mirroring it again would silently flip the level back. Comparing against
+        the data we last loaded catches that without relying on the level name
+        (which some sources do not set).
+        """
+        if not self.mirrored:
+            return
+        current = getattr(env.nplay_headless, "current_map_data", None)
+        if current is not None and self._mirrored_data == list(current):
+            return  # the mirrored level is still loaded
+        self._mirrored_data = mirror_current_map(env)
+
+    def toggle_mirror(self, env) -> bool:
+        """Flip the level left-to-right in place (panel 'Mirror' / key O).
+
+        Mirrors the loaded level directly rather than reloading the source, so
+        the exact same level is kept (a curriculum / generator reload could roll
+        a different one) and toggling back is byte-exact.
+        """
+        mirrored = mirror_current_map(env)
+        if mirrored is None:
+            return False
+        self.mirrored = not self.mirrored
+        self._mirrored_data = mirrored if self.mirrored else None
+        return True
 
     def advance(self, env) -> None:
         """Move to the next selection and load it (panel 'Next' / key G)."""
@@ -123,14 +195,11 @@ class DefaultMapSource(MapSource):
                 self._fallback = OfficialMapSource()
             self._fallback.load_current(env)
 
-    def load_current(self, env) -> None:
-        self._safe_reset(env)
-
-    def regenerate(self, env) -> None:
+    def _load_current(self, env) -> None:
         self._safe_reset(env)
 
     def on_episode_end(self, env, won: bool, auto_advance: bool) -> bool:
-        self._safe_reset(env)
+        self.load_current(env)
         return True
 
     def status_lines(self) -> List[str]:
@@ -150,10 +219,7 @@ class FileMapSource(MapSource):
         self.poll_frames = max(1, int(poll_frames))
         self._sig = map_file_signature(path) if hot_reload else None
 
-    def load_current(self, env) -> None:
-        env.reset()
-
-    def regenerate(self, env) -> None:
+    def _load_current(self, env) -> None:
         env.reset()
 
     def poll(self, env, frame_counter: int) -> bool:
@@ -165,6 +231,7 @@ class FileMapSource(MapSource):
             return False
         try:
             load_map_file_into_env(env, self.path)
+            self._apply_mirror(env)
             self._sig = sig
             print(f"[HOT-RELOAD] Map reloaded from: {self.path}")
             return True
@@ -184,7 +251,7 @@ class GeneratorSource(MapSource):
     def __init__(self, browser: GeneratorBrowser):
         self.browser = browser
 
-    def load_current(self, env) -> None:
+    def _load_current(self, env) -> None:
         self.browser.generate()
         if self.browser.current_map is not None:
             load_map_data_into_env(env, self.browser.current_map.map_data())
@@ -232,7 +299,7 @@ class OfficialMapSource(MapSource):
     def _path(self) -> str:
         return os.path.join(self.maps_dir, self.files[self.index])
 
-    def load_current(self, env) -> None:
+    def _load_current(self, env) -> None:
         load_map_file_into_env(env, self._path())
 
     def advance(self, env) -> None:
@@ -271,7 +338,7 @@ class BenchmarkSource(MapSource):
         lid = self.payload.get("level_id", self.index) if self.payload else self.index
         return f"benchmark_{lid}"
 
-    def load_current(self, env) -> None:
+    def _load_current(self, env) -> None:
         self.payload = self.loader.load_payload(self.index)
         load_map_data_into_env(env, self.payload["map_data"], map_name=self._map_name())
 

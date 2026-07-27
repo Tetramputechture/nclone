@@ -72,6 +72,37 @@ def get_ninja_animation():
         return cached_ninja_animation
 
 
+def has_active_jump_buffer(n) -> bool:
+    """True when any input buffer would let a jump fire this frame.
+
+    Takes any ninja-LIKE object (the real Ninja or native _NinjaProxy) so the
+    python and native backends cannot diverge on this predicate. Windows differ:
+    jump/floor/wall are 5 frames, launch_pad is 4 (``-1 < b < 4``).
+    """
+    return (
+        -1 < n.jump_buffer < 5
+        or -1 < n.floor_buffer < 5
+        or -1 < n.wall_buffer < 5
+        or -1 < n.launch_pad_buffer < 4
+    )
+
+
+def jump_is_useless(n) -> bool:
+    """SINGLE SOURCE OF TRUTH for "pressing jump right now does nothing".
+
+    Consumed by the action mask, Ninja.is_jump_useless, and the game_state
+    observation, so none of them can contradict the others. Jumps fire on the
+    RISING edge: holding jump from the previous frame creates no new edge, so it
+    is useless unless a buffer is already armed. Grounded or already jumping, a
+    jump always has an immediate effect.
+    """
+    if not (n.airborn and n.state != 3):
+        return False
+    if n.jump_input != 0:
+        return not has_active_jump_buffer(n)
+    return False
+
+
 class Ninja:
     """This class is responsible for updating and storing the positions and velocities of each ninja.
     self.xposlog and self.yposlog contain all the coordinates used to generate the traces of the replays.
@@ -627,6 +658,27 @@ class Ninja:
             self.ylp_boost_normalized * boost_scalar * JUMP_LAUNCH_PAD_BOOST_FACTOR
         )
 
+    def has_active_jump_buffer(self) -> bool:
+        """True when any input buffer would let a jump fire this frame.
+
+        Windows differ per buffer: jump/floor/wall are 5 frames, launch_pad is 4
+        (``-1 < b < 4``; see think()).
+        """
+        return has_active_jump_buffer(self)
+
+    def jump_is_useless_now(self) -> bool:
+        """SINGLE SOURCE OF TRUTH for "pressing jump right now does nothing".
+
+        Consumed by BOTH the action mask and the game_state observation so the
+        two can never contradict each other.
+
+        Jumps fire on the RISING edge, so holding jump from the previous frame
+        means a fresh press creates no new edge -- useless unless a buffer is
+        already armed. Grounded or already-jumping, a jump always has an
+        immediate effect.
+        """
+        return jump_is_useless(self)
+
     def get_valid_action_mask(self) -> list:
         """Compute mask of valid actions based on current state.
 
@@ -675,23 +727,12 @@ class Ninja:
             < 4  # Launch pad buffer: activated by launch pad
         )
 
-        # Determine if jump is useless
-        # Jump is useless when: airborne AND not jumping AND no buffers AND won't create buffer
-        #
-        # Key insight: Mask is computed BEFORE action, so we predict buffer activation.
-        # - jump_input == 0: Selecting JUMP will be new press → activates buffer → NOT useless
-        # - jump_input != 0: Selecting JUMP again won't activate buffer → useless unless buffer exists
-        # - Not airborne or jumping: Jump has immediate effect → NOT useless
-        if self.airborn and self.state != 3:
-            if self.jump_input != 0:
-                # Already holding jump → selecting again won't activate buffer
-                jump_useless = not has_active_buffer
-            else:
-                # Not holding jump → selecting JUMP will activate buffer → NOT useless
-                jump_useless = False
-        else:
-            # Not airborne or already jumping → jump has immediate effect
-            jump_useless = False
+        # Determine if jump is useless. Delegated to jump_is_useless_now() so the
+        # ACTION MASK and the OBSERVATION cannot drift apart: the policy must not
+        # perceive "a jump would work here" while the mask forbids it, or vice
+        # versa. (Three disagreeing copies of this predicate previously existed:
+        # this mask, Ninja.is_jump_useless, and the game_state feature.)
+        jump_useless = self.jump_is_useless_now()
 
         # Mask jump actions if useless (actions 0-2 always valid)
         if jump_useless:
@@ -921,9 +962,8 @@ class Ninja:
                     or in_wall_buffer
                     or in_lp_buffer
                 )
-            self.is_jump_useless = (
-                self.airborn and self.state != 3 and not has_active_buffer
-            )
+            # Same predicate the action mask and the observation use.
+            self.is_jump_useless = self.jump_is_useless_now()
         else:
             self.is_jump_useless = False
 

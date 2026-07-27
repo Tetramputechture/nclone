@@ -225,11 +225,35 @@ class Simulator:
             self.entity_dic
         ):
             raise ValueError("snapshot incompatible with current level")
+        # DEEP-COPY ON RESTORE. Installing blob["ninja"] / blob["entity_dic"]
+        # directly makes the live sim ALIAS the snapshot: the very next tick
+        # mutates the objects the blob holds, so the snapshot silently becomes a
+        # record of wherever the sim went next. Every snapshot was therefore
+        # single-use, and every later restore returned drifted state.
+        #
+        # That is not a corner case here -- the three heaviest users all restore
+        # the SAME blob repeatedly:
+        #   * is_current_state_doomed branches 6 inputs off one snapshot, so
+        #     inputs 2-6 saw corrupted state AND the live episode was left drifted;
+        #   * Go-Explore restores an archived checkpoint many times over a run,
+        #     so a checkpoint "at frame N" degraded into wherever play last went;
+        #   * demo/expert snapshots (EXECUTION_PRECISION_PLAN §7) stopped being
+        #     expert states after their first use.
+        #
+        # Copying on restore (rather than on capture) keeps the blob pristine for
+        # unlimited reuse, which is the contract every caller already assumed.
+        restored = copy.deepcopy(
+            {
+                "ninja": blob["ninja"],
+                "entity_dic": blob["entity_dic"],
+                "grid_entity": blob["grid_entity"],
+            }
+        )
         self.frame = blob["frame"]
-        self.ninja = blob["ninja"]
+        self.ninja = restored["ninja"]
         self.ninja.sim = self
-        self.entity_dic = blob["entity_dic"]
-        self.grid_entity = blob["grid_entity"]
+        self.entity_dic = restored["entity_dic"]
+        self.grid_entity = restored["grid_entity"]
         for entity_list in self.entity_dic.values():
             for entity in entity_list:
                 if hasattr(entity, "sim"):

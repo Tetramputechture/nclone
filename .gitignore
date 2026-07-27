@@ -109,3 +109,11 @@ nclone/latticepaths/
 
 # local dev-assistant skill configs
 .claude/
+
+# render3d: legacy in-tree GL symlink shims (now written to the user cache)
+.gl_shims/
+
+# Stray sim debug dumps
+*_0th_replay
+nclone/maps/142634
+nclone/maps/142634_0.replay

@@ -66,6 +66,10 @@ class ObservationProcessor:
         "ego_crop_mines",  # optional mine-density crop co-registered with ego_crop
         "ego_crop_route",  # optional grad(d*) unit-vector crop (v14 B2)
         "ego_crop_route_fine",  # optional 6px un-pooled grad(d*) crop (v22 §3-C)
+        "ego_crop_mines_fine",  # optional 6px mine-SDF crop (v24)
+        "mine_proximity",  # optional v25 mine bearing + closing-speed vector
+        "fall_lethality_map",  # optional v26 W6a static survivable-impact field
+        "ego_crop_fall_fine",  # optional v26 W6a ninja-centered fall-field crop
         "ego_crop_coarse",  # optional +-21-tile coarse window (Audit II P1-6)
         "action_mask",
         "duration_mask",

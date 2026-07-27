@@ -57,6 +57,10 @@ class MultiChamberGenerator(Map):
     MAX_CORRIDOR_LENGTH = 5
     MIN_CORRIDOR_WIDTH = 1
     MAX_CORRIDOR_WIDTH = 3
+    # Gold count range (CLUSTERED regime); overwritten by MultiChamberConfig via the
+    # factory. 0/0 disables gold. See docs/GOLD_AND_SCORE_OPTIMIZATION.md.
+    MIN_GOLD_COUNT = 4
+    MAX_GOLD_COUNT = 14
 
     def __init__(self, seed: Optional[int] = None):
         """Initialize the multi-chamber generator.
@@ -516,6 +520,31 @@ class MultiChamberGenerator(Map):
         # but not on top of the exit
         if switch_y + 1 != exit_y or switch_x != exit_x:
             self.set_tile(switch_x, switch_y + 1, 1)
+
+        # CLUSTERED gold: group gold along the floors of the ninja/switch chambers
+        # (matches the ~93%-clustered corpus majority). Placed inside chambers the
+        # route already visits, so reachable by construction. Snapped to empty and
+        # deduped against existing entities. See docs/GOLD_AND_SCORE_OPTIMIZATION.md.
+        n_gold = self.rng.randint(self.MIN_GOLD_COUNT, self.MAX_GOLD_COUNT)
+        if n_gold > 0:
+            gold_chambers = [ninja_chamber]
+            if switch_chamber is not ninja_chamber:
+                gold_chambers.append(switch_chamber)
+            for _ in range(n_gold):
+                ch = self.rng.choice(gold_chambers)
+                if ch.width < 3 or ch.height < 3:
+                    continue
+                gx = ch.x + self.rng.randint(1, ch.width - 2)
+                # Cluster near the chamber floor (0-2 tiles up), like the ninja.
+                lift = self.rng.randint(0, min(2, ch.height - 3))
+                gy = ch.y + ch.height - 2 - lift
+                if (gx, gy) in self.entity_positions:
+                    continue
+                gx2, gy2 = self._find_closest_valid_tile(gx, gy, tile_type=0)
+                if (gx2, gy2) in self.entity_positions:
+                    continue
+                self.add_entity(2, gx2, gy2)
+                self.entity_positions.add((gx2, gy2))
 
     def generate(self, seed: Optional[int] = None) -> Map:
         """Generate a multi-chamber level.

@@ -42,7 +42,13 @@ def test_game_state_shape_and_tail_layout():
     env, obs = _make_env_resilient()
 
     gs = obs["game_state"]
-    assert gs.shape == (GAME_STATE_CHANNELS,) == (261,)  # v16 15-wide arcs + passive + goal
+    # Base game_state is GAME_STATE_CHANNELS (261: v16 15-wide arcs + passive + goal),
+    # plus the ALWAYS-ON gold-fraction-remaining tail scalar at index
+    # GAME_STATE_CHANNELS (docs/GOLD_AND_SCORE_OPTIMIZATION.md part b).
+    assert GAME_STATE_CHANNELS == 261
+    assert gs.shape == (GAME_STATE_CHANNELS + 1,)
+    gold_frac = float(gs[GAME_STATE_CHANNELS])
+    assert 0.0 <= gold_frac <= 1.0
     assert GAME_STATE_SWITCH_ACTIVATED_IDX == 27
     assert GAME_STATE_SWITCH_VEC_IDX == 28
     assert GAME_STATE_EXIT_VEC_IDX == 30
@@ -103,7 +109,8 @@ def test_goal_vectors_match_relative_geometry():
 
 def test_observation_space_exposes_full_dim_game_state():
     env, _obs = _make_env_resilient()
-    assert env.observation_space["game_state"].shape == (GAME_STATE_CHANNELS,)
+    # GAME_STATE_CHANNELS base + the always-on gold-fraction-remaining tail (+1).
+    assert env.observation_space["game_state"].shape == (GAME_STATE_CHANNELS + 1,)
     # v16 blocks: 69 head + 45 committed + 45 jump-now + 6 arc-phi + 45 tap-jump
     # + 45 wall-jump-now + 6 passive-release (arcs are 15-wide: v15 13 + v16
     # goal_approach/goal_hit).

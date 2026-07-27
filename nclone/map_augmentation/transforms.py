@@ -142,6 +142,34 @@ def identity_map_data(map_data: List[int]) -> List[int]:
     return list(map_data)
 
 
+def canonical_map_data(map_data: List[int]) -> Tuple[List[int], bool]:
+    """Pick one of ``{map_data, mirror(map_data)}`` deterministically.
+
+    Returns ``(canonical, was_mirrored)`` where ``canonical`` is the
+    lexicographically smaller of the level and its reflection, and
+    ``was_mirrored`` says whether the caller's level is the reflected one.
+
+    This is the lever that makes *tie-breaking* computations reflection-exact.
+    A Dijkstra heap ordered by ``(cost, x, y)``, or a route planner choosing
+    between equal-length legs, cannot be made symmetric by any pure function of
+    position -- but it does not have to be. Run it once on the canonical
+    orientation and reflect the RESULT, and a level and its mirror produce
+    exactly mirrored fields, bit for bit, tie-breaks included.
+
+    Both members of the pair map to the same canonical form, so a cache keyed on
+    it is shared between a level and its mirror -- which also halves the build
+    cost under Tier 0 level mirroring.
+
+    A left-right symmetric level is its own mirror; it reports
+    ``was_mirrored=False`` and needs no reflection.
+    """
+    md = list(map_data)
+    mirrored = mirror_map_data(md)
+    if md <= mirrored:
+        return md, False
+    return mirrored, True
+
+
 # Registry of named, physics-preserving augmentations. ``identity`` is included
 # so callers can request the original alongside its variants from one code path.
 AUGMENTATIONS: Dict[str, Callable[[List[int]], List[int]]] = {

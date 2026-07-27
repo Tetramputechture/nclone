@@ -61,7 +61,7 @@ def _obs(**kwargs):
         "player_y": 0.0,
         "player_dead": False,
         "player_won": False,
-        "player_airborn": False,  # grounded so the landing HWM can fire
+        "player_airborn": False,  # grounded; see _run_loop's landing edge
         "player_walled": False,
         "switch_activated": False,
         "switch_x": 1.0,
@@ -119,6 +119,9 @@ _LOOP = [
     (200.0, 1.0, 0.0, 100.0),  # C -> A  (all the way back to the start state)
 ]
 _LOOP_START = (200.0, 1.0, 0.0, 100.0)
+# _run_loop drives an airborne hop before each state (the landing HWM only fires
+# on a contact EDGE), so the loop is two env steps per state.
+_LOOP_STEPS = 2 * len(_LOOP)
 
 
 def _run_loop(calc):
@@ -126,7 +129,24 @@ def _run_loop(calc):
     total = 0.0
     agg = {"pbrs_reward": 0.0, "frontier_bonus": 0.0, "landing_bonus": 0.0,
            "time_penalty": 0.0, "hwm_reward": 0.0, "backtrack_penalty": 0.0}
+    prev_dist, prev_mine, prev_risk, prev_leg = _LOOP_START
     for dist, mine_d, risk, leg_d in _LOOP:
+        # The landing HWM is TRANSITION-gated: it fires only on the
+        # airborne->contact EDGE, so a loop of grounded steps alone would never
+        # exercise it (and asserting on it would silently test nothing). Hop
+        # first, at the state we are LEAVING, so every PBRS potential is
+        # unchanged across the hop and the loop still telescopes exactly.
+        r_air, comp_air = _step(
+            calc, prev_dist, 50.0,
+            game_state=_game_state(mine_dist=prev_mine),
+            _impact_risk=prev_risk,
+            waypoint_leg_distance=prev_leg,
+            waypoint_index=0,
+            player_airborn=True,
+        )
+        total += r_air
+        for k in agg:
+            agg[k] += comp_air.get(k, 0.0) or 0.0
         r, comp = _step(
             calc, dist, 50.0,
             game_state=_game_state(mine_dist=mine_d),
@@ -134,6 +154,7 @@ def _run_loop(calc):
             waypoint_leg_distance=leg_d,
             waypoint_index=0,  # held constant: no forward reach-bonus
         )
+        prev_dist, prev_mine, prev_risk, prev_leg = dist, mine_d, risk, leg_d
         total += r
         for k in agg:
             agg[k] += comp.get(k, 0.0) or 0.0
@@ -184,8 +205,8 @@ def test_repeated_cycle_is_strictly_negative():
     assert agg2["frontier_bonus"] == pytest.approx(0.0, abs=1e-12)
     assert agg2["landing_bonus"] == pytest.approx(0.0, abs=1e-12)
     assert total2 < 0.0
-    # The only surviving term is 3 frames of time penalty.
-    assert total2 == pytest.approx(3 * TIME_PENALTY_PER_STEP, abs=1e-9)
+    # The only surviving term is the loop's frames of time penalty.
+    assert total2 == pytest.approx(_LOOP_STEPS * TIME_PENALTY_PER_STEP, abs=1e-9)
 
 
 def test_hwm_bonuses_not_repaid_on_repeat():

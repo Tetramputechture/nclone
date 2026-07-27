@@ -357,6 +357,18 @@ class NativePlayHeadless:
             self.sim.entity_dic.get(21, []),
         )
 
+    def get_gold_state(self):
+        """Return ``[(x, y, active), ...]`` for every gold entity (type 2).
+
+        Backend-uniform accessor mirrored by ``NPlayHeadless.get_gold_state``.
+        Reads the per-tick snapshot scan cached in ``_SimProxy._update_from_snapshot``
+        rather than ``entity_dic`` so per-step gold ``active`` state stays LIVE on
+        the native backend (entity_dic is rebuilt-not-mutated each tick, which would
+        otherwise freeze collection). Gold positions are static; only ``active``
+        flips False on collection, so the list length is the original gold count.
+        """
+        return list(getattr(self.sim, "_gold_cache", []))
+
     def set_relevant_mine_keys(self, keys):
         """Install the relevant-mine cull at the entity_dic source so every
         downstream consumer (entity proxies, mine-state scan, obs, graph) sees
@@ -550,7 +562,7 @@ def _build_entity_dic(entities) -> dict:
     relevant-mine cull is applied upstream via the cached index plan in
     ``_ensure_entity_dic`` so this hot path never re-scans culled mines).
     """
-    entity_dic = {1: [], 3: [], 4: [], 6: [], 7: [], 11: [], 21: []}
+    entity_dic = {1: [], 2: [], 3: [], 4: [], 6: [], 7: [], 11: [], 21: []}
     exit_switches = []
     exit_doors = []
 
@@ -558,6 +570,8 @@ def _build_entity_dic(entities) -> dict:
         t = e.entity_type
         if t == 1:  # ToggleMine (untoggled)
             entity_dic[1].append(_EntityProxy(e.x, e.y, e.active, e.state, t))
+        elif t == 2:  # Gold: static position; `active` flips False on collection.
+            entity_dic[2].append(_EntityProxy(e.x, e.y, e.active, e.state, t))
         elif t == 21:  # ToggleMineToggled
             entity_dic[21].append(_EntityProxy(e.x, e.y, e.active, e.state, t))
         elif t == 11:  # OneWay: static directional barrier; orientation -> normal.
@@ -625,6 +639,7 @@ class _SimProxy:
         self.gym_env = None
         self._snapshot = None
         self._switch_door_cache = None  # ((switch_pos, switch_active), door_pos) per tick
+        self._gold_cache = []  # [(x, y, active), ...] per tick (see get_gold_state)
         self._headless = headless
         self.map_data = None
         # Parity with nclone.nsim.Simulator: action-masking knobs the env reads/writes.
@@ -695,6 +710,13 @@ class _SimProxy:
         # goal-position lookup hit these many times per step; scanning every call
         # was ~11 entity sweeps/step.
         self._switch_door_cache = _get_switch_door_from_entities(state.entities)
+        # Scan gold (type 2) ONCE per tick and cache its live (x, y, active) tuples.
+        # get_gold_state reads this so the gold observation drops collected gold
+        # WITHOUT forcing a full entity_dic rebuild each step (positions are static;
+        # only `active` changes on collection).
+        self._gold_cache = [
+            (e.x, e.y, e.active) for e in state.entities if e.entity_type == 2
+        ]
         profile = profile_env and getattr(profile_env, "profile_enabled", False)
         # Tile grid is static per level - only rebuild when cache invalidated
         # Uses state.tile_grid (bundled in get_state) - no separate get_tile_grid() FFI

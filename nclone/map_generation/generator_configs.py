@@ -125,6 +125,11 @@ class MultiChamberConfig:
     max_corridor_length: int = 5
     min_corridor_width: int = 1
     max_corridor_width: int = 3
+    # Gold (score objective, docs/GOLD_AND_SCORE_OPTIMIZATION.md): CLUSTERED regime
+    # — gold is grouped along the floors of the ninja/switch chambers (matching the
+    # ~93%-clustered corpus majority), reachable by construction. 0 disables gold.
+    min_gold_count: int = 4
+    max_gold_count: int = 14
 
 
 @dataclass
@@ -148,6 +153,11 @@ class SingleChamberConfig:
     # this field, so a tiny sep=1 floor preset anneals back to 0 (unconstrained)
     # as the bucket's size grows. See FLAT_RUN ``flat_run_onramp`` preset.
     switch_door_max_sep: int = 0
+    # Gold (score objective, docs/GOLD_AND_SCORE_OPTIMIZATION.md): SPREAD regime —
+    # gold scattered across the chamber floor so the score rewards sweeping the
+    # whole arena (the large-open case). Reachable by construction. 0 disables gold.
+    min_gold_count: int = 3
+    max_gold_count: int = 12
 
 
 @dataclass
@@ -366,6 +376,12 @@ class OpenFieldConfig:
     max_height: int = 20
     min_separation: int = 3
     max_separation: int = 8
+    # Gold (score objective, docs/GOLD_AND_SCORE_OPTIMIZATION.md): SPREAD regime —
+    # gold scattered across the full run width at/just above the floor so the score
+    # rewards sweeping the whole open arena (the large-open case the doc targets).
+    # Reachable by construction (on or a hop above the continuous floor). 0 disables.
+    min_gold_count: int = 5
+    max_gold_count: int = 16
 
 
 @dataclass

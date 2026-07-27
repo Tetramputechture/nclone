@@ -196,6 +196,18 @@ class ReachabilityConfig:
     # fully compatible with a Markov policy. Default False keeps the Layer-1 contract.
     expose_cost_to_go_map: bool = False
 
+    # v24: route the POLICY-OBSERVED free-space nav hint, cost_to_go_map, and the
+    # ego route crops through the MINE-FAITHFUL free-space field — deadly-mine
+    # cells are cut from the traversable mask, so the gradient the policy follows
+    # routes AROUND mines instead of through them (the legacy mine-SOFT field made
+    # mine cells traversable at ~9x cost, so steepest-descent could point straight
+    # into a kill disc on the near-optimal line — the root cause of the ~60%
+    # mine-death rate on official maps). Reward potentials are UNAFFECTED (they
+    # already cascade lattice -> mine-threading -> free-space). On a mine-severed
+    # level the mine-hard field is unavailable and the obs falls back to the
+    # Euclidean cost-to-go (same as any failed free-space build). Default False.
+    mine_faithful_obs: bool = False
+
     # v18 (Component 3): normalization mode for the cost_to_go_map cost channels.
     #   "fixed_k"        — c = m/(m+K), K=1000 (legacy; tuned for long FAR routes,
     #                      but crushes compact-maze costs to a near-flat gradient:
@@ -295,6 +307,27 @@ class ReachabilityConfig:
     # twin of the near-switch wall oscillation. Makes the dither state observable so
     # the policy can learn to escape it. Default False (BREAKING obs-dim change).
     expose_blocked_goal: bool = False
+    # Append a FRAMES-TO-WALL-CONTACT scalar to game_state (+1 dim), in [0,1]
+    # (1 = no wall within the ~12-frame horizontal lookahead, 0 = in contact).
+    # ``time_to_contact_frames`` only covers the LANDING surface of an AIRBORNE
+    # ninja, so a GROUNDED ninja running horizontally at a wall currently has no
+    # contact-time signal -- precisely the state a corner walljump is entered
+    # from, where the input must be pressed ~2 frames BEFORE contact. Turns a
+    # frame-perfect guess into "when tau is small, jump".
+    # Default False (BREAKING obs-dim change).
+    expose_wall_contact_tau: bool = False
+    # Append the PRECISION-STATE block to game_state (+10 dims). Closes the
+    # verified holes a feed-forward policy hits on frame-precise maneuvers:
+    #   * wall_normal is zeroed during the wall_buffer coyote window, so the
+    #     policy knows a walljump is legal but not which way it launches;
+    #   * the state one-hot merges Jumping(3) with Falling(4), and jump_duration
+    #     is masked outside state 3, so variable-height jump control is blind;
+    #   * airborn_old / consecutive_floor_frames / consecutive_wall_frames /
+    #     state_change_frame / previous_state are absent entirely and were
+    #     recoverable only via frame stacking.
+    # See NppEnvironment._compute_precision_state for the exact layout.
+    # Default False (BREAKING obs-dim change).
+    expose_precision_state: bool = False
     # v22 §3-C: expose a FINE ego route-gradient crop (``ego_crop_route_fine``, 2ch)
     # -- the steepest-descent unit vector of the 6px UN-POOLED free-space cost-to-go
     # field in a small ninja-centered window. Unlike ego_crop_route (tile/24px
@@ -302,6 +335,96 @@ class ReachabilityConfig:
     # vector crisp one 6px cell behind a thin obstacle. Default False (BREAKING
     # obs-dim change; adds a spatial stream to the extractor).
     expose_ego_crop_route_fine: bool = False
+    # v24: expose a FINE ego MINE crop (``ego_crop_mines_fine``, 2ch) -- the 6px
+    # signed-distance-to-mine field (deadly + safe) sliced in a small ninja-centered
+    # window. The policy's only other fine (6px) mine input, the global hazard_map,
+    # is average-pooled to a ~7-tile embedding before the policy sees it, so the
+    # lethal 14px disc is unresolvable; this restores sub-tile mine geometry where
+    # deaths happen (around the ninja). Default False (BREAKING obs-dim change; adds
+    # a spatial stream to the extractor). Pairs with mine_faithful_obs.
+    expose_ego_crop_mines_fine: bool = False
+    # v25: expose the directional nearest-mine bearing + CLOSING-SPEED vector
+    # (``mine_proximity``, MINE_PROXIMITY_DIM floats). The v24 fine mine crop
+    # above is a still frame — it says where the mines are but not whether the
+    # ninja is closing on one. Measured after v24: mine-death fell to ~2% on the
+    # easy procgen buckets but stayed ~0.51 on OFFICIAL layouts, with
+    # switch_reached only 0.52 (half of official episodes die before the switch).
+    # Adds K x 5 motion-relative floats (bearing, proximity, closing speed,
+    # time-to-contact) as their OWN key rather than mutating the
+    # truncation-sensitive game_state vector. Default False (adds an extractor
+    # stream). Pairs with expose_ego_crop_mines_fine + mine_faithful_obs.
+    expose_mine_proximity: bool = False
+    # v26 W6a: expose the static FALL-LETHALITY field — per 6px cell, the signed
+    # margin between the survivable-impact threshold at the floor below and the
+    # speed a fall from that cell would arrive with, plus the normalized drop
+    # distance. Impact deaths are ~40% of v25's losses and most are committed
+    # unrecoverable falls: the lethal decision is made at TAKEOFF, so every
+    # existing impact signal (lethal_landing_tau, the landing PBRS/aux terms)
+    # fires far too late. Both thresholds are normal-dependent and pull opposite
+    # ways, which makes a flat floor the LEAST forgiving surface (~6.8 tiles
+    # kills) — a "drop > K tiles" heuristic is wrong in both directions, hence a
+    # precomputed field rather than a scalar.
+    #
+    # ``expose_fall_lethality_map`` adds the global (2, 168, 92) field;
+    # ``expose_ego_crop_fall_fine`` adds the ninja-centered fine crop. They are
+    # independent flags but share one cached field, so enabling both costs
+    # nothing extra to compute. Default False (BREAKING obs-dim change).
+    expose_fall_lethality_map: bool = False
+    expose_ego_crop_fall_fine: bool = False
+    # v26 W6c: append the COMMITMENT / irreversibility block to game_state
+    # (+6 dims). The per-arc fatality bits already exist, but spread over five
+    # 3-arc bundles of 45 dims each, and which bundles are even valid depends on
+    # the contact regime — so "is EVERY option from here fatal" (the actual
+    # point-of-no-return question the impact-death failure mode is about) is a
+    # conjunction the policy currently has to rediscover from scratch. Every dim
+    # is polarized so zero = safe. Default False (BREAKING obs-dim change).
+    expose_commitment_state: bool = False
+    # EXECUTION_PRECISION_PLAN §6: append a TIME/PHASE block to game_state
+    # (+TIME_PHASE_DIM dims). On a fixed-start deterministic level the optimal
+    # policy is OPEN-LOOP -- a fixed input sequence -- but a feed-forward policy
+    # conditioned only on observations must disambiguate states that LOOK alike
+    # yet need different inputs. SI-A-00-00's route doubles back through the same
+    # cells, and that exact aliasing already corrupted the position-keyed pace
+    # table (fixed only by keying on (cell, switch_phase)). If the reward signal
+    # was aliased by the return leg, the policy input plausibly is too.
+    #
+    # WARNING: this makes the policy MORE level-specific by design. It is a
+    # single-level tool; do not fold it into the generalist contract.
+    # Default False (BREAKING obs-dim change).
+    expose_time_phase: bool = False
+    # Normalisation horizon for the time ramp, in frames. The ramp is
+    # t/time_phase_norm_frames clipped to [0,1], so this should sit a little
+    # above the target route length -- normalising by MAX_TIME_IN_FRAMES (4500)
+    # would squash a ~485-frame route into [0, 0.108] and waste the range.
+    time_phase_norm_frames: int = 600
+    # HORIZONTAL_AUGMENTATION_PLAN §2/§6: make the observation exactly
+    # equivariant under a left-right reflection of the level, so a mirrored
+    # sample synthesised by ``nclone.map_augmentation.obs_mirror`` is a FAITHFUL
+    # observation of the mirrored state rather than an approximate one.
+    #
+    # The commutation harness (``map_augmentation/mirror_verify.py``) found the
+    # simulator itself to be exactly symmetric — positions and velocities agree
+    # to float precision — and located every divergence in two *derived* obs
+    # conventions, both of which are half-cell registration errors that this
+    # flag corrects:
+    #
+    #   1. The entity-overlay bilinear splat anchors on a tile's LEFT EDGE
+    #      (``px/24 - 1``), so a tile's sample point is half a tile off its own
+    #      centre. Under reflection the anchor set is not closed and the ninja /
+    #      switch / exit channels land up to a quarter of a unit mass in the
+    #      wrong cell. ``px/24 - 1.5`` anchors on the tile centre, which is both
+    #      correctly registered against ``tile_grid`` and exactly symmetric.
+    #   2. The forward-biased scandots pick their travel direction with
+    #      ``sign(vx) or 1``, which resolves to +1 in BOTH orientations while the
+    #      ninja is at rest (a common state: every spawn frame, every stationary
+    #      frame). The block is direction-relative, so an even tie-break makes it
+    #      sample the mirror-image columns. With this flag the tie falls back to
+    #      the bearing to the active objective, which IS reflection-odd.
+    #
+    # Both change observation VALUES, so this is opt-in: a run resumed from a
+    # checkpoint trained without it would see two subtly different inputs. Turn
+    # it on for fresh trains that use mirror augmentation (Tier 2/3).
+    mirror_equivariant_obs: bool = False
 
     def __post_init__(self):
         """Validate reachability configuration."""
@@ -360,6 +483,28 @@ class EnvironmentConfig:
 
     # Shared level cache (for zero-copy multi-worker training on same level)
     shared_level_cache: Optional[Any] = None
+
+    # v25 (game-faithful): frames added to the episode's truncation budget per
+    # gold collected. In real N++ each gold adds 1 second to the countdown; the
+    # sim's truncation limit was STATIC per level (surface area + mines + route
+    # cost, fixed at reset) and did not grow with gold, so a gold detour was
+    # punished twice — once by the frames it cost, and again by a premature
+    # timeout. Measured consequence (v24 scratch 18M -> 21M): timeouts nearly
+    # doubled (29 -> 49) as gold/solve rose.
+    #
+    # With this set, the effective limit is re-evaluated every step as
+    #   base_limit * curriculum_multiplier + gold_time_bonus_frames * gold_collected
+    # and the same value feeds the ``time_remaining`` obs scalar, so the policy
+    # SEES the budget it just earned. 60 = 1 second = game-faithful; 0 disables
+    # (and costs nothing — no gold scan is performed).
+    #
+    # This changes ONLY the timeout. The SCORE budget stays a fixed 90 s, so
+    # score semantics are unchanged. It deliberately does NOT weaken the
+    # completion-primary reward: pair it with
+    # ``RewardConfig.gold_bank_until_completion`` (so gold still cannot outrank
+    # the exit) and keep the stall penalty on (so the extra time is not spent
+    # dawdling).
+    gold_time_bonus_frames: int = 0
 
     # Physics backend: "python" (NPlayHeadless) or "native" (Rust NativePlayHeadless).
     # Native is a drop-in for the training hot path (much faster, no rendering); use
@@ -442,6 +587,24 @@ class EnvironmentConfig:
     )
     layer3_all_masked_fallback: str = "noop"
 
+    # v26 W6b: extend the Layer-3 fatality predicate from "hits a deadly mine" to
+    # "ends in ANY physics death", which brings unsurvivable impacts under the
+    # same hard guarantee. The split is ~60% mine / ~40% impact deaths in v25,
+    # and before this every hard safety guarantee the agent had was mine-only —
+    # so the interrupt layer was shortening macros near mines while leaving
+    # fatal-gap macros uncapped, exactly backwards.
+    layer3_mask_lethal_impact: bool = False
+    # Frames of NEUTRAL-input simulation past the macro's own duration. Impact
+    # deaths are committed at TAKEOFF: a 12-frame macro that steps off a ledge is
+    # survivable for all 12 of its frames and fatal ~30 frames later, so the
+    # macro-length horizon alone can never see it. ~40 frames covers a ~7-tile
+    # fall. 0 = macro horizon only.
+    layer3_lethal_impact_lookahead: int = 0
+    # Also extend the TAKEOFF-ARC gap mask below from mine-landing to
+    # lethal-impact landing. Same defect, same fix: the commitment machinery
+    # exists and is keyed on the wrong hazard.
+    takeoff_arc_lethal_impact: bool = False
+
     # v16 takeoff-arc gap mask (PRECISION): when GROUNDED, veto a jump action
     # whose counterfactual takeoff arc lands on a deadly mine at BOTH the
     # full-hold and tap extremes — i.e. jumping now (at any hold) falls into the
@@ -461,6 +624,18 @@ class EnvironmentConfig:
     # death-clawback) and lands in the same single-head reward stream that feeds
     # GAE, exactly like the (now-defunct) RND intrinsic. 0.0 = off (default).
     visitation_bonus_coef: float = 0.0
+
+    # v26 W4 topological ROOM novelty. CHAMBER_MAZE T3 sits at 0.71 over
+    # 3027-frame episodes and is the only bucket that times out. Every intrinsic
+    # available today (RND / NovelD / E3B / visitation / frontier) is STATE
+    # novelty, which saturates in a maze: by the time it matters the agent has
+    # stood in every corridor, so every cell is stale and the bonus is uniformly
+    # near zero. What it does not know is the ORDER — which room to enter next.
+    # This partitions the reachable space into rooms (see region_novelty.py) and
+    # pays a flat bonus for the FIRST entry to each room per episode, so a room
+    # stays novel until entered no matter how stale the corridor to it is.
+    # Added post-clawback in the same slot as the visitation bonus. 0.0 = off.
+    region_novelty_coef: float = 0.0
 
     # v17 P2: make the visitation bonus d*-DIRECTED. When True, each cell's
     # count-based novelty is scaled by max(VISIT_DIRECTED_FLOOR, 1 - d*_norm),

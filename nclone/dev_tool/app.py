@@ -13,7 +13,7 @@ from typing import List, Optional
 
 import pygame
 
-from . import controls
+from . import controls, layout
 from .controls import ACTION, FIELD, HEADER, STATUS, TOGGLE, Row
 from .generators import GeneratorBrowser
 from .loaders import (
@@ -45,6 +45,20 @@ class DevToolApp:
         self.panel = DevPanel() if self.use_panel else None
         self.focused_field: Optional[str] = None
         self.field_buffer: str = ""
+
+        # Optional live 3D view of the same sim, blitted into a reserved strip.
+        self.panel3d = None
+        if getattr(args, "render3d", False) and not self.headless:
+            try:
+                from ..render3d.devpanel import Render3DPanel
+
+                surf = pygame.display.get_surface()
+                h = surf.get_height() if surf else 600
+                self.panel3d = Render3DPanel(
+                    int(args.render3d_width), h,
+                    fpv=getattr(args, "render3d_fpv", False))
+            except Exception as exc:  # noqa: BLE001 - keep the dev tool usable
+                print(f"3D panel unavailable: {exc}")
 
         # step-on-input state
         self.input_sequence: List[int] = []
@@ -137,6 +151,16 @@ class DevToolApp:
     def source_prev(self):
         self.map_source.retreat(self.env)
 
+    def toggle_mirror(self):
+        """Horizontally mirror the loaded level (tests ``mirror_map_data``).
+
+        The mirror is involutive, so pressing this again restores the original
+        level exactly; it also stays applied to levels loaded afterwards until
+        toggled off.
+        """
+        if not self.map_source.toggle_mirror(self.env):
+            print("Mirror: no map data loaded yet")
+
     def scan_generators(self):
         if isinstance(self.map_source, GeneratorSource):
             self.map_source.browser.scan_all()
@@ -187,6 +211,9 @@ class DevToolApp:
         rows.append(Row(ACTION, "Next", "G", pygame.K_g, on_activate=self.source_next))
         rows.append(Row(ACTION, "Prev", "", None, on_activate=self.source_prev))
         rows.append(Row(ACTION, "Reset / regen", "R", pygame.K_r, on_activate=self.reset_current))
+        rows.append(Row(TOGGLE, "Mirror (H-flip)", "O", pygame.K_o,
+                        get_state=lambda: self.map_source.mirrored,
+                        on_activate=self.toggle_mirror))
 
         if isinstance(self.map_source, GeneratorSource):
             rows.append(Row(FIELD, "Seed", get_value=lambda: str(self.map_source.browser.seed),
@@ -240,6 +267,10 @@ class DevToolApp:
                     if row.kind != FIELD:
                         self.focused_field = None
                     row.on_activate()
+            elif event.type == pygame.MOUSEWHEEL and self.panel:
+                # Wheel-up (+y) reveals content above, i.e. a smaller offset.
+                if self.panel.contains(pygame.mouse.get_pos()):
+                    self.panel.scroll_by(-event.y * layout.SCROLL_STEP)
             elif event.type == pygame.KEYUP:
                 self._keys_held.discard(event.key)
             elif event.type == pygame.KEYDOWN:
@@ -257,6 +288,12 @@ class DevToolApp:
                 self.field_buffer = self.field_buffer[:-1]
             elif event.unicode and event.unicode.isdigit():
                 self.field_buffer += event.unicode
+            return
+
+        # Panel scrolling (keyboard alternative to the mouse wheel).
+        if self.panel is not None and event.key in (pygame.K_PAGEUP, pygame.K_PAGEDOWN):
+            step = layout.SCROLL_STEP * 3
+            self.panel.scroll_by(-step if event.key == pygame.K_PAGEUP else step)
             return
 
         # Panel hotkeys (toggles / actions).
@@ -386,9 +423,21 @@ class DevToolApp:
             self.env._benchmark_hud_lines = None
 
         self.env.render()
+        screen = pygame.display.get_surface()
+        if self.panel3d is not None and screen is not None:
+            try:
+                pw = self.env.nplay_headless.sim_renderer.panel_width
+                self.panel3d.resize(self.panel3d.w, screen.get_height())
+                surf = self.panel3d.render(self.env.nplay_headless.sim)
+                screen.blit(surf, (screen.get_width() - pw, 0))
+            except Exception as exc:  # noqa: BLE001 - keep the dev tool usable
+                print(f"3D panel render error: {exc}")
+                self.panel3d.release()
+                self.panel3d = None
         if self.panel is not None:
-            screen = pygame.display.get_surface()
             self.panel.draw(screen, rows, self.focused_field, self.field_buffer)
+            pygame.display.flip()
+        elif self.panel3d is not None:
             pygame.display.flip()
         if clock is not None:
             clock.tick(60)
