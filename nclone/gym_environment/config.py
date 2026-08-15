@@ -89,6 +89,19 @@ class ReachabilityConfig:
     # levels).  Default False: opt-in per rollout so existing training dynamics
     # are unchanged until validated.  See value_function/lattice_distance.py.
     use_lattice_potential: bool = False
+    # Production global navigation potential.  Uses a seedless, goal-seeded
+    # physics-cost flood as the primary source, with locked-door phases and
+    # directional one-way edges.  The surface lattice is optional and cache-only:
+    # it is consulted only when the global field cannot price the spawn, so an env
+    # reset never starts unbounded arc enumeration.
+    use_global_potential: bool = False
+    global_one_way: bool = True
+    global_door_aware: bool = True
+    # Opt-in until the training A/B clears the variance gate. Offline replay
+    # improves airborne progress agreement but increases |F| variance.
+    global_airborne_projection: bool = False
+    global_lattice_fallback: bool = True
+    global_lattice_max_nodes: int = 18_000
     # When True, use the CHEAP mine-aware free-space grid cost-to-go as the
     # reward potential DIRECTLY, skipping the (often infeasible) surface-lattice
     # build entirely -- the surface lattice can take seconds-to-minutes/level on

@@ -1300,6 +1300,15 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             "terminal_impact": self.nplay_headless.get_ninja_terminal_impact(),
             "exit_switch_pos": exit_switch_pos,
             "exit_door_pos": exit_door_pos,
+            "global_potential_source": str(
+                getattr(self, "_global_potential_source_kind", "disabled")
+            ),
+            # Both None unless THIS episode built its global source (a level
+            # change). ``build_ms`` is what the reset actually paid; a cache miss
+            # after the offline precompute is the P3 pre-flight's failure mode
+            # and is invisible in the source label alone.
+            "global_potential_build_ms": getattr(self, "_global_build_ms", None),
+            "global_potential_cache_hit": getattr(self, "_global_cache_hit", None),
             # CRITICAL: Include switch_activated for PBRS visualization and waypoint phase
             # This must be in base info dict (not just _extend_info_hook) because it's
             # accessed within _build_episode_info itself for waypoint phase selection

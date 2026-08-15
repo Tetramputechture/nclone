@@ -515,6 +515,14 @@ class AirborneCostField:
             if self._position_is_lethal(x, y) or self._is_solid_cell(cx, cy):
                 return float("inf")
             return self._nearest_free_value(cx, cy, f)
+        route_free = getattr(fs, "_route_free", None)
+        if route_free is not None and not route_free[cx, cy]:
+            # Occupancy/routing split (fs11): this position is survivable under
+            # the true 14px kill test, but its cell overlaps the conservative
+            # 20px route-clearance band. Price the position from a neighbouring
+            # hard-route value; never invoke the mine-soft rescue, which would
+            # turn an occupancy recovery into a route through the mine band.
+            return self._nearest_free_value(cx, cy, f)
         soft = self._soft_field_for(d_star, goal)
         if soft is None:
             return float("inf")

@@ -411,11 +411,12 @@ _LETHAL_FALL_PENALTY = 0.0
 # across restarts). The built grids are read-only after construction, so sharing
 # array references across instances on a mem-cache hit is safe.
 # Bump _FS_CACHE_VERSION if _build's output semantics change.
-_FS_CACHE_VERSION = "fs10"  # bumped: locked_doors, _threat_mul and the directional edge masks joined the cached state
+_FS_CACHE_VERSION = "fs11"  # occupancy uses true 14px mine radius; routing keeps conservative 20px clearance
 _FS_STATE_ATTRS = (
     "available", "switch", "exit", "_d_switch", "_d_exit",
     "_d_max_switch", "_d_max_exit", "_deadly", "exit_cost_at_switch",
-    "_free", "_mden", "_block_r", "_block_u", "_block_dr", "_block_ur",
+    "_free", "_route_free", "_mden",
+    "_block_r", "_block_u", "_block_dr", "_block_ur",
     # Physics-cost mode only (None in geometric mode); see _build_climb_fields.
     "_floor_rise", "_wall_adj",
     # Wall-launch arc edges, CSR keyed by landing cell; see _build_arc_edges.
@@ -438,6 +439,24 @@ _FS_STATE_ATTRS = (
 )
 _FS_MEM_CACHE: "OrderedDict[str, dict]" = OrderedDict()
 _FS_MEM_CAP = int(os.environ.get("NCLONE_FREESPACE_MEM_CAP", "256"))  # v14 worker-RSS audit
+
+# Process-wide count of LIVE field builds (both caches missed). A caller that
+# constructs several fields at once -- the door-aware source builds a base plus
+# one leg per necessary door -- can diff this across its own construction and
+# learn whether the whole thing was served from cache. Per-instance
+# ``cache_tier`` only describes the last field built, which is not the same
+# question and reads "disk" for a source whose legs were all computed live.
+_FS_LIVE_BUILDS = 0
+
+
+def live_build_count() -> int:
+    """Number of live (cache-missing) free-space builds in this process."""
+    return _FS_LIVE_BUILDS
+
+
+def _note_live_build() -> None:
+    global _FS_LIVE_BUILDS
+    _FS_LIVE_BUILDS += 1
 
 
 _SUBNODE_LUT: Optional[np.ndarray] = None
@@ -537,7 +556,8 @@ def _fs_cache_key(map_data: List[int], mine_hard: bool = False,
                   physics_cost: bool = False,
                   doors: str = "open",
                   threat_occupancy: bool = False,
-                  one_way: bool = False) -> str:
+                  one_way: bool = False,
+                  mine_split_topology: bool = False) -> str:
     h = hashlib.md5()
     h.update(_FS_CACHE_VERSION.encode())
     h.update(_native_fingerprint().encode())
@@ -545,7 +565,10 @@ def _fs_cache_key(map_data: List[int], mine_hard: bool = False,
     # ``mine_hard`` selects the mine-FAITHFUL variant (deadly-mine cells cut from
     # the free mask, so the field routes AROUND mines instead of soft-costing
     # through them); it is a distinct field, so it must key distinctly.
-    h.update(repr((_CELL, _W, _H, _MINE_KILL, _MINE_SOFT_K, bool(mine_hard))).encode())
+    h.update(repr((
+        _CELL, _W, _H, _MINE_KILL, _MINE_SOFT_K, bool(mine_hard),
+        bool(mine_split_topology),
+    )).encode())
     # ``physics_cost`` swaps the edge-cost model (frames, anisotropic) for the
     # geometric one (grid units, isotropic). Different units AND different
     # ordering, so it must key distinctly; the tuning constants key too, so a
@@ -599,6 +622,14 @@ class FreeSpaceDistanceSource:
     _block_dr_neg: Optional[np.ndarray] = None
     _block_ur_neg: Optional[np.ndarray] = None
 
+    #: Which tier of :meth:`_build_cached` served this instance -- ``"mem"``,
+    #: ``"disk"`` or ``"build"``.  Read by the training-side global-potential
+    #: telemetry to distinguish "the precompute warmed this level" from "an env
+    #: worker paid for a full Dijkstra at reset", which look identical in every
+    #: other metric.  ``"build"`` is the safe default: an instance made with
+    #: ``__new__`` never consulted a cache.
+    cache_tier: str = "build"
+
     # Class-level defaults for the BUILD-MODE flags, for the same reason: an
     # instance made with ``__new__`` never runs ``__init__``, and ``_build``
     # reads every one of these.  Which one raises first depends on the MAP --
@@ -613,6 +644,7 @@ class FreeSpaceDistanceSource:
     # a ``__new__`` instance was never configured, and every one of them is
     # opt-in.
     _mine_hard: bool = False
+    _mine_split_topology: bool = False
     _physics_cost: bool = False
     _threat_occupancy: bool = False
     _one_way: bool = False
@@ -631,6 +663,7 @@ class FreeSpaceDistanceSource:
     _threat_mul: Optional[np.ndarray] = None
     _floor_rise: Optional[np.ndarray] = None
     _wall_adj: Optional[np.ndarray] = None
+    _route_free: Optional[np.ndarray] = None
     _d_switch: Optional[np.ndarray] = None
     _d_exit: Optional[np.ndarray] = None
     _d_max_switch = 1.0
@@ -644,13 +677,18 @@ class FreeSpaceDistanceSource:
                  mine_hard: bool = False, physics_cost: Optional[bool] = None,
                  doors: str = "open",
                  threat_occupancy: Optional[bool] = None,
-                 one_way: Optional[bool] = None):
+                 one_way: Optional[bool] = None,
+                 mine_split_topology: bool = False):
         self.available = False
         # Mine-FAITHFUL mode (v24, for the POLICY observation): cut deadly-mine
         # cells from the free mask so the cost-to-go / nav gradient the policy
         # sees routes AROUND mines. Default False keeps the legacy mine-SOFT
         # field (mines traversable at ~9x cost) that every existing caller uses.
         self._mine_hard = bool(mine_hard)
+        # New production-global semantics only. Legacy mine_hard callers keep the
+        # historical 20px node cut until explicitly opted in; the global source
+        # separates true 14px occupancy from conservative 20px routing.
+        self._mine_split_topology = bool(mine_split_topology)
         # PHYSICS cost model (frames, anisotropic) instead of the legacy
         # geometric one (grid units, isotropic). Opt-in per instance; the env var
         # flips the process-wide default so a training run can A/B it without
@@ -738,6 +776,7 @@ class FreeSpaceDistanceSource:
         # so they must always exist as attributes).
         self._floor_rise: Optional[np.ndarray] = None
         self._wall_adj: Optional[np.ndarray] = None
+        self._route_free: Optional[np.ndarray] = None
         self.switch: Optional[Tuple[float, float]] = None
         self.exit: Optional[Tuple[float, float]] = None
         self._d_switch: Optional[np.ndarray] = None
@@ -801,8 +840,10 @@ class FreeSpaceDistanceSource:
         try:
             key = _fs_cache_key(map_data, self._mine_hard, self._physics_cost,
                                 self._doors, self._threat_occupancy,
-                                self._one_way)
+                                self._one_way, self._mine_split_topology)
         except Exception:
+            self.cache_tier = "build"
+            _note_live_build()
             self._build(map_data)
             self._reflect_state_if_mirrored()
             return
@@ -810,6 +851,7 @@ class FreeSpaceDistanceSource:
         cached = _FS_MEM_CACHE.get(key)
         if cached is not None:
             _FS_MEM_CACHE.move_to_end(key)
+            self.cache_tier = "mem"
             self._restore_state(cached)
             self._reflect_state_if_mirrored()
             return
@@ -820,6 +862,7 @@ class FreeSpaceDistanceSource:
             try:
                 with open(path, "rb") as f:
                     state = pickle.load(f)
+                self.cache_tier = "disk"
                 self._restore_state(state)
                 self._mem_put(key, state)
                 self._reflect_state_if_mirrored()
@@ -827,6 +870,8 @@ class FreeSpaceDistanceSource:
             except Exception:
                 pass  # corrupt/partial cache file -> rebuild
 
+        self.cache_tier = "build"
+        _note_live_build()
         self._build(map_data)
 
         # Capture BEFORE reflecting: the cache holds the canonical state, which
@@ -875,6 +920,7 @@ class FreeSpaceDistanceSource:
         self._d_switch = _mirror_grid_x(self._d_switch, np.inf)
         self._d_exit = _mirror_grid_x(self._d_exit, np.inf)
         self._free = _mirror_grid_x(self._free, False)
+        self._route_free = _mirror_grid_x(self._route_free, False)
         self._mden = _mirror_grid_x(self._mden, 0.0)
 
     @staticmethod
@@ -958,26 +1004,37 @@ class FreeSpaceDistanceSource:
                    sub_x[:, None], sub_y[None, :]]
         free &= in_x[:, None] & in_y[None, :]
 
-        # Per-cell deadly-mine density: how many deadly kill discs cover the cell
-        # centre. Vectorised as a stack of disc tests over the cell-centre grid.
+        # Per-cell conservative ROUTING density: how many deadly kill discs,
+        # dilated by one 6px cell, cover the cell centre. This remains the route
+        # clearance rule; it is intentionally NOT the occupancy rule below.
         mden = np.zeros((_W, _H), np.float32)
+        lethal = np.zeros((_W, _H), bool)
         if deadly:
             r2 = (_MINE_KILL + _CELL) ** 2
             mxy = np.asarray(deadly, dtype=np.float64)
             dx = cxs[:, None, None] - mxy[None, None, :, 0]
             dy = cys[None, :, None] - mxy[None, None, :, 1]
-            mden = ((dx * dx + dy * dy) <= r2).sum(axis=2).astype(np.float32)
-        # Mine-FAITHFUL variant (v24 policy obs): CUT every cell whose centre lies
-        # within a deadly-mine kill disc from the free mask, so backward Dijkstra
-        # routes strictly AROUND mines and the gradient the policy follows never
-        # points through a kill zone. (Legacy mine-SOFT mode leaves these cells
-        # free at ~9x cost, which is exactly what steered the agent into mines.)
-        # On a mine-severed level the goals become unreachable -> available=False,
-        # and the obs falls back to the Euclidean field (same as a failed build);
-        # the REWARD path still uses the 2px MineThreadingDistanceSource there.
-        if self._mine_hard:
+            dist2 = dx * dx + dy * dy
+            mden = (dist2 <= r2).sum(axis=2).astype(np.float32)
+            lethal = (dist2 < (_MINE_KILL * _MINE_KILL)).any(axis=2)
+        # OCCUPANCY and ROUTING answer different questions. A ninja centre more
+        # than 14px from every deadly mine can genuinely be there, even when its
+        # 6px cell overlaps the conservative 20px routing band. The old mask used
+        # that routing band as occupancy and erased 7,418 verified-demo frames.
+        if self._mine_hard and self._mine_split_topology:
+            free = free & ~lethal
+            # Arc validation keeps the conservative centre-cell exclusion. Grid
+            # steps use the directional edge overlay below so occupancy remains
+            # distinct from routing.
+            route_free = free & (mden == 0.0)
+        elif self._mine_hard:
+            # Backward-compatible behavior for existing policy observations,
+            # lattice airborne fields and audit baselines.
             free = free & (mden == 0.0)
-        self._free, self._mden = free, mden
+            route_free = free
+        else:
+            route_free = free
+        self._free, self._route_free, self._mden = free, route_free, mden
 
         # Segment-aware blocked-edge masks: for every step between two free cells,
         # precompute whether the cell-center-to-cell-center move crosses a SOLID
@@ -990,6 +1047,8 @@ class FreeSpaceDistanceSource:
         self._build_blocked_edges(tiles, free)
         if self._doors != "open" and self.locked_doors:
             self._apply_door_edges(free)
+        if self._mine_hard and self._mine_split_topology and deadly:
+            self._apply_mine_route_edges(free, deadly)
         if self._one_way and self.one_ways:
             # After the doors: the negative masks are copies of the positive
             # ones, so every barrier already applied has to be in place first.
@@ -1217,6 +1276,77 @@ class FreeSpaceDistanceSource:
                             getattr(self, pos_attr)[ix, iy] = True
                         elif dot > 0:
                             getattr(self, neg_attr)[ix, iy] = True
+
+    def _apply_mine_route_edges(
+        self, free: np.ndarray, deadly: List[Tuple[float, float]]
+    ) -> None:
+        """Block grid transitions intersecting the conservative mine envelope.
+
+        ``free`` already answers occupancy using the exact 14px kill radius.
+        Routing remains deliberately more conservative: a transition is removed
+        when its centre-line segment comes within ``14px + one cell`` of a deadly
+        mine. This keeps survivable near-mine positions queryable without letting
+        Dijkstra use them as a shortcut through a partly lethal cell.
+        """
+        if not deadly:
+            return
+        route_radius = _MINE_KILL + _CELL
+        route_sq = route_radius * route_radius
+        half = _CELL / 2.0
+        pad = int(route_radius / _CELL) + 2
+        directions = (
+            ("_block_r", 1, 0),
+            ("_block_u", 0, 1),
+            ("_block_dr", 1, 1),
+            ("_block_ur", 1, -1),
+        )
+        touched = set()
+
+        for mx, my in deadly:
+            gx, gy = int(mx / _CELL), int(my / _CELL)
+            for ix in range(max(0, gx - pad), min(_W, gx + pad + 1)):
+                ax = ix * _CELL + half
+                for iy in range(max(0, gy - pad), min(_H, gy + pad + 1)):
+                    if not free[ix, iy]:
+                        continue
+                    ay = iy * _CELL + half
+                    for attr, dx, dy in directions:
+                        jx, jy = ix + dx, iy + dy
+                        if not (
+                            0 <= jx < _W and 0 <= jy < _H
+                            and free[jx, jy]
+                        ):
+                            continue
+                        bx, by = ax + dx * _CELL, ay + dy * _CELL
+                        vx, vy = bx - ax, by - ay
+                        denom = vx * vx + vy * vy
+                        t = (
+                            ((mx - ax) * vx + (my - ay) * vy) / denom
+                            if denom > 0.0 else 0.0
+                        )
+                        t = min(1.0, max(0.0, t))
+                        qx, qy = ax + t * vx, ay + t * vy
+                        if (qx - mx) ** 2 + (qy - my) ** 2 <= route_sq:
+                            getattr(self, attr)[ix, iy] = True
+                            touched.add((ix, iy))
+                            touched.add((jx, jy))
+
+        # An orthogonal mine barrier must also block squeezing diagonally around
+        # its endpoint, matching tile/door corner semantics.
+        for ix, iy in touched:
+            if ix + 1 < _W and iy + 1 < _H and free[ix + 1, iy + 1]:
+                if (
+                    self._block_r[ix, iy] or self._block_r[ix, iy + 1]
+                    or self._block_u[ix, iy] or self._block_u[ix + 1, iy]
+                ):
+                    self._block_dr[ix, iy] = True
+            if ix + 1 < _W and iy - 1 >= 0 and free[ix + 1, iy - 1]:
+                if (
+                    self._block_r[ix, iy - 1] or self._block_r[ix, iy]
+                    or self._block_u[ix, iy - 1]
+                    or self._block_u[ix + 1, iy - 1]
+                ):
+                    self._block_ur[ix, iy] = True
 
     def _apply_door_edges(self, free: np.ndarray) -> None:
         """OR closed locked-door barriers into the four blocked-edge masks.
@@ -1511,7 +1641,11 @@ class FreeSpaceDistanceSource:
         self._arc_rev_start = None
         self._arc_rev_src = None
         self._arc_rev_cost = None
-        free = self._free
+        free = (
+            self._route_free
+            if self._mine_hard and self._mine_split_topology
+            else self._free
+        )
         wall = self._wall_adj
         if not _ARC_EDGES or free is None:
             return

@@ -58,6 +58,7 @@ class DoorAwareFreeSpaceField:
 
     def __init__(self, map_data, *, mine_hard: bool = True,
                  physics_cost: bool = True, one_way: Optional[bool] = None,
+                 mine_split_topology: bool = False,
                  name: Optional[str] = None):
         self.available = False
         self.door_aware = False
@@ -74,7 +75,9 @@ class DoorAwareFreeSpaceField:
         try:
             self._base = FreeSpaceDistanceSource(
                 list(map_data), mine_hard=mine_hard, physics_cost=physics_cost,
-                one_way=one_way, name=name, doors="open")
+                one_way=one_way,
+                mine_split_topology=mine_split_topology,
+                name=name, doors="open")
         except Exception as exc:
             self.fallback_reason = f"base build failed: {type(exc).__name__}: {exc}"
             return
@@ -91,6 +94,7 @@ class DoorAwareFreeSpaceField:
             from .free_space_door_plan import solve
             plan, oracle = solve(map_data, mine_hard=mine_hard,
                                  physics_cost=physics_cost, one_way=one_way,
+                                 mine_split_topology=mine_split_topology,
                                  name=name)
         except Exception as exc:
             self.fallback_reason = f"solver failed: {type(exc).__name__}: {exc}"
@@ -165,6 +169,31 @@ class DoorAwareFreeSpaceField:
         n_open = sum(1 for d in self.necessary_order if d in idx)
         return n_open if n_open < len(self.necessary_order) else None
 
+    def spawn_finite(self, spawn_x: float, spawn_y: float) -> bool:
+        """Whether the phase-0 cost-to-completion is usable at the spawn."""
+        return bool(np.isfinite(
+            self.cost_to_completion(float(spawn_x), float(spawn_y), False, ())
+        ))
+
+    def cost_to_go(self, x: float, y: float, switch_activated: bool,
+                   open_door_indices: Optional[Sequence[int]] = None
+                   ) -> float:
+        """DistanceSource-compatible phase cost.
+
+        While a necessary locked-door leg is active, both reward slots must use
+        the same leg basis; mixing an exit-only field with a door-leg field would
+        make ``_potential_substituted`` claim continuity it does not have.
+        """
+        ph = self.door_phase(open_door_indices)
+        if ph is not None:
+            return self.cost_to_completion(
+                x, y, switch_activated, open_door_indices
+            )
+        src = getattr(self, "_final", None) or self._base
+        if src is None:
+            return float("inf")
+        return float(src.cost_to_go(x, y, switch_activated))
+
     def cost_to_completion(self, x: float, y: float, switch_activated: bool,
                            open_door_indices: Optional[Sequence[int]] = None
                            ) -> float:
@@ -192,6 +221,43 @@ class DoorAwareFreeSpaceField:
         # door: each leg is measured to its own switch, and without this the
         # value would reset to ~0 every time one opened.
         return v + self._remaining_after(ph)
+
+    _NAV_DIRS = (
+        (1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0),
+        (0.70710678, 0.70710678), (0.70710678, -0.70710678),
+        (-0.70710678, 0.70710678), (-0.70710678, -0.70710678),
+    )
+
+    def nav_feature(self, x: float, y: float, switch_activated: bool,
+                    step_px: float = 12.0,
+                    open_door_indices: Optional[Sequence[int]] = None
+                    ) -> np.ndarray:
+        """Four-value steepest-descent hint over the live door phase."""
+        c0 = self.cost_to_completion(
+            x, y, switch_activated, open_door_indices
+        )
+        if not np.isfinite(c0):
+            return np.zeros(4, dtype=np.float32)
+        best, direction = c0, (0.0, 0.0)
+        for ux, uy in self._NAV_DIRS:
+            c = self.cost_to_completion(
+                x + ux * step_px,
+                y + uy * step_px,
+                switch_activated,
+                open_door_indices,
+            )
+            if np.isfinite(c) and c < best:
+                best, direction = c, (ux, uy)
+        ph = self.door_phase(open_door_indices)
+        if ph is None:
+            dmax = self._final_potential_max()
+        else:
+            dmax = self._leg_max[ph] + self._remaining_after(ph)
+        return np.asarray(
+            [direction[0], direction[1], min(c0 / max(dmax, 1.0), 1.0),
+             1.0 if switch_activated else 0.0],
+            dtype=np.float32,
+        )
 
     #: Snap radius in cells, matching the surface lookup's tolerance.
     _SNAP_CELLS = 3

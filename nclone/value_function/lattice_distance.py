@@ -70,9 +70,23 @@ class LatticeDistanceSource:
     """Per-level holder of the lattice ``d*`` exposing a position→cost-to-go map.
 
     Construction is best-effort: any failure (unsupported entities, enumeration
-    error, unreachable goals) leaves ``available == False`` so the caller cleanly
-    falls back to the geometric A* — the level still trains, just without the
-    physics-aware potential.
+    error, unreachable goals) is swallowed, and the level still trains — just
+    without the physics-aware potential.
+
+    ``available`` IS NOT A "THE PLANNER BUILT" FLAG. It is the union of the
+    lattice and the airborne fallback::
+
+        self.available = bool(self.lattice_available or self._air is not None)
+
+    so a level whose ``precompute`` RAISED still reports ``available is True``
+    and silently runs on the degraded air field. Measured 2026-08-15 on four
+    levels that raise ``Switch unreachable``: all four had ``available=True``
+    with ``lattice_available=False``. An offline audit that gated on
+    ``available`` therefore recorded 22 unbuildable levels as healthy and sent
+    the investigation after a non-existent cache-write bug.
+
+    **Check ``lattice_available`` whenever the question is "did the lattice
+    build".** Use ``available`` only for "is there any potential at all".
     """
 
     # Class-level defaults for the airborne extension.  Tests (and any other

@@ -59,6 +59,7 @@ from .route_extraction import (
     find_nearest_start_node,
 )
 from .route_pbrs import RoutePBRS, RouteState, create_route_pbrs
+from .global_potential import GlobalPotentialSource
 
 __all__ = [
     # Physics interface
@@ -73,6 +74,7 @@ __all__ = [
     "RoutePBRS",
     "RouteState",
     "create_route_pbrs",
+    "GlobalPotentialSource",
     # Route extraction (new)
     "ArcTarget",
     "extract_route",

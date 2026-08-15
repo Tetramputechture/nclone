@@ -224,10 +224,13 @@ class FreeSpaceDoorOracle:
 
     def __init__(self, map_data, *, mine_hard: bool = True,
                  physics_cost: bool = True, one_way: Optional[bool] = None,
+                 mine_split_topology: bool = False,
                  name: Optional[str] = None, reach_on_soft_mask: bool = False):
         self._map_data = list(map_data)
         self._kw = dict(mine_hard=mine_hard, physics_cost=physics_cost,
-                        one_way=one_way, name=name)
+                        one_way=one_way,
+                        mine_split_topology=mine_split_topology,
+                        name=name)
         # Reachability asks an OCCUPANCY question, so it SHOULD run on the
         # undilated mask -- but doing that alone is a net regression and the
         # option is off by default. See ``_reach_config`` for the measurement.
@@ -322,7 +325,9 @@ class FreeSpaceDoorOracle:
         rc = self._reach_config(cfg)
         if rc._free is None:
             return False
-        return _touches(reach, rc._free, x, y, _CONTACT.get(kind, _CONTACT["switch"]))
+        return _touches(
+            reach, rc._free, x, y, _CONTACT.get(kind, _CONTACT["switch"])
+        )
 
     def leg_field(self, cfg: FreeSpaceDistanceSource, x: float, y: float,
                   kind: str) -> np.ndarray:
@@ -332,7 +337,9 @@ class FreeSpaceDoorOracle:
 
 
 def solve(map_data, *, mine_hard: bool = True, physics_cost: bool = True,
-          one_way: Optional[bool] = None, name: Optional[str] = None):
+          one_way: Optional[bool] = None,
+          mine_split_topology: bool = False,
+          name: Optional[str] = None):
     """``(DoorPlan, FreeSpaceDoorOracle)`` for a level, or ``(None, None)``.
 
     ``None`` when the level has no locked doors, no goals, or will not build —
@@ -342,6 +349,7 @@ def solve(map_data, *, mine_hard: bool = True, physics_cost: bool = True,
 
     oracle = FreeSpaceDoorOracle(map_data, mine_hard=mine_hard,
                                  physics_cost=physics_cost, one_way=one_way,
+                                 mine_split_topology=mine_split_topology,
                                  name=name)
     base = oracle.config(frozenset())
     if not base.available or not base.locked_doors:

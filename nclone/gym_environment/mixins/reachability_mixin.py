@@ -71,6 +71,20 @@ class ReachabilityMixin:
         self._lattice_map_name = None
         self._use_lattice_this_episode = False
         self._lattice_episode_decided = False
+        # Seedless production global potential.  Unlike the surface lattice this
+        # is cheap enough to build first on every level; any lattice fallback is
+        # cache-only and owned by GlobalPotentialSource.
+        self._global_potential_source = None
+        self._global_potential_map_name = None
+        self._use_global_this_episode = False
+        self._global_episode_decided = False
+        self._global_potential_source_kind = "disabled"
+        # Construction telemetry for the episode's global source. Both stay None
+        # on an episode that REUSED the previous source (same map), so the
+        # training-side aggregate is a build-cost distribution rather than a
+        # distribution diluted by the resets that paid nothing.
+        self._global_build_ms = None
+        self._global_cache_hit = None
         # Mine-threading potential: the FAITHFUL fallback for mine-saturated levels
         # where the surface lattice is severed. Hard 14px mine constraint + tile-soft
         # cost over a fine 3px grid -> connected, mine-faithful cost-to-go (the route
@@ -135,6 +149,13 @@ class ReachabilityMixin:
         # Re-decide lattice-vs-geometric on the next reachability call (the
         # source itself is rebuilt only when the map identity changes).
         self._lattice_episode_decided = False
+        self._global_episode_decided = False
+        self._use_global_this_episode = False
+        self._global_potential_source_kind = "disabled"
+        # Cleared per episode: a non-None value means THIS episode paid for a
+        # source build (see the field declarations in the constructor).
+        self._global_build_ms = None
+        self._global_cache_hit = None
         self._minethreading_episode_decided = False
         self._freespace_episode_decided = False
         self._potential_substituted = False
@@ -279,6 +300,30 @@ class ReachabilityMixin:
         except Exception:
             return None
 
+    def _build_global_source(self, reach_cfg):
+        """Build the production seedless global potential for the current map."""
+        try:
+            nplay = getattr(self, "nplay_headless", None)
+            map_data = getattr(nplay, "current_map_data", None)
+            if not map_data:
+                return None
+            from ...value_function.global_potential import GlobalPotentialSource
+
+            return GlobalPotentialSource(
+                map_data,
+                name=self._global_potential_map_name,
+                one_way=bool(getattr(reach_cfg, "global_one_way", True)),
+                door_aware=bool(getattr(reach_cfg, "global_door_aware", True)),
+                lattice_fallback=bool(
+                    getattr(reach_cfg, "global_lattice_fallback", True)
+                ),
+                lattice_max_nodes=int(
+                    getattr(reach_cfg, "global_lattice_max_nodes", 18_000)
+                ),
+            )
+        except Exception:
+            return None
+
     def _maybe_substitute_lattice_distance(self, ninja_pos, switch_activated):
         """Replace the geometric HWM distances with the lattice d* cost-to-go.
 
@@ -294,6 +339,7 @@ class ReachabilityMixin:
         if reach_cfg is None:
             return
         want_reward = bool(getattr(reach_cfg, "use_lattice_potential", False))
+        want_global = bool(getattr(reach_cfg, "use_global_potential", False))
         want_obs = bool(getattr(reach_cfg, "expose_lattice_features", False))
         # The locked-door reward needs the door-dependency plan (which defines
         # "necessary"); building it requires the lattice source. So enable the
@@ -308,13 +354,79 @@ class ReachabilityMixin:
             getattr(reach_cfg, "use_free_space_potential", False)
             or getattr(reach_cfg, "use_jump_potential", False)
         )
-        if not (want_reward or want_obs or want_door_reward or want_free_space):
+        if not (
+            want_reward or want_global or want_obs
+            or want_door_reward or want_free_space
+        ):
             return
 
         # Substitution status is re-derived on every call; each commit path below
         # sets it back to True. When it stays False the raw per-phase A* distances
         # are live and the reward calculator applies its own continuity fallback.
         self._potential_substituted = False
+
+        if want_global:
+            map_name = getattr(
+                getattr(self, "map_loader", None), "current_map_name", None
+            )
+            if (
+                map_name != self._global_potential_map_name
+                or self._global_potential_source is None
+            ):
+                self._global_potential_map_name = map_name
+                self._global_potential_source = self._build_global_source(reach_cfg)
+                self._global_episode_decided = False
+                _built = self._global_potential_source
+                self._global_build_ms = (
+                    float(getattr(_built, "build_ms", 0.0))
+                    if _built is not None else None
+                )
+                self._global_cache_hit = (
+                    bool(getattr(_built, "cache_hit", False))
+                    if _built is not None else None
+                )
+
+            nx, ny = float(ninja_pos[0]), float(ninja_pos[1])
+            src = self._global_potential_source
+            if src is None:
+                self._use_global_this_episode = False
+                self._global_episode_decided = True
+                self._global_potential_source_kind = "unavailable"
+                return
+            if not self._global_episode_decided:
+                self._use_global_this_episode = bool(src.spawn_finite(nx, ny))
+                self._global_episode_decided = True
+            if not self._use_global_this_episode:
+                self._global_potential_source_kind = "severed"
+                return
+
+            open_door_indices = self._lattice_open_door_indices()
+            order = list(getattr(src, "necessary_order", ()) or ())
+            self._necessary_doors_open = sum(
+                1 for d in order if d in open_door_indices
+            )
+            c_sw = src.cost_to_completion(
+                nx, ny, False, open_door_indices
+            )
+            c_ex = src.cost_to_go(
+                nx, ny, True, open_door_indices
+            )
+            if np.isfinite(c_sw):
+                self._cached_switch_distance = float(c_sw)
+            if np.isfinite(c_ex):
+                self._cached_exit_distance = float(c_ex)
+            self._potential_substituted = bool(
+                np.isfinite(c_sw) and np.isfinite(c_ex)
+            )
+            self._global_potential_source_kind = str(
+                getattr(src, "source_kind", "global")
+            )
+            if self._potential_substituted:
+                self._maybe_ballistic_reevaluate(
+                    src, nx, ny, switch_activated,
+                    open_door_indices=open_door_indices,
+                )
+            return
 
         # Free-space-PRIMARY potential: skip the (often infeasible) surface-lattice
         # build entirely and take the reward distances straight from the cheap
@@ -504,7 +616,9 @@ class ReachabilityMixin:
             self._freespace_substitute(nx, ny, switch_activated, want_reward)
         )
 
-    def _maybe_ballistic_reevaluate(self, src, nx, ny, switch_activated) -> None:
+    def _maybe_ballistic_reevaluate(
+        self, src, nx, ny, switch_activated, open_door_indices=None
+    ) -> None:
         """Audit II P0-2 (--ballistic-air-potential): while AIRBORNE, evaluate
         the committed potential at the point where the CURRENT no-input arc
         actually lands, instead of at the ninja's air position (whose value is
@@ -524,7 +638,14 @@ class ReachabilityMixin:
         contact within horizon toward the border) keeps the standard values.
         """
         reach_cfg = getattr(getattr(self, "config", None), "reachability", None)
-        if not bool(getattr(reach_cfg, "ballistic_air_potential", False)):
+        global_projection = bool(
+            getattr(reach_cfg, "use_global_potential", False)
+            and getattr(reach_cfg, "global_airborne_projection", False)
+        )
+        if not (
+            bool(getattr(reach_cfg, "ballistic_air_potential", False))
+            or global_projection
+        ):
             return
         try:
             ninja = self.nplay_headless.sim.ninja
@@ -547,7 +668,24 @@ class ReachabilityMixin:
                 )
             from ..constants import GHOST_ARC_MAX_FRAMES
 
-            if bool(getattr(reach_cfg, "ballistic_air_best_arc", False)):
+            def _cost(px, py, activated):
+                try:
+                    if activated:
+                        return src.cost_to_go(
+                            px, py, True, open_door_indices
+                        )
+                    return src.cost_to_completion(
+                        px, py, False, open_door_indices
+                    )
+                except TypeError:
+                    if activated:
+                        return src.cost_to_go(px, py, True)
+                    return src.cost_to_completion(px, py, False)
+
+            if (
+                bool(getattr(reach_cfg, "ballistic_air_best_arc", False))
+                or global_projection
+            ):
                 # v13 best-arc: evaluate all three steering arcs and take the
                 # best SURVIVING landing per target (min finite cost). An arc
                 # is discarded if it ends in a deadly mine (class 3), never
@@ -557,7 +695,7 @@ class ReachabilityMixin:
                 best_sw = float("inf")
                 best_ex = float("inf")
                 for u in (-1, 0, 1):
-                    cls_, lx, ly, _nx2, _ny2, _tau, imp, thr, _cw, *_rest = proj.project(
+                    cls_, lx, ly, _nx2, _ny2, tau, imp, thr, _cw, *_rest = proj.project(
                         float(nx),
                         float(ny),
                         float(vx),
@@ -568,12 +706,17 @@ class ReachabilityMixin:
                     )
                     if cls_ in (3, 4) or (thr > 0.0 and imp > thr):
                         continue
-                    c_sw = src.cost_to_completion(float(lx), float(ly), False)
-                    c_ex = src.cost_to_go(float(lx), float(ly), True)
+                    c_sw = _cost(float(lx), float(ly), False)
+                    c_ex = _cost(float(lx), float(ly), True)
+                    # The production global potential prices the whole state:
+                    # two states with the same landing but different remaining
+                    # flight time must not be equal. Legacy ballistic flags keep
+                    # their previous landing-only semantics for clean A/Bs.
+                    flight = max(float(tau), 0.0) if global_projection else 0.0
                     if np.isfinite(c_sw):
-                        best_sw = min(best_sw, float(c_sw))
+                        best_sw = min(best_sw, flight + float(c_sw))
                     if np.isfinite(c_ex):
-                        best_ex = min(best_ex, float(c_ex))
+                        best_ex = min(best_ex, flight + float(c_ex))
                 if np.isfinite(best_sw):
                     self._cached_switch_distance = best_sw
                 if np.isfinite(best_ex):
@@ -582,15 +725,16 @@ class ReachabilityMixin:
                 # values, same degradation contract as the u=0 path below.
                 return
 
-            lx, ly, _cls, _tau = proj.project_landing(
+            lx, ly, _cls, tau = proj.project_landing(
                 float(nx), float(ny), float(vx), float(vy), jf, GHOST_ARC_MAX_FRAMES
             )
-            c_sw = src.cost_to_completion(float(lx), float(ly), False)
-            c_ex = src.cost_to_go(float(lx), float(ly), True)
+            c_sw = _cost(float(lx), float(ly), False)
+            c_ex = _cost(float(lx), float(ly), True)
+            flight = max(float(tau), 0.0) if global_projection else 0.0
             if np.isfinite(c_sw):
-                self._cached_switch_distance = float(c_sw)
+                self._cached_switch_distance = flight + float(c_sw)
             if np.isfinite(c_ex):
-                self._cached_exit_distance = float(c_ex)
+                self._cached_exit_distance = flight + float(c_ex)
         except Exception:
             # Never degrade the standard substitution over a projection issue.
             pass

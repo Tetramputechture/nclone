@@ -92,7 +92,7 @@ def _load_replay(path: str) -> Optional[Tuple[List[int], List[Tuple[int, int]]]]
 
 
 def _trace(map_data: List[int], inputs: Sequence[Tuple[int, int]]):
-    """Re-simulate a tape; ``(positions, switch_flags)`` up to the winning frame.
+    """Re-simulate a tape; position, phase and airborne flags through the win.
 
     Returns None unless the tape actually wins on the CURRENT simulator. The
     replay file's own success flag is not trusted — a stale or mis-encoded tape
@@ -106,17 +106,42 @@ def _trace(map_data: List[int], inputs: Sequence[Tuple[int, int]]):
     try:
         nph.load_map_from_map_data(map_data)
         nph.reset()
-        xs, sw = [], []
+        xs, sw, airborne, velocities, jump_remaining = [], [], [], [], []
         for hor, jump in inputs:
             x, y = nph.ninja_position()
             xs.append((float(x), float(y)))
             sw.append(bool(nph.exit_switch_activated()))
+            ninja = nph.sim.ninja
+            airborne.append(bool(getattr(ninja, "airborn", False)))
+            velocities.append(tuple(float(v) for v in nph.ninja_velocity()))
+            if (
+                getattr(ninja, "state", 4) == 3
+                and getattr(ninja, "jump_input_old", 0) != 0
+            ):
+                from ...constants.physics_constants import MAX_JUMP_DURATION
+                jf = max(
+                    0, MAX_JUMP_DURATION
+                    - int(getattr(ninja, "jump_duration", 0))
+                )
+            else:
+                jf = 0
+            jump_remaining.append(jf)
             nph.tick(hor, jump)
             if nph.ninja_has_won():
                 x, y = nph.ninja_position()
                 xs.append((float(x), float(y)))
                 sw.append(bool(nph.exit_switch_activated()))
-                return np.asarray(xs), np.asarray(sw)
+                ninja = nph.sim.ninja
+                airborne.append(bool(getattr(ninja, "airborn", False)))
+                velocities.append(tuple(float(v) for v in nph.ninja_velocity()))
+                jump_remaining.append(0)
+                return (
+                    np.asarray(xs),
+                    np.asarray(sw),
+                    np.asarray(airborne),
+                    np.asarray(velocities),
+                    np.asarray(jump_remaining),
+                )
         return None  # never won: no ground-truth time-to-go
     finally:
         try:
@@ -125,14 +150,37 @@ def _trace(map_data: List[int], inputs: Sequence[Tuple[int, int]]):
             pass
 
 
-def _score(src, pos: np.ndarray, sw: np.ndarray, gamma: float,
-           weight: float) -> Optional[Dict[str, float]]:
+def _score(src, pos: np.ndarray, sw: np.ndarray, airborne: np.ndarray,
+           velocities: np.ndarray, jump_remaining: np.ndarray,
+           gamma: float, weight: float, projector=None
+           ) -> Optional[Dict[str, float]]:
     """The four metrics for one field on one demo trajectory."""
-    cost = np.array(
-        [src.cost_to_completion(float(x), float(y), bool(s))
-         for (x, y), s in zip(pos, sw)],
-        dtype=np.float64,
-    )
+    costs = []
+    for i, ((x, y), phase) in enumerate(zip(pos, sw)):
+        direct = src.cost_to_completion(float(x), float(y), bool(phase))
+        if projector is None or not airborne[i]:
+            costs.append(direct)
+            continue
+        best = float("inf")
+        vx, vy = velocities[i]
+        for u in (-1, 0, 1):
+            cls_, lx, ly, _nx, _ny, tau, imp, threshold, _cw, *_ = (
+                projector.project(
+                    float(x), float(y), float(vx), float(vy), int(u),
+                    int(jump_remaining[i]), 180,
+                )
+            )
+            if cls_ in (3, 4) or (threshold > 0.0 and imp > threshold):
+                continue
+            landing = (
+                src.cost_to_go(float(lx), float(ly), True)
+                if phase
+                else src.cost_to_completion(float(lx), float(ly), False)
+            )
+            if np.isfinite(landing):
+                best = min(best, max(float(tau), 0.0) + float(landing))
+        costs.append(best if np.isfinite(best) else direct)
+    cost = np.asarray(costs, dtype=np.float64)
     finite = np.isfinite(cost)
     cover = float(finite.mean())
     if finite.sum() < 3:
@@ -147,6 +195,18 @@ def _score(src, pos: np.ndarray, sw: np.ndarray, gamma: float,
     step_ok = finite[:-1] & finite[1:]
     progress = (float((cost[1:][step_ok] < cost[:-1][step_ok]).mean())
                 if step_ok.any() else float("nan"))
+    improves = cost[1:] < cost[:-1]
+    # Boundary transitions belong to the airborne metric: takeoff/landing is
+    # exactly where a projected potential can differ from the static field.
+    air_steps = step_ok & (airborne[:-1] | airborne[1:])
+    ground_steps = step_ok & ~(airborne[:-1] | airborne[1:])
+    progress_air = (
+        float(improves[air_steps].mean()) if air_steps.any() else float("nan")
+    )
+    progress_ground = (
+        float(improves[ground_steps].mean())
+        if ground_steps.any() else float("nan")
+    )
 
     # Runtime normalisation: Phi = -clamp(cost / D0, 0, 1), D0 = spawn cost.
     d0 = cost[0] if np.isfinite(cost[0]) and cost[0] > 0 else np.nanmax(cost[finite])
@@ -156,8 +216,15 @@ def _score(src, pos: np.ndarray, sw: np.ndarray, gamma: float,
     f = weight * (gamma * phi[1:] - phi[:-1])
     f_std = float(np.std(f[step_ok])) if step_ok.any() else float("nan")
 
-    return {"rho": rho, "progress": progress, "f_std": f_std, "cover": cover,
-            "frames": float(len(cost))}
+    return {
+        "rho": rho,
+        "progress": progress,
+        "progress_air": progress_air,
+        "progress_ground": progress_ground,
+        "f_std": f_std,
+        "cover": cover,
+        "frames": float(len(cost)),
+    }
 
 
 def _variants(compare: str):
@@ -173,8 +240,47 @@ def _variants(compare: str):
         return [(f"air_k={k}", {"physics_cost": True}, {"_AIR_UNSUPPORTED_K": k})
                 for k in (0.0, 0.25, 0.5, 1.0, 2.0)] + [
             ("geometric", {"physics_cost": False}, {})]
+    if compare == "global":
+        return [
+            ("seedless", {
+                "physics_cost": True, "mine_hard": True, "one_way": False,
+            }, {}),
+            ("global", {"_source": "global"}, {}),
+        ]
+    if compare == "projection":
+        return [
+            ("global-static", {
+                "_source": "global", "_projection": False,
+            }, {}),
+            ("global-projected", {
+                "_source": "global", "_projection": True,
+            }, {}),
+        ]
     return [("geometric", {"physics_cost": False}, {}),
             ("physics", {"physics_cost": True}, {})]
+
+
+def _projector(map_data):
+    """Native live-state projector with the map's initially deadly mines."""
+    try:
+        import nclone_native
+
+        if not hasattr(nclone_native, "TrajectoryProjector"):
+            return None
+        proj = nclone_native.TrajectoryProjector.load(list(map_data))
+        sim = nclone_native.Simulator.load(list(map_data))
+        xs, ys = [], []
+        for e in sim.get_state().entities:
+            if (
+                e.entity_type in (1, 21)
+                and int(getattr(e, "state", 1)) == 0
+            ):
+                xs.append(float(e.x))
+                ys.append(float(e.y))
+        proj.set_deadly_mines(xs, ys)
+        return proj
+    except Exception:
+        return None
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -186,7 +292,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--gamma", type=float, default=0.999,
                     help="pbrs_gamma used for the shaping-variance term")
     ap.add_argument("--weight", type=float, default=1.0, help="pbrs_weight")
-    ap.add_argument("--compare", choices=("model", "arcs", "air-k"), default="model",
+    ap.add_argument("--compare",
+                    choices=("model", "arcs", "air-k", "global", "projection"),
+                    default="model",
                     help="'model' = geometric vs physics; 'arcs' = physics A/B")
     ap.add_argument("--per-demo", action="store_true", help="print every demo")
     args = ap.parse_args(argv)
@@ -225,7 +333,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         if traced is None:
             n_skipped += 1
             continue
-        pos, sw = traced
+        pos, sw, airborne, velocities, jump_remaining = traced
+        live_projector = _projector(map_data)
         n_won += 1
 
         per_demo = {}
@@ -235,16 +344,35 @@ def main(argv: Optional[List[str]] = None) -> int:
                 setattr(fsd, k, v)
             try:
                 fsd._FS_MEM_CACHE.clear()
-                src = fsd.FreeSpaceDistanceSource(list(map_data), **kwargs)
+                build_kwargs = dict(kwargs)
+                source = build_kwargs.pop("_source", "freespace")
+                use_projection = bool(build_kwargs.pop("_projection", True))
+                if source == "global":
+                    from ..global_potential import GlobalPotentialSource
+                    src = GlobalPotentialSource(
+                        list(map_data), lattice_fallback=False
+                    )
+                else:
+                    src = fsd.FreeSpaceDistanceSource(
+                        list(map_data), **build_kwargs
+                    )
                 if not src.available:
                     continue
-                s = _score(src, pos, sw, args.gamma, args.weight)
+                s = _score(
+                    src, pos, sw, airborne, velocities, jump_remaining,
+                    args.gamma, args.weight,
+                    projector=(
+                        live_projector
+                        if source == "global" and use_projection else None
+                    ),
+                )
             except Exception:
                 s = None
             finally:
                 for k, v in saved.items():
                     setattr(fsd, k, v)
             if s is not None:
+                s["demo"] = path
                 rows[label].append(s)
                 per_demo[label] = s
         if args.per_demo and per_demo:
@@ -261,7 +389,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"\ndemos: {len(files)} scanned, {n_won} re-simulated to a WIN, "
           f"{n_skipped} skipped (unparseable or did not win)\n")
     hdr = (f"{'field':14s} {'n':>5s} {'rho':>8s} {'progress':>9s} "
-           f"{'|F| std':>9s} {'cover':>7s}")
+           f"{'air':>8s} {'ground':>8s} {'|F| std':>9s} {'cover':>7s}")
     print(hdr)
     print("-" * len(hdr))
     for label, _, _ in variants:
@@ -272,6 +400,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"{label:14s} {len(r):5d} "
               f"{np.nanmean([x['rho'] for x in r]):8.3f} "
               f"{np.nanmean([x['progress'] for x in r]):9.3f} "
+              f"{np.nanmean([x['progress_air'] for x in r]):8.3f} "
+              f"{np.nanmean([x['progress_ground'] for x in r]):8.3f} "
               f"{np.nanmean([x['f_std'] for x in r]):9.5f} "
               f"{np.nanmean([x['cover'] for x in r]):7.3f}")
 
@@ -279,22 +409,32 @@ def main(argv: Optional[List[str]] = None) -> int:
     # across two differently-filtered populations.
     if len(variants) == 2:
         a, b = variants[0][0], variants[1][0]
-        n = min(len(rows[a]), len(rows[b]))
+        by_a = {x["demo"]: x for x in rows[a]}
+        by_b = {x["demo"]: x for x in rows[b]}
+        paired = sorted(set(by_a) & set(by_b))
+        n = len(paired)
         if n:
             # higher_better=False for |F| std: that one is variance the critic
             # eats, so a bigger number is a worse potential, not a better one.
             for key, name, higher_better in (("rho", "rho", True),
                                              ("progress", "progress", True),
                                              ("f_std", "|F| std", False)):
-                da = np.array([x[key] for x in rows[a][:n]])
-                db = np.array([x[key] for x in rows[b][:n]])
+                da = np.array([by_a[p][key] for p in paired])
+                db = np.array([by_b[p][key] for p in paired])
                 d = db - da
                 gain = d if higher_better else -d
                 wins = int((gain > 1e-9).sum())
                 loss = int((gain < -1e-9).sum())
+                # Paired bootstrap confidence interval over levels. The fixed
+                # seed makes the acceptance report reproducible.
+                rng = np.random.default_rng(0)
+                idx = rng.integers(0, n, size=(2000, n))
+                means = np.nanmean(d[idx], axis=1)
+                lo, hi = np.nanpercentile(means, [2.5, 97.5])
                 arrow = "higher=better" if higher_better else "LOWER=better"
                 print(f"\npaired {name:9s} {b} - {a}: mean {np.nanmean(d):+.5f} "
-                      f"({arrow})  {b} better on {wins}/{n}, worse on {loss}/{n}")
+                      f"95%CI[{lo:+.5f},{hi:+.5f}] ({arrow})  "
+                      f"{b} better on {wins}/{n}, worse on {loss}/{n}")
     return 0
 
 
