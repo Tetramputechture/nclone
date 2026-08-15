@@ -134,7 +134,54 @@ pub struct Simulator {
     /// conservative on position.  Off (0.0) in production.
     pub snap_qpos: f64,
     pub snap_qvel: f64,
+
+    /// Arc-enumeration telemetry: physics frames stepped by `arc_tick`, split by
+    /// sweep phase (run / jump-hold / post-release fall). One `u64` add per tick,
+    /// which is free next to the tick itself, and it is the only way to tell a
+    /// "too many arcs" problem from a "each arc runs to the frame cap" problem —
+    /// the two want opposite fixes. Zero outside the enumeration path.
+    pub arc_ticks: [u64; 3],
+    /// Which `arc_ticks` slot `arc_tick` charges; set by the sweep functions.
+    pub arc_phase: usize,
+    /// Arc-enumeration telemetry: arcs started, and arcs that hit the frame cap
+    /// without landing or dying, per phase.
+    pub arc_count: [u64; 3],
+    pub arc_capped: [u64; 3],
+    /// Terminal ninja state of every frame-capped fall arc, indexed by state id.
+    /// Diagnostic: an arc that never lands is either genuinely long or stuck, and
+    /// the state histogram is what separates the two.
+    pub arc_capped_state: [u64; 10],
+    /// Depenetration-loop scratch + telemetry for the tile collision.
+    pub depen: DepenScratch,
+    /// Where frame-capped arcs ended up: [inside map, below, above, left/right].
+    pub arc_capped_where: [u64; 4],
 }
+
+/// Per-call scratch + counters for `Ninja::collide_vs_tiles`, owned by the
+/// simulator so it is not cloned with the ninja (the arc enumerator clones the
+/// ninja millions of times).
+///
+/// `segs` memoizes one depenetration-loop gather: the loop re-queries the
+/// segment grid from a barely-moved position up to 32 times per substep, and
+/// while the query's CELL RANGE is unchanged the answer cannot change (nothing
+/// mutates segment activity mid-tick), so the walk is repeated for nothing.
+/// The cached bounds ride along to drive the loop's lower-bound reject.
+#[derive(Default, Clone)]
+pub struct DepenScratch {
+    /// Depenetration-loop iterations executed.
+    pub iters: u64,
+    /// Calls to `collide_vs_tiles` (i.e. collision substeps run).
+    pub calls: u64,
+    /// `(segment index, (min_x, min_y, max_x, max_y))` for the memoized gather.
+    pub segs: Vec<(u32, (f64, f64, f64, f64))>,
+    /// Cell range `segs` was gathered for; `None` invalidates the memo.
+    pub cells: Option<(usize, usize, usize, usize)>,
+}
+
+/// Index into `Simulator::arc_ticks` / `arc_count` / `arc_capped`.
+pub const ARC_PHASE_RUN: usize = 0;
+pub const ARC_PHASE_HOLD: usize = 1;
+pub const ARC_PHASE_FALL: usize = 2;
 
 /// Projectile blob shared by the rocket (18) and the player-controlled rocket
 /// (29): 7 f64 in a fixed order. Both types own their projectile inline rather
@@ -254,6 +301,13 @@ impl Simulator {
             flood_ticks_coll: 0,
             snap_qpos: 0.0,
             snap_qvel: 0.0,
+            arc_ticks: [0; 3],
+            arc_phase: 0,
+            arc_count: [0; 3],
+            arc_capped: [0; 3],
+            arc_capped_state: [0; 10],
+            depen: DepenScratch::default(),
+            arc_capped_where: [0; 4],
         };
 
         // Populate entity grid (skip exit doors -- they're only added when switch is collected)
@@ -963,7 +1017,8 @@ impl Simulator {
                 if self.has_physical_entities || self.frame_has_tile_segments() {
                     for _ in 0..4 {
                         self.collide_vs_objects();
-                        self.ninja.collide_vs_tiles(&self.segment_grid, &self.segments);
+                        self.ninja.collide_vs_tiles(
+                            &self.segment_grid, &self.segments, &mut self.depen);
                     }
                 }
 
@@ -1390,7 +1445,8 @@ impl Simulator {
                 if self.has_physical_entities || self.frame_has_tile_segments() {
                     for _ in 0..4 {
                         self.collide_vs_objects();
-                        self.ninja.collide_vs_tiles(&self.segment_grid, &self.segments);
+                        self.ninja.collide_vs_tiles(
+                            &self.segment_grid, &self.segments, &mut self.depen);
                     }
                 }
 
@@ -1429,7 +1485,8 @@ impl Simulator {
                 if self.frame_has_tile_segments() {
                     for _ in 0..4 {
                         // Skip collide_vs_objects — no entity depenetration or bounce blocks
-                        self.ninja.collide_vs_tiles(&self.segment_grid, &self.segments);
+                        self.ninja.collide_vs_tiles(
+                            &self.segment_grid, &self.segments, &mut self.depen);
                     }
                 }
 
@@ -1474,7 +1531,8 @@ impl Simulator {
                 if self.frame_has_tile_segments() {
                     for _ in 0..4 {
                         // Tiles only — mines have no physical (depenetration) collision.
-                        self.ninja.collide_vs_tiles(&self.segment_grid, &self.segments);
+                        self.ninja.collide_vs_tiles(
+                            &self.segment_grid, &self.segments, &mut self.depen);
                     }
                 }
 
@@ -1949,36 +2007,43 @@ impl Simulator {
     /// tile-related portion of `post_collision_with_entities` but without the entity
     /// logical-collision loop (mines, switch, door).
     fn post_collision_tiles_only(&mut self) {
-        // Wall normal from tile segments only
+        // Wall normal from tile segments only.
+        //
+        // Only the FIRST contact is ever read, so only the first is kept, and the
+        // scan runs straight out of the cell walk instead of through a gathered
+        // index list. This is the arc-enumeration hot path -- every frame of every
+        // simulated arc lands here -- and it used to allocate two `Vec`s per tick.
         let mut wall_normal = 0.0f64;
-        let mut tile_wn: Vec<f64> = Vec::new();
+        let mut tile_wn: Option<f64> = None;
         let rad = crate::constants::NINJA_RADIUS + 0.1;
-        let seg_indices = crate::collision::spatial::gather_segments_from_region(
+        let (nxpos, nypos) = (self.ninja.xpos, self.ninja.ypos);
+        crate::collision::spatial::for_each_segment_in_region(
             &self.segment_grid,
             &self.segments,
-            self.ninja.xpos - rad,
-            self.ninja.ypos - rad,
-            self.ninja.xpos + rad,
-            self.ninja.ypos + rad,
+            nxpos - rad,
+            nypos - rad,
+            nxpos + rad,
+            nypos + rad,
+            |seg_idx| {
+                let seg = &self.segments[seg_idx];
+                let (_, a, b) = seg.get_closest_point(nxpos, nypos);
+                let dx = nxpos - a;
+                let dy = nypos - b;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dy.abs() < 0.00001 && dist > 0.0 && dist <= rad {
+                    wall_normal += dx / dist;
+                    tile_wn.get_or_insert(dx / dist);
+                }
+                true
+            },
         );
-        for seg_idx in seg_indices {
-            let seg = &self.segments[seg_idx];
-            let (_, a, b) = seg.get_closest_point(self.ninja.xpos, self.ninja.ypos);
-            let dx = self.ninja.xpos - a;
-            let dy = self.ninja.ypos - b;
-            let dist = (dx * dx + dy * dy).sqrt();
-            if dy.abs() < 0.00001 && dist > 0.0 && dist <= rad {
-                wall_normal += dx / dist;
-                tile_wn.push(dx / dist);
-            }
-        }
 
         // Update airborne/walled state
         self.ninja.airborn_old = self.ninja.airborn;
         self.ninja.airborn = true;
         self.ninja.walled = false;
         if crate::ab::ab().wall_normal_first {
-            if let Some(&n) = tile_wn.first() {
+            if let Some(n) = tile_wn {
                 self.ninja.walled = true;
                 self.ninja.wall_normal = if crate::ab::ab().wall_normal_sign {
                     if n > 0.0 { 1.0 } else { -1.0 }

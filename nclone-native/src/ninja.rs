@@ -274,10 +274,15 @@ impl Ninja {
     }
 
     /// Handle collisions with tile segments (interpolation + depenetration loop).
+    ///
+    /// `scratch` carries the depenetration loop's gather memo and counters. It
+    /// is owned by the caller rather than by `Ninja`, which the arc enumerator
+    /// clones millions of times.
     pub fn collide_vs_tiles(
         &mut self,
         segment_grid: &[[Vec<usize>; MAP_HEIGHT]; MAP_WIDTH],
         all_segments: &[Segment],
+        scratch: &mut crate::simulator::DepenScratch,
     ) {
         // Interpolation to prevent going through walls
         let dx = self.xpos - self.xpos_old;
@@ -293,6 +298,9 @@ impl Ninja {
         );
         self.xpos = self.xpos_old + time * dx;
         self.ypos = self.ypos_old + time * dy;
+        scratch.calls += 1;
+        // The memo is per call: the sweep above can move the ninja far.
+        scratch.cells = None;
 
         // Cache into local vars for the tight loop
         let mut xpos = self.xpos;
@@ -331,6 +339,7 @@ impl Ninja {
 
         // Depenetration loop (32 iterations max)
         for _ in 0..32 {
+            scratch.iters += 1;
             // RE-GATHERED every iteration, from the CURRENT position. The game's
             // `get_single_closest_point` (`FUN_1050B910`,
             // `docs/decomp/caller_1050B910.c`) calls the region gather itself, so
@@ -344,43 +353,95 @@ impl Ninja {
             let mut closest_a = 0.0f64;
             let mut closest_b = 0.0f64;
 
-            // Scan straight out of the cell walk rather than through an index
-            // list: the walk order, the `is_active` filter and the strict-`<`
-            // tie-break are the same, so the winning segment is the same, but the
-            // loop no longer allocates a `Vec` per iteration.
-            let mut consider = |seg: &Segment| {
-                let (is_back_facing, a, b) = seg.get_closest_point(xpos, ypos);
-                let mut distance_sq = (xpos - a) * (xpos - a) + (ypos - b) * (ypos - b);
-                if !is_back_facing {
-                    distance_sq -= 0.1;
-                }
-                if distance_sq < shortest_distance {
-                    shortest_distance = distance_sq;
-                    closest_a = a;
-                    closest_b = b;
-                    result = if is_back_facing { -1 } else { 1 };
-                }
-            };
             if regather {
-                spatial::for_each_segment_in_region(
-                    segment_grid,
-                    all_segments,
+                // Refresh the gather only when the query's CELL RANGE moves.
+                // Same cells + unchanged segment activity (nothing mutates it
+                // inside this loop) => the identical index sequence in the
+                // identical order, so the winner and its tie-break are the same.
+                let cells = spatial::region_cells(
                     xpos - NINJA_RADIUS,
                     ypos - NINJA_RADIUS,
                     xpos + NINJA_RADIUS,
                     ypos + NINJA_RADIUS,
-                    |seg_idx| {
-                        consider(&all_segments[seg_idx]);
-                        true
-                    },
                 );
+                if scratch.cells != Some(cells) {
+                    scratch.segs.clear();
+                    let segs = &mut scratch.segs;
+                    spatial::for_each_segment_in_region(
+                        segment_grid,
+                        all_segments,
+                        xpos - NINJA_RADIUS,
+                        ypos - NINJA_RADIUS,
+                        xpos + NINJA_RADIUS,
+                        ypos + NINJA_RADIUS,
+                        |seg_idx| {
+                            segs.push((seg_idx as u32, all_segments[seg_idx].get_bounds()));
+                            true
+                        },
+                    );
+                    scratch.cells = Some(cells);
+                }
+                for &(seg_idx, (bx0, by0, bx1, by1)) in scratch.segs.iter() {
+                    // Lower-bound reject. Every point `get_closest_point` can
+                    // return lies inside the segment's bounding box (a linear
+                    // segment clamps to its endpoints; a circular one returns a
+                    // point on its quarter arc or one of the two extremities), so
+                    // the squared distance to that box is a lower bound on
+                    // `distance_sq`, and `distance_sq` is lowered by at most 0.1
+                    // afterwards. A segment whose bound already exceeds the best
+                    // so far therefore cannot pass the strict `<` below and
+                    // cannot change the winner -- nor, since the bound never
+                    // rejects the FIRST segment (9999999.0 dwarfs any in-level
+                    // distance), can it change `result` away from a hit.
+                    // The extra 1.0 is slack against float rounding in the bound;
+                    // it costs nothing, as rejected segments miss by far more.
+                    let ddx = if xpos < bx0 {
+                        bx0 - xpos
+                    } else if xpos > bx1 {
+                        xpos - bx1
+                    } else {
+                        0.0
+                    };
+                    let ddy = if ypos < by0 {
+                        by0 - ypos
+                    } else if ypos > by1 {
+                        ypos - by1
+                    } else {
+                        0.0
+                    };
+                    if ddx * ddx + ddy * ddy >= shortest_distance + 1.1 {
+                        continue;
+                    }
+                    let seg = &all_segments[seg_idx as usize];
+                    let (is_back_facing, a, b) = seg.get_closest_point(xpos, ypos);
+                    let mut distance_sq = (xpos - a) * (xpos - a) + (ypos - b) * (ypos - b);
+                    if !is_back_facing {
+                        distance_sq -= 0.1;
+                    }
+                    if distance_sq < shortest_distance {
+                        shortest_distance = distance_sq;
+                        closest_a = a;
+                        closest_b = b;
+                        result = if is_back_facing { -1 } else { 1 };
+                    }
+                }
             } else {
                 for &seg_idx in &gathered_once {
                     let seg = &all_segments[seg_idx];
                     if !seg.is_active() {
                         continue;
                     }
-                    consider(seg);
+                    let (is_back_facing, a, b) = seg.get_closest_point(xpos, ypos);
+                    let mut distance_sq = (xpos - a) * (xpos - a) + (ypos - b) * (ypos - b);
+                    if !is_back_facing {
+                        distance_sq -= 0.1;
+                    }
+                    if distance_sq < shortest_distance {
+                        shortest_distance = distance_sq;
+                        closest_a = a;
+                        closest_b = b;
+                        result = if is_back_facing { -1 } else { 1 };
+                    }
                 }
             }
 
@@ -1489,6 +1550,87 @@ impl Ninja {
         if self.anim_enabled {
             self.update_graphics();
         }
+    }
+
+    /// True when `self` and `other` are the same state as far as the PHYSICS is
+    /// concerned — every field a tick reads, ignoring the fields a tick only
+    /// ever writes.
+    ///
+    /// The excluded five (`frames_airborne`, `state_change_frame`,
+    /// `previous_state`, `consecutive_floor_frames`, `consecutive_wall_frames`)
+    /// are counters maintained for the observation layer; nothing in
+    /// `integrate` / `pre_collision` / `collide_vs_tiles` / `post_collision` /
+    /// `think` reads them, so two states that differ only there have identical
+    /// futures. They also increment monotonically while airborne, which is
+    /// exactly why a whole-struct comparison would never fire.
+    ///
+    /// Used by the arc enumerator to detect a trajectory fixed point: a ninja
+    /// wedged in geometry, where depenetration exactly cancels gravity's
+    /// displacement every frame, is stationary forever under a constant input.
+    /// See `enumerate::sim_fall_phase`.
+    pub fn physics_state_eq(&self, other: &Ninja) -> bool {
+        self.xpos == other.xpos
+            && self.ypos == other.ypos
+            && self.xspeed == other.xspeed
+            && self.yspeed == other.yspeed
+            && self.xpos_old == other.xpos_old
+            && self.ypos_old == other.ypos_old
+            && self.xspeed_old == other.xspeed_old
+            && self.yspeed_old == other.yspeed_old
+            && self.applied_gravity == other.applied_gravity
+            && self.applied_drag == other.applied_drag
+            && self.applied_friction == other.applied_friction
+            && self.state == other.state
+            && self.airborn == other.airborn
+            && self.airborn_old == other.airborn_old
+            && self.walled == other.walled
+            && self.wall_normal == other.wall_normal
+            && self.jump_input_old == other.jump_input_old
+            && self.jump_duration == other.jump_duration
+            && self.jump_buffer == other.jump_buffer
+            && self.floor_buffer == other.floor_buffer
+            && self.wall_buffer == other.wall_buffer
+            && self.launch_pad_buffer == other.launch_pad_buffer
+            && self.is_jump_useless == other.is_jump_useless
+            && self.last_jump_was_buffered == other.last_jump_was_buffered
+            && self.floor_normalized_x == other.floor_normalized_x
+            && self.floor_normalized_y == other.floor_normalized_y
+            && self.ceiling_normalized_x == other.ceiling_normalized_x
+            && self.ceiling_normalized_y == other.ceiling_normalized_y
+            && self.floor_count == other.floor_count
+            && self.wall_count == other.wall_count
+            && self.ceiling_count == other.ceiling_count
+            && self.floor_normal_x == other.floor_normal_x
+            && self.floor_normal_y == other.floor_normal_y
+            && self.ceiling_normal_x == other.ceiling_normal_x
+            && self.ceiling_normal_y == other.ceiling_normal_y
+            && self.is_crushable == other.is_crushable
+            && self.x_crush == other.x_crush
+            && self.y_crush == other.y_crush
+            && self.crush_len == other.crush_len
+            && self.contact_is_solid == other.contact_is_solid
+            && self.contact_is_moving == other.contact_is_moving
+            && self.hor_input == other.hor_input
+            && self.jump_input == other.jump_input
+            && self.terminal_impact == other.terminal_impact
+            && self.xpos_at_action == other.xpos_at_action
+            && self.ypos_at_action == other.ypos_at_action
+            && self.gold_collected == other.gold_collected
+            && self.doors_opened == other.doors_opened
+            && self.xlp_boost_normalized == other.xlp_boost_normalized
+            && self.ylp_boost_normalized == other.ylp_boost_normalized
+            && self.cached_entity_indices == other.cached_entity_indices
+            && self.anim_enabled == other.anim_enabled
+            && self.anim_state == other.anim_state
+            && self.anim_frame == other.anim_frame
+            && self.anim_rate == other.anim_rate
+            && self.tilt == other.tilt
+            && self.facing == other.facing
+            && self.anim_frame_prev == other.anim_frame_prev
+            && self.anim_blend == other.anim_blend
+            && self.run_cycle == other.run_cycle
+            && self.frame_residual == other.frame_residual
+            && self.bones == other.bones
     }
 
     /// Serialize ninja physics state to bytes for save/restore during transition enumeration.

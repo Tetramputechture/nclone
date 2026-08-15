@@ -5,6 +5,26 @@ use crate::constants::{MAP_HEIGHT, MAP_WIDTH, TILE_SIZE};
 use crate::segments::Segment;
 use crate::types::Cell;
 
+/// The clamped cell range `(min_x, max_x, min_y, max_y)` a rectangle overlaps.
+///
+/// Exposed so callers can tell whether two queries cover the SAME cells and
+/// therefore see the same segments — the depenetration loop re-queries from a
+/// barely-moved position up to 32 times per substep, and reusing the gather
+/// whenever the cell range is unchanged is exact.
+#[inline]
+pub fn region_cells(x1: f64, y1: f64, x2: f64, y2: f64) -> (usize, usize, usize, usize) {
+    let min_x = x1.min(x2);
+    let min_y = y1.min(y2);
+    let max_x = x1.max(x2);
+    let max_y = y1.max(y2);
+    (
+        (min_x / TILE_SIZE).floor().max(0.0).min((MAP_WIDTH - 1) as f64) as usize,
+        (max_x / TILE_SIZE).floor().max(0.0).min((MAP_WIDTH - 1) as f64) as usize,
+        (min_y / TILE_SIZE).floor().max(0.0).min((MAP_HEIGHT - 1) as f64) as usize,
+        (max_y / TILE_SIZE).floor().max(0.0).min((MAP_HEIGHT - 1) as f64) as usize,
+    )
+}
+
 /// Visit every active collision segment in the tile cells overlapped by a
 /// rectangle, in gather order. `f` returns `false` to stop the walk early.
 ///

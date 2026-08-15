@@ -11,11 +11,13 @@
 //! state-reads, and the multiprocess serialization removed, and with rayon
 //! parallelism across nodes.
 //!
-//! The kernel returns only the *raw landings* (one `ArcRecord` per arc that the
-//! Python `_try_edge` would process).  The landing -> graph-node mapping,
-//! mine-cost inflation, and dominated-edge pruning stay in Python so they reuse
-//! the existing, already-validated code unchanged (guaranteeing identical edges
-//! given identical landings).
+//! The kernel maps each landing to a graph node and applies the dominated-pair
+//! prune (`prune_arcs`, an exact port of `edge_enumeration._prune_edges`), so
+//! only the KEPT edges cross into Python — a vertical shaft produces five
+//! million landings and keeps three hundred thousand, and materialising the
+//! other 4.7M as Python objects cost more than simulating them did.  Mine-cost
+//! inflation still happens in Python.  `NCLONE_ENUM_NO_PRUNE=1` returns the raw
+//! landings instead, so the in-kernel prune can be A/B'd against the Python one.
 //!
 //! Sweep tables (`run_durations`, `jump_holds`, `h_inputs`, `post_release`) are
 //! passed in from Python so the canonical values live in one place
@@ -47,6 +49,13 @@ pub struct ArcRecord {
 #[derive(Default)]
 pub struct NodeBatchOut {
     pub arcs: Vec<ArcRecord>,
+    /// Enumeration telemetry, summed over the chunk: physics frames stepped and
+    /// arcs started / frame-capped, per sweep phase (run / hold / fall).
+    pub ticks: [u64; 3],
+    pub arc_count: [u64; 3],
+    pub arc_capped: [u64; 3],
+    pub depen_iters: u64,
+    pub depen_calls: u64,
     /// Sparse per-(node, goal) minimum contact frame.  `gc_node` holds the
     /// source *node id* (not the launch index).
     pub gc_node: Vec<i32>,
@@ -56,11 +65,48 @@ pub struct NodeBatchOut {
 
 impl NodeBatchOut {
     fn extend(&mut self, other: NodeBatchOut) {
+        for k in 0..3 {
+            self.ticks[k] += other.ticks[k];
+            self.arc_count[k] += other.arc_count[k];
+            self.arc_capped[k] += other.arc_capped[k];
+        }
+        self.depen_iters += other.depen_iters;
+        self.depen_calls += other.depen_calls;
         self.arcs.extend(other.arcs);
         self.gc_node.extend(other.gc_node);
         self.gc_goal.extend(other.gc_goal);
         self.gc_frame.extend(other.gc_frame);
     }
+}
+
+/// Keep only the minimum-weight arc for each `(src_node, dst_node)` pair.
+///
+/// Exact port of `edge_enumeration._prune_edges`, including its ordering: the
+/// Python version fills a dict and returns `list(best.values())`, so pairs come
+/// out in order of FIRST appearance, and the strict `<` keeps the first of
+/// several equal-weight arcs. Both are reproduced here.
+///
+/// This runs in the kernel rather than in Python because the unpruned list is
+/// the bulk of the crossing: a vertical shaft emits five million arcs and keeps
+/// three hundred thousand, and every one of the five million would otherwise be
+/// six Python ints plus a dataclass.
+pub fn prune_arcs(arcs: &[ArcRecord]) -> Vec<ArcRecord> {
+    let mut slot: HashMap<(i32, i32), usize> = HashMap::with_capacity(arcs.len() / 8 + 1);
+    let mut kept: Vec<ArcRecord> = Vec::new();
+    for a in arcs {
+        match slot.get(&(a.src_node, a.dst_node)) {
+            Some(&i) => {
+                if a.frames < kept[i].frames {
+                    kept[i] = *a;
+                }
+            }
+            None => {
+                slot.insert((a.src_node, a.dst_node), kept.len());
+                kept.push(*a);
+            }
+        }
+    }
+    kept
 }
 
 /// One launch node to enumerate from.
@@ -82,6 +128,12 @@ const SURFACE_WALL: i32 = 1;
 const SURFACE_SLIDE: i32 = 2;
 const SURFACE_LAUNCH_PAD: i32 = 3;
 const STATE_WALL_SLIDING: u8 = 5;
+
+/// Chunks handed to rayon per thread; see `enumerate_arcs_parallel`.
+const CHUNKS_PER_THREAD: usize = 16;
+
+/// Bottom edge of the tile grid in pixels; no collision segment exists below it.
+const MAP_BOTTOM_PX: f64 = crate::constants::MAP_HEIGHT as f64 * crate::constants::TILE_SIZE;
 
 #[inline]
 fn is_wall_like(stype: i32) -> bool {
@@ -295,6 +347,7 @@ type Landing = (f64, f64, f64, f64, u8);
 impl Simulator {
     #[inline]
     fn arc_tick(&mut self, h: i32, j: i32, tick_mines: bool) {
+        self.arc_ticks[self.arc_phase] += 1;
         // Experimental flood sizing: record the quantized (pre-state, input) key
         // *before* stepping.  `None` in production -> a single predicted branch.
         if self.flood_keys.is_some() {
@@ -350,6 +403,8 @@ impl Simulator {
         acc: &mut [f64],
         goal_off: i32,
     ) -> (Option<Landing>, i32) {
+        self.arc_phase = crate::simulator::ARC_PHASE_RUN;
+        self.arc_count[crate::simulator::ARC_PHASE_RUN] += 1;
         let mut was_air = false;
         for frame in 1..=max_frames {
             self.arc_tick(h, 0, tick_mines);
@@ -475,6 +530,8 @@ impl Simulator {
             Some(&m) => m,
             None => return,
         };
+        self.arc_phase = crate::simulator::ARC_PHASE_RUN;
+        self.arc_count[crate::simulator::ARC_PHASE_RUN] += 1;
         self.ninja = snap.clone();
         self.ninja.inject_value_iteration_state(x, y, vx0, vy0, 0);
         // (is_surface, landing-tuple) for each simulated frame.
@@ -543,6 +600,8 @@ impl Simulator {
         acc: &mut [f64],
         goal_off: i32,
     ) -> (Option<Landing>, i32) {
+        self.arc_phase = crate::simulator::ARC_PHASE_FALL;
+        self.arc_count[crate::simulator::ARC_PHASE_FALL] += 1;
         let mut total = start_total;
         let fall = (max_arc_frames - total).max(0);
         // `left_wall`: arc has fully separated from any wall since the jump fired.
@@ -573,7 +632,21 @@ impl Simulator {
                     return (Some((px, py, self.ninja.xspeed, self.ninja.yspeed, 5u8)), total);
                 }
             }
+
+            // --- Exact early exit 2: fallen out below the level ------------
+            // All collision geometry lives inside the tile grid (y <= 600), and
+            // in the air `yspeed <- (yspeed + gravity) * drag` cannot turn a
+            // non-negative `yspeed` negative, so once the ninja is a full tile
+            // below the grid and moving down, `ypos` never decreases again.  It
+            // can never re-enter segment range, so it cannot land, die, or reach
+            // a goal (goals are inside the level and their contact ranges are
+            // far under a tile).  The rest of the phase is a no-op.
+            if py > MAP_BOTTOM_PX + crate::constants::TILE_SIZE && self.ninja.yspeed >= 0.0 {
+                total = start_total + fall;
+                break;
+            }
         }
+        self.arc_capped[crate::simulator::ARC_PHASE_FALL] += 1;
         (None, total)
     }
 
@@ -618,6 +691,8 @@ impl Simulator {
             .unwrap_or(0)
             .max(0);
         let mut hold_death: Option<i32> = None;
+        self.arc_phase = crate::simulator::ARC_PHASE_HOLD;
+        self.arc_count[crate::simulator::ARC_PHASE_HOLD] += 1;
         for t in 1..=max_hold_d {
             self.arc_tick(hd, 1, tick_mines);
             let st = self.ninja.state;
@@ -802,7 +877,19 @@ pub fn enumerate_arcs_parallel(
     if n == 0 {
         return NodeBatchOut::default();
     }
-    let n_chunks = n_threads.max(1).min(n);
+    // Many small chunks rather than one per thread. Per-node cost spans two
+    // orders of magnitude -- a launch that wedges the ninja in geometry grinds
+    // the depenetration loop for the whole frame budget, a clean one lands in a
+    // few frames -- so an even split of the node COUNT is a wildly uneven split
+    // of the WORK, and with one chunk per thread the slowest chunk sets the wall
+    // clock. Finer chunks let rayon steal. The result is unaffected: partials
+    // are collected in chunk order and merged in that order, whichever order
+    // they actually ran in.
+    let n_chunks = n_threads
+        .max(1)
+        .saturating_mul(CHUNKS_PER_THREAD)
+        .min(n)
+        .max(1);
     let chunk_size = (n + n_chunks - 1) / n_chunks;
 
     let run_chunk = |chunk: &[NodeSpec]| -> NodeBatchOut {
@@ -814,6 +901,11 @@ pub fn enumerate_arcs_parallel(
         for node in chunk {
             sim.enumerate_node_arcs(node, sw, mapper, &snap, &mut out);
         }
+        out.ticks = sim.arc_ticks;
+        out.arc_count = sim.arc_count;
+        out.arc_capped = sim.arc_capped;
+        out.depen_iters = sim.depen.iters;
+        out.depen_calls = sim.depen.calls;
         out
     };
 

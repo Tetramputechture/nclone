@@ -480,6 +480,14 @@ pub struct ArcBatch {
     pub h_after: Vec<i32>,
     #[pyo3(get)]
     pub clipped: Vec<bool>,
+    /// Landings BEFORE pruning, and how many of them clipped a velocity-bin
+    /// endpoint. Counted here because the unpruned list no longer crosses into
+    /// Python, and the clip ratio is telemetry over all landings, not the kept
+    /// ones.
+    #[pyo3(get)]
+    pub n_total_landings: usize,
+    #[pyo3(get)]
+    pub n_clipped_landings: usize,
     #[pyo3(get)]
     pub gc_node: Vec<i32>,
     #[pyo3(get)]
@@ -581,7 +589,23 @@ fn enumerate_arcs(
         enumerate_arcs_parallel(&map_data, &nodes, &sw, &mapper, n_threads, snap_qpos, snap_qvel)
     });
 
-    let m = out.arcs.len();
+    // Prune to the minimum-weight arc per (src, dst) IN THE KERNEL. Python used
+    // to receive every raw landing -- five million of them on a vertical shaft,
+    // each crossing as six ints plus a dataclass, to keep three hundred thousand.
+    // `edge_enumeration._prune_edges` still runs on the result and is idempotent,
+    // so the Python-side contract is unchanged.
+    let n_total_landings = out.arcs.len();
+    let n_clipped_landings = out.arcs.iter().filter(|a| a.clipped).count();
+    // `NCLONE_ENUM_NO_PRUNE=1` returns every raw landing instead, so the
+    // in-kernel prune can be A/B'd against `edge_enumeration._prune_edges` on a
+    // real level. Off is the shipping path.
+    let pruned = if std::env::var_os("NCLONE_ENUM_NO_PRUNE").is_some() {
+        out.arcs.clone()
+    } else {
+        enumerate::prune_arcs(&out.arcs)
+    };
+
+    let m = pruned.len();
     let mut src = Vec::with_capacity(m);
     let mut dst = Vec::with_capacity(m);
     let mut frames = Vec::with_capacity(m);
@@ -589,7 +613,7 @@ fn enumerate_arcs(
     let mut h_during = Vec::with_capacity(m);
     let mut h_after = Vec::with_capacity(m);
     let mut clipped = Vec::with_capacity(m);
-    for a in &out.arcs {
+    for a in &pruned {
         src.push(a.src_node);
         dst.push(a.dst_node);
         frames.push(a.frames);
@@ -607,6 +631,8 @@ fn enumerate_arcs(
         h_during,
         h_after,
         clipped,
+        n_total_landings,
+        n_clipped_landings,
         gc_node: out.gc_node,
         gc_goal: out.gc_goal,
         gc_frame: out.gc_frame,

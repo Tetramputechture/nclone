@@ -1045,10 +1045,13 @@ def _enumerate_edges_native(
         sp_tan_x, sp_tan_y, bool(tangential),
     )
 
-    # The kernel already mapped landings to (src_node, dst_node) and dropped
-    # self-loops / unmapped landings, so building the edge list is a plain zip;
-    # _prune_edges (cheap) still runs in Python to keep the exact dominated-pair
-    # tie-break (first-of-equal-weight, in emission order).
+    # The kernel already mapped landings to (src_node, dst_node), dropped
+    # self-loops / unmapped landings, AND applied the dominated-pair prune (an
+    # exact port of _prune_edges, same first-appearance order and same
+    # first-of-equal-weight tie-break). Only the kept edges cross the boundary --
+    # on a vertical shaft that is 341k objects instead of 5.0M.  _prune_edges is
+    # idempotent on an already-pruned list, so running it again changes nothing
+    # and keeps the Python-side invariant asserted in one place.
     src_arr, dst_arr, fr_arr = batch.src, batch.dst, batch.frames
     jh_arr, hd_arr, ha_arr = batch.jump_hold, batch.h_during, batch.h_after
     edges: List[EdgeResult] = [
@@ -1059,8 +1062,10 @@ def _enumerate_edges_native(
     edges = _prune_edges(edges)
 
     if stats_out is not None:
-        n_total = len(src_arr)
-        n_clipped = int(sum(batch.clipped))
+        # Counted over ALL landings by the kernel; the batch now carries only the
+        # pruned ones, so len(src_arr) is no longer the landing count.
+        n_total = int(batch.n_total_landings)
+        n_clipped = int(batch.n_clipped_landings)
         pct = 100.0 * n_clipped / max(1, n_total) if n_total > 0 else 0.0
         stats_out["n_clipped_landings"] = n_clipped
         stats_out["n_total_landings"] = n_total
@@ -1187,10 +1192,21 @@ def enumerate_edges(
     # passed to the kernel; vx0/vy0 reconstructed Python-side below).
     if use_native and not collect_waypoints:
         import os as _os
-        n_threads = native_threads if native_threads is not None else (
-            num_workers if num_workers and num_workers > 1
-            else (_os.cpu_count() or 1)
-        )
+        # ``num_workers`` sizes the legacy MULTIPROCESS path's worker pool and
+        # defaults to 4 all the way up from LatticeAudit. Letting it also cap the
+        # native kernel pinned every enumeration to 4 rayon threads no matter how
+        # big the machine was -- a 4x waste on a 16-core box and 16x on the 64-core
+        # trainer. The kernel is CPU-bound and its output is thread-count
+        # independent (partials are merged in chunk order), so it gets the machine.
+        # ``native_threads`` still overrides, and NCLONE_ENUM_THREADS pins it for
+        # A/B runs or when several precomputes share a host.
+        _env_threads = _os.environ.get("NCLONE_ENUM_THREADS")
+        if native_threads is not None:
+            n_threads = native_threads
+        elif _env_threads:
+            n_threads = int(_env_threads)
+        else:
+            n_threads = _os.cpu_count() or 1
         edges = _enumerate_edges_native(
             graph, map_data,
             mine_positions=_mine_pos,
