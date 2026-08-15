@@ -26,11 +26,72 @@ def test_tile_segments_cover_all_types():
     assert fs._tile_local_solid_segments(0) == ()          # empty: no collision
     assert len(fs._tile_local_solid_segments(1)) == 8      # full solid: perimeter
     assert (0, 24, 24, 0) in fs._tile_local_solid_segments(6)  # slope diagonal
-    assert len(fs._tile_local_solid_segments(14)) == 8 + fs._ARC_CHORDS  # pipe+arc
+    # Quarter pipe 14: 4 FULL flat faces + the arc. Its other four faces are
+    # PARTIAL (the arc meets the border there) and must NOT become straight
+    # walls -- see test_partial_faces_are_not_emitted_as_walls.
+    assert len(fs._tile_local_solid_segments(14)) == 4 + fs._ARC_CHORDS
     assert fs._tile_local_solid_segments(34) == ()         # glitched: empty (as sim)
     # Every real tile type 1..33 has at least one solid segment.
     for tt in range(1, 34):
         assert fs._tile_local_solid_segments(tt), tt
+
+
+def test_straight_walls_are_exactly_the_full_flat_faces():
+    """Straight grid-edge walls come from ternary ``2`` only.
+
+    ``TILE_GRID_EDGE_MAP`` collapses the ternary table's ``1`` (a PARTIAL face,
+    where a slope or curve meets the tile border) into the same ``1`` as a full
+    flat face. Emitting the partial ones fabricated a solid 12px wall across the
+    open part of every sloped/curved border -- for tiles 10-13 the collapsed map
+    is byte-identical to tile 1, so quarter circles became sealed boxes.
+    """
+    from nclone.tile_definitions import TILE_EDGE_GRID_TERNARY
+
+    for tt in range(1, 34):
+        segs = set(fs._tile_local_solid_segments(tt))
+        H, V = TILE_EDGE_GRID_TERNARY[tt]
+        for idx, seg in enumerate(fs._GRID_EDGE_SEGS):
+            axis, rem = divmod(idx, 6)
+            outer, inner = divmod(rem, 2)
+            expect_wall = (H, V)[axis][outer + 3 * inner] == 2
+            assert (seg in segs) is expect_wall, (tt, idx, seg)
+
+
+def test_partial_faces_are_not_emitted_as_walls():
+    """No emitted straight wall may have free space on BOTH sides along its
+    whole length -- such a wall is fabricated and seals a passable border.
+
+    This is the property the quarter-circle regression violated. It is checked
+    against the independent sub-cell solidity predicate, not the edge tables.
+    """
+    from nclone.graph.reachability.graph_builder import _check_subnode_validity_simple
+
+    def solid_at(px, py):
+        px = min(max(px, 0), 23)
+        py = min(max(py, 0), 23)
+        return not _check_subnode_validity_simple(tt, int(px), int(py))
+
+    for tt in range(1, 34):
+        for (x1, y1, x2, y2) in fs._tile_local_solid_segments(tt):
+            if x1 != x2 and y1 != y2:
+                continue                      # diagonal/arc chord, not a face
+            for k in range(1, 8):             # sample along the wall
+                t = k / 8.0
+                mx, my = x1 + (x2 - x1) * t, y1 + (y2 - y1) * t
+                # Probe 3px either side, i.e. the neighbouring 6px sub-cells.
+                if x1 == x2:
+                    a, b = (mx - 3, my), (mx + 3, my)
+                else:
+                    a, b = (mx, my - 3), (mx, my + 3)
+                # Skip samples that fall outside the tile on both probes.
+                if not (0 <= a[0] < 24 and 0 <= a[1] < 24):
+                    continue
+                if not (0 <= b[0] < 24 and 0 <= b[1] < 24):
+                    continue
+                assert solid_at(*a) or solid_at(*b), (
+                    f"tile {tt}: wall {(x1, y1, x2, y2)} is free on both sides "
+                    f"at {(mx, my)} -- fabricated, seals a passable border"
+                )
 
 
 def test_tile8_node_leak_fixed():

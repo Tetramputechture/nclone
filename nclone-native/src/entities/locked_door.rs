@@ -10,10 +10,9 @@
 //! reach `self.segments`).
 
 use crate::collision::intersection::overlap_circle_vs_circle;
-use crate::collision::spatial::cell_from_pos;
-use crate::constants::{LOCKED_DOOR_RADIUS, LOCKED_DOOR_SWITCH_RADIUS, NINJA_RADIUS};
+use crate::constants::{LOCKED_DOOR_SWITCH_RADIUS, NINJA_RADIUS};
 use crate::ninja::Ninja;
-use crate::segments::{LinearSegment, Segment};
+use crate::segments::Segment;
 use crate::types::Cell;
 
 #[derive(Debug, Clone)]
@@ -34,6 +33,9 @@ pub struct LockedDoor {
     pub closed: bool,
     /// Index into `Simulator.segments` of this door's collision segment.
     pub door_segment_index: usize,
+    /// Whether this door's grid edges are currently counted, so the simulator can
+    /// apply only the DELTA when `closed` flips. See `Simulator::sync_door_barriers`.
+    pub registered_closed: bool,
 
     // Initial state for fast_reset.
     initial_active: bool,
@@ -66,6 +68,7 @@ impl LockedDoor {
             active: true,
             closed: true,
             door_segment_index,
+            registered_closed: true,
             initial_active: true,
             initial_closed: true,
         }
@@ -77,33 +80,7 @@ impl LockedDoor {
     /// orientation vector, then clamping. The segment is a two-sided (oriented=false)
     /// 24px linear wall, active (=closed) on creation.
     pub fn make_door_segment(door_xcoord: i32, door_ycoord: i32, orientation: u8) -> (Segment, Cell) {
-        let door_xpos = (door_xcoord * 6) as f64;
-        let door_ypos = (door_ycoord * 6) as f64;
-        let (vx, vy) = map_orientation_to_vector(orientation);
-        // Door cell: floor((pos - RADIUS*vec) / 24), clamped (== cell_from_pos).
-        let cell = cell_from_pos(
-            door_xpos - LOCKED_DOOR_RADIUS * vx,
-            door_ypos - LOCKED_DOOR_RADIUS * vy,
-        );
-        let is_vertical = orientation == 0 || orientation == 4;
-        let seg = if is_vertical {
-            LinearSegment::new(
-                door_xpos,
-                door_ypos - LOCKED_DOOR_RADIUS,
-                door_xpos,
-                door_ypos + LOCKED_DOOR_RADIUS,
-                false,
-            )
-        } else {
-            LinearSegment::new(
-                door_xpos - LOCKED_DOOR_RADIUS,
-                door_ypos,
-                door_xpos + LOCKED_DOOR_RADIUS,
-                door_ypos,
-                false,
-            )
-        };
-        (Segment::Linear(seg), cell)
+        crate::entities::door_base::make_door_segment(door_xcoord, door_ycoord, orientation)
     }
 
     /// Logical collision against the switch (radius 5). Returns true if the ninja
@@ -135,19 +112,3 @@ impl LockedDoor {
     }
 }
 
-/// Normalized orientation vector (orientation 0..7). Port of
-/// nclone/physics.py:map_orientation_to_vector.
-fn map_orientation_to_vector(orientation: u8) -> (f64, f64) {
-    let diag = std::f64::consts::SQRT_2 / 2.0;
-    match orientation {
-        0 => (1.0, 0.0),
-        1 => (diag, diag),
-        2 => (0.0, 1.0),
-        3 => (-diag, diag),
-        4 => (-1.0, 0.0),
-        5 => (-diag, -diag),
-        6 => (0.0, -1.0),
-        7 => (diag, -diag),
-        _ => (1.0, 0.0),
-    }
-}

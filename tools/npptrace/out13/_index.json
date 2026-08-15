@@ -1,0 +1,98 @@
+[
+ {
+  "id": "cap00",
+  "frames": 897,
+  "rec": 9076,
+  "pools": 9
+ },
+ {
+  "id": "cap01",
+  "frames": 2720,
+  "rec": 7652,
+  "pools": 7
+ },
+ {
+  "id": "cap02",
+  "frames": 4646,
+  "rec": 9076,
+  "pools": 9
+ },
+ {
+  "id": "cap03",
+  "frames": 2960,
+  "rec": 8988,
+  "pools": 9
+ },
+ {
+  "id": "cap04",
+  "frames": 2373,
+  "rec": 8988,
+  "pools": 9
+ },
+ {
+  "id": "cap05",
+  "frames": 2947,
+  "rec": 7652,
+  "pools": 7
+ },
+ {
+  "id": "cap06",
+  "frames": 1897,
+  "rec": 7652,
+  "pools": 7
+ },
+ {
+  "id": "cap07",
+  "frames": 869,
+  "rec": 9076,
+  "pools": 9
+ },
+ {
+  "id": "cap08",
+  "frames": 2825,
+  "rec": 9076,
+  "pools": 9
+ },
+ {
+  "id": "cap09",
+  "frames": 813,
+  "rec": 9076,
+  "pools": 9
+ },
+ {
+  "id": "cap10",
+  "frames": 3106,
+  "rec": 8988,
+  "pools": 9
+ },
+ {
+  "id": "cap11",
+  "frames": 4106,
+  "rec": 7652,
+  "pools": 7
+ },
+ {
+  "id": "cap12",
+  "frames": 4782,
+  "rec": 7652,
+  "pools": 7
+ },
+ {
+  "id": "cap13",
+  "frames": 1819,
+  "rec": 9076,
+  "pools": 9
+ },
+ {
+  "id": "cap14",
+  "frames": 4027,
+  "rec": 8988,
+  "pools": 9
+ },
+ {
+  "id": "cap15",
+  "frames": 3643,
+  "rec": 8988,
+  "pools": 9
+ }
+]

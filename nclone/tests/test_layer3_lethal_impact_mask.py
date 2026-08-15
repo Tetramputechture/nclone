@@ -66,6 +66,14 @@ class _FakeNativeSim:
             return (100.0, 100.0)
         return (0.0, 0.0)
 
+    # -- snapshot surface used to branch each duration bin off the trunk -----
+    def save_full_state(self):
+        return [self.t]
+
+    def restore_full_state(self, blob):
+        self.t = int(blob[0])
+        return True
+
 
 class _FakeHeadless:
     def __init__(self, sim, mines=()):
@@ -153,18 +161,18 @@ def test_lookahead_catches_a_death_after_the_macro_ends():
     """The commitment case: no bin is long enough to reach the death, so without
     a lookahead every candidate reads safe — which is exactly how a jump that
     steps off a fatal ledge slipped through."""
-    # max bin is 64; die at 80 -> only reachable through the lookahead.
+    # max bin is 64, lookahead 40; this sim dies on its 80th simulated frame
+    # regardless of input, so a bin is fatal exactly when duration + 40 >= 80.
     sim = _FakeNativeSim(death_frame=80)
     res = _compute(
         _masker(include_lethal_impact=True, lethal_impact_lookahead=40), sim
     )
-    assert res.all_masked_event, (
-        "a trajectory that is doomed regardless of when the macro ends must "
-        "veto the whole action"
-    )
+    expected = np.array([b + 40 < 80 for b in BINS])
+    for a in range(_NUM_ACTIONS):
+        assert (res.duration_mask[a].astype(bool) == expected).all(), (
+            a, res.duration_mask[a], expected
+        )
     assert res.masked_by_impact > 0
-    # Only the noop fail-open cell survives.
-    assert res.duration_mask.sum() == 1 and bool(res.duration_mask[0, 0])
     assert sim.neutral_ticks > 0, "the lookahead must run NEUTRAL input"
 
     # Same trajectory, no lookahead -> invisible.
@@ -172,6 +180,26 @@ def test_lookahead_catches_a_death_after_the_macro_ends():
         _masker(include_lethal_impact=True), _FakeNativeSim(death_frame=80)
     )
     assert res_none.duration_mask.all()
+
+
+def test_lookahead_death_does_not_veto_bins_that_release_in_time():
+    """Pipeline audit P0.2, false-masking direction.
+
+    The old scheme simulated ONE rollout per action -- input held to the longest
+    bin, then neutral -- and vetoed EVERY bin when that rollout died in the
+    post-maximum window. A short bin releases its input much earlier and reaches
+    the fatal frame much later (or not at all), so it must be judged on its own
+    continuation.
+    """
+    sim = _FakeNativeSim(death_frame=70)
+    res = _compute(
+        _masker(include_lethal_impact=True, lethal_impact_lookahead=20), sim
+    )
+    surviving = res.duration_mask[0].astype(bool)
+    # duration + 20 < 70 survives: bins 1..32 live, 64 dies.
+    assert surviving.any(), "short bins must not be condemned by a long bin's fate"
+    assert not res.all_masked_event
+    assert (surviving == np.array([b + 20 < 70 for b in BINS])).all()
 
 
 def test_fall_risk_gate_restores_the_early_out():
@@ -220,3 +248,87 @@ def test_survivor_keeps_every_duration(lookahead):
     )
     assert res.duration_mask.all()
     assert res.masked_by_impact == 0 and res.masked_by_mine == 0
+
+
+class _ReleaseSensitiveSim:
+    """A sim whose fate depends on WHEN the input is released.
+
+    Models the real asymmetry the shared-rollout scheme was blind to: committing
+    to a jump and holding it clears the gap, but letting go early drops the ninja
+    into it. Death happens on the first NEUTRAL frame if fewer than ``min_hold``
+    held frames preceded it.
+    """
+
+    def __init__(self, min_hold: int):
+        self.min_hold = min_hold
+        self.held = 0
+        self.dead = False
+
+    def get_ninja_jump_duration(self):
+        return 0
+
+    def fast_reset(self):
+        self.held = 0
+        self.dead = False
+
+    def inject_ninja_for_value_iteration(self, x, y, vx, vy, jd):
+        self.fast_reset()
+
+    def tick_physics_only(self, hor, jump):
+        if hor == 0 and jump == 0:
+            if self.held < self.min_hold:
+                self.dead = True
+        else:
+            self.held += 1
+
+    def has_died(self):
+        return self.dead
+
+    def get_ninja_pos(self):
+        return (0.0, 0.0)
+
+    def save_full_state(self):
+        return [self.held, int(self.dead)]
+
+    def restore_full_state(self, blob):
+        self.held, self.dead = int(blob[0]), bool(blob[1])
+        return True
+
+
+def test_short_bins_are_not_falsely_certified_by_a_long_holds_survival():
+    """Pipeline audit P0.2, false-certification direction.
+
+    The old scheme evaluated the post-macro window ONCE, after holding the input
+    to the longest bin. A short bin's own release was therefore never simulated,
+    so bins that let go too early and fall were certified safe by a rollout that
+    never let go early at all.
+    """
+    min_hold = 10
+    res = _compute(
+        _masker(include_lethal_impact=True, lethal_impact_lookahead=20),
+        _ReleaseSensitiveSim(min_hold=min_hold),
+    )
+    expected = np.array([b >= min_hold for b in BINS])
+    for a in range(_NUM_ACTIONS):
+        assert (res.duration_mask[a].astype(bool) == expected).all(), (
+            a, res.duration_mask[a], expected
+        )
+    # Bins 1, 2, 4 and 8 release before the commitment is complete and die.
+    assert res.masked_by_impact > 0
+    assert not res.all_masked_event, "the long bins are genuinely safe"
+
+
+def test_fallback_fatal_flags_a_knowingly_lethal_noop():
+    """When everything is masked the NOOP fail-open fires. If that NOOP was
+    itself evaluated as fatal, say so rather than presenting it as safe."""
+    res = _compute(
+        _masker(include_lethal_impact=True), _FakeNativeSim(death_frame=1)
+    )
+    assert res.all_masked_event
+    assert res.fallback_fatal, (
+        "the forced NOOP dies at frame 1 here; the result must not imply it is safe"
+    )
+
+    # A survivor never trips the flag.
+    ok = _compute(_masker(include_lethal_impact=True), _FakeNativeSim())
+    assert not ok.all_masked_event and not ok.fallback_fatal

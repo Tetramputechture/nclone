@@ -1,0 +1,91 @@
+{
+ "t": "layout",
+ "demo": "cap23",
+ "sim": "0x100230b0",
+ "pools": [
+  {
+   "i": 0,
+   "count": 24,
+   "stride": 48,
+   "base": "0x944a160",
+   "vtableRva": 5711568,
+   "offset": 0
+  },
+  {
+   "i": 1,
+   "count": 1,
+   "stride": 72,
+   "base": "0x944a5e0",
+   "vtableRva": 5711392,
+   "offset": 1152
+  },
+  {
+   "i": 2,
+   "count": 1,
+   "stride": 48,
+   "base": "0x944a628",
+   "vtableRva": 5711440,
+   "offset": 1224
+  },
+  {
+   "i": 3,
+   "count": 1,
+   "stride": 184,
+   "base": "0x944a658",
+   "vtableRva": 5709428,
+   "offset": 1272
+  },
+  {
+   "i": 4,
+   "count": 4,
+   "stride": 184,
+   "base": "0x944a710",
+   "vtableRva": 5709384,
+   "offset": 1456
+  },
+  {
+   "i": 6,
+   "count": 3,
+   "stride": 184,
+   "base": "0x944a9f0",
+   "vtableRva": 5709464,
+   "offset": 2192
+  },
+  {
+   "i": 9,
+   "count": 71,
+   "stride": 56,
+   "base": "0x944ac18",
+   "vtableRva": 5711868,
+   "offset": 2744
+  },
+  {
+   "i": 21,
+   "count": 6,
+   "stride": 208,
+   "base": "0x944bba0",
+   "vtableRva": 5711088,
+   "offset": 6720
+  },
+  {
+   "i": 22,
+   "count": 127,
+   "stride": 56,
+   "base": "0x944c080",
+   "vtableRva": 5709144,
+   "offset": 7968
+  },
+  {
+   "i": 27,
+   "count": 8,
+   "stride": 232,
+   "base": "0x944dc48",
+   "vtableRva": 5711996,
+   "offset": 15080
+  }
+ ],
+ "entityBytes": 16936,
+ "recBytes": 20332,
+ "ninjaSlab": 3392,
+ "frames": 2121
+}

@@ -1,0 +1,147 @@
+{
+ "t": "layout",
+ "demo": "10138933",
+ "sim": "0x100230b0",
+ "pools": [
+  {
+   "i": 0,
+   "count": 25,
+   "stride": 48,
+   "base": "0x93e3760",
+   "vtableRva": 5711568,
+   "offset": 0
+  },
+  {
+   "i": 1,
+   "count": 1,
+   "stride": 72,
+   "base": "0x93e3c10",
+   "vtableRva": 5711392,
+   "offset": 1200
+  },
+  {
+   "i": 2,
+   "count": 1,
+   "stride": 48,
+   "base": "0x93e3c58",
+   "vtableRva": 5711440,
+   "offset": 1272
+  },
+  {
+   "i": 3,
+   "count": 2,
+   "stride": 184,
+   "base": "0x93e3c88",
+   "vtableRva": 5709428,
+   "offset": 1320
+  },
+  {
+   "i": 4,
+   "count": 2,
+   "stride": 184,
+   "base": "0x93e3df8",
+   "vtableRva": 5709384,
+   "offset": 1688
+  },
+  {
+   "i": 6,
+   "count": 72,
+   "stride": 184,
+   "base": "0x93e3f68",
+   "vtableRva": 5709464,
+   "offset": 2056
+  },
+  {
+   "i": 9,
+   "count": 12,
+   "stride": 56,
+   "base": "0x93e7328",
+   "vtableRva": 5711868,
+   "offset": 15304
+  },
+  {
+   "i": 12,
+   "count": 2,
+   "stride": 112,
+   "base": "0x93e75c8",
+   "vtableRva": 5711036,
+   "offset": 15976
+  },
+  {
+   "i": 14,
+   "count": 2,
+   "stride": 72,
+   "base": "0x93e76a8",
+   "vtableRva": 5711512,
+   "offset": 16200
+  },
+  {
+   "i": 15,
+   "count": 4,
+   "stride": 104,
+   "base": "0x93e7738",
+   "vtableRva": 5709192,
+   "offset": 16344
+  },
+  {
+   "i": 16,
+   "count": 2,
+   "stride": 176,
+   "base": "0x93e78d8",
+   "vtableRva": 5712448,
+   "offset": 16760
+  },
+  {
+   "i": 17,
+   "count": 3,
+   "stride": 272,
+   "base": "0x93e7a38",
+   "vtableRva": 5712884,
+   "offset": 17112
+  },
+  {
+   "i": 19,
+   "count": 17,
+   "stride": 64,
+   "base": "0x93e7d68",
+   "vtableRva": 5712832,
+   "offset": 17928
+  },
+  {
+   "i": 21,
+   "count": 15,
+   "stride": 208,
+   "base": "0x93e81a8",
+   "vtableRva": 5711088,
+   "offset": 19016
+  },
+  {
+   "i": 24,
+   "count": 4,
+   "stride": 112,
+   "base": "0x93e8dd8",
+   "vtableRva": 5711636,
+   "offset": 22136
+  },
+  {
+   "i": 26,
+   "count": 1,
+   "stride": 72,
+   "base": "0x93e8f98",
+   "vtableRva": 5712632,
+   "offset": 22584
+  },
+  {
+   "i": 27,
+   "count": 8,
+   "stride": 232,
+   "base": "0x93e8fe0",
+   "vtableRva": 5711996,
+   "offset": 22656
+  }
+ ],
+ "entityBytes": 24512,
+ "recBytes": 27908,
+ "ninjaSlab": 3392,
+ "frames": 2596
+}

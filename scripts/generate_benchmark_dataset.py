@@ -128,6 +128,7 @@ class BenchmarkGenerator:
         max_retry: int = MAX_RETRY,
         check_solvable: bool = True,
         enforce_subset_entities: bool = False,
+        min_realism_pass_rate: Optional[float] = None,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.buckets = buckets
@@ -145,6 +146,10 @@ class BenchmarkGenerator:
         # curricula) are unaffected; pack_benchmark turns it on for the
         # official+attracts subset benchmark.
         self.enforce_subset_entities = enforce_subset_entities
+        # Per-bucket floor on the fraction of levels scoring as human-like. None
+        # = report only. See `nclone/levelgen/realism.py` for why this is not on
+        # by default: today's generators would all fail it.
+        self.min_realism_pass_rate = min_realism_pass_rate
 
         self._seen_hashes: set = set()
         self._duplicates = 0
@@ -428,7 +433,64 @@ class BenchmarkGenerator:
                     print(f"  - {split}/{bucket}/T{tier}/{lid}", file=sys.stderr)
                 return 3
             print("  Solvability guarantee: all levels solvable ✓")
+
+        # Realism audit. Reported by default, enforced only on request: the
+        # current generators score far off the human manifold, so making this a
+        # hard gate today would empty the dataset rather than improve it. Printing
+        # it every run is what keeps the drift visible while the generators are
+        # brought back -- an unmeasured gap is how they drifted in the first place.
+        self._report_realism()
+        if self.min_realism_pass_rate is not None:
+            worst = self._realism_failures(self.min_realism_pass_rate)
+            if worst:
+                print(
+                    f"\nERROR: {len(worst)} bucket(s) below the required realism "
+                    f"pass rate {self.min_realism_pass_rate:.0%}:",
+                    file=sys.stderr,
+                )
+                for bucket, rate in worst:
+                    print(f"  - {bucket}: {rate:.0%}", file=sys.stderr)
+                return 4
         return 0
+
+    def _realism_rates(self):
+        """{bucket: fraction of emitted levels on the human manifold}."""
+        try:
+            from nclone.levelgen.realism import load_default
+        except Exception:
+            return None
+        try:
+            model = load_default()
+        except FileNotFoundError:
+            return None
+
+        from collections import defaultdict
+
+        seen = defaultdict(list)
+        for pkl in sorted(self.output_dir.glob("*/*/T*/*.pkl")):
+            with open(pkl, "rb") as f:
+                rec = pickle.load(f)
+            seen[rec["bucket"]].append(model.is_realistic(rec["map_data"]))
+        return {b: sum(v) / len(v) for b, v in seen.items() if v}
+
+    def _report_realism(self) -> None:
+        rates = self._realism_rates()
+        if rates is None:
+            print(
+                "  Realism audit: skipped (no calibration; run "
+                "scripts/levelgen/calibrate_realism.py)"
+            )
+            return
+        overall = sum(rates.values()) / len(rates)
+        print(f"\n  Realism vs human corpus (mean pass rate {overall:.0%}):")
+        for bucket, rate in sorted(rates.items(), key=lambda kv: kv[1]):
+            print(f"    {bucket:24s} {rate:5.0%} on-manifold")
+
+    def _realism_failures(self, minimum: float):
+        rates = self._realism_rates()
+        if rates is None:
+            return []
+        return [(b, r) for b, r in sorted(rates.items()) if r < minimum]
 
     def _audit_output_solvable(self):
         """Re-check every emitted level with the CURRENT is_map_solvable.
@@ -540,6 +602,15 @@ def main() -> int:
         "failing seed is reseeded within --max_retry. Use for subset benchmarks "
         "that must not contain locked doors, drones, thwumps, etc.",
     )
+    parser.add_argument(
+        "--min_realism_pass_rate",
+        type=float,
+        default=None,
+        help="Fail the run if any bucket has fewer than this fraction of levels "
+        "scoring as human-like against the corpus-calibrated realism model. "
+        "Omitted = report only, which is the current default because every "
+        "bucket would fail it today (see nclone/levelgen/realism.py).",
+    )
     args = parser.parse_args()
 
     generator = BenchmarkGenerator(
@@ -553,6 +624,7 @@ def main() -> int:
         max_retry=args.max_retry,
         check_solvable=args.check_solvable,
         enforce_subset_entities=args.subset_entities_only,
+        min_realism_pass_rate=args.min_realism_pass_rate,
     )
     return generator.run(args.mode)
 

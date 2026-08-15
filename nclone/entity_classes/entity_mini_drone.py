@@ -64,4 +64,4 @@ class EntityMiniDrone(EntityDroneBase):
             if overlap_circle_vs_circle(
                 self.xpos, self.ypos, self.RADIUS, ninja.xpos, ninja.ypos, NINJA_RADIUS
             ):
-                ninja.kill(0, 0, 0, 0, 0)
+                ninja.kill(0, 0, 0, 0, 0, cause="mini_drone")

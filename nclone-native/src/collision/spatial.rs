@@ -24,12 +24,29 @@ pub fn gather_segments_from_region(
     let min_cell_y = (min_y / TILE_SIZE).floor().max(0.0).min((MAP_HEIGHT - 1) as f64) as usize;
     let max_cell_y = (max_y / TILE_SIZE).floor().max(0.0).min((MAP_HEIGHT - 1) as f64) as usize;
 
+    // Order is load-bearing: `get_single_closest_point` keeps the FIRST segment
+    // of an exact tie (strict `<`), so at a corner the gather order alone decides
+    // which normal ejects the ninja. The game's gather (`FUN_1050DDF0`,
+    // `docs/decomp/gs_sweep_DDF0.c`) runs y outer, x inner. Must stay in step
+    // with `nclone/physics.py:gather_segments_from_region`.
     let mut result = Vec::new();
-    for xcell in min_cell_x..=max_cell_x {
+    if crate::ab::ab().row_major_gather {
         for ycell in min_cell_y..=max_cell_y {
-            for &seg_idx in &segment_grid[xcell][ycell] {
-                if all_segments[seg_idx].is_active() {
-                    result.push(seg_idx);
+            for xcell in min_cell_x..=max_cell_x {
+                for &seg_idx in &segment_grid[xcell][ycell] {
+                    if all_segments[seg_idx].is_active() {
+                        result.push(seg_idx);
+                    }
+                }
+            }
+        }
+    } else {
+        for xcell in min_cell_x..=max_cell_x {
+            for ycell in min_cell_y..=max_cell_y {
+                for &seg_idx in &segment_grid[xcell][ycell] {
+                    if all_segments[seg_idx].is_active() {
+                        result.push(seg_idx);
+                    }
                 }
             }
         }

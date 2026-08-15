@@ -35,11 +35,21 @@ EMPTY = 0
 SUBTILE = 0.25  # quarter-tile = 1 map-unit = 6px
 
 
-def _snap_entity(x: float, y: float, anchor: str) -> Tuple[float, float]:
+def _snap_entity(x: float, y: float, anchor: str,
+                 center_bias: float = 0.5) -> Tuple[float, float]:
     """Snap a desired entity position to the 6px lattice. ``anchor="center"``
-    biases by +0.5 tile so an integer ``(x, y)`` means "centre of tile (x, y)";
-    ``anchor="corner"`` treats ``(x, y)`` as an absolute sub-tile coordinate."""
-    bias = 0.5 if anchor == "center" else 0.0
+    biases by ``center_bias`` tiles so an integer ``(x, y)`` means "centre of
+    tile (x, y)"; ``anchor="corner"`` treats ``(x, y)`` as an absolute sub-tile
+    coordinate.
+
+    ``center_bias`` is per entity type because the bias must make up whatever
+    the STORE-TIME offset in ``Map.add_entity`` does not already supply. Gold
+    carries +6 units, which is already border+half-tile, so it needs no bias at
+    all; a toggle mine carries 0 and needs a full half-tile. ``"corner"`` is
+    always half a tile below ``"center"`` -- that is what makes the two anchors
+    stay half a tile apart for EVERY type rather than collapsing onto each other
+    whenever ``center_bias`` happens to be zero."""
+    bias = center_bias if anchor == "center" else center_bias - 0.5
     return (round((x + bias) / SUBTILE) * SUBTILE,
             round((y + bias) / SUBTILE) * SUBTILE)
 
@@ -135,7 +145,9 @@ class MapEditor:
         return self
 
     def add_gold(self, x: float, y: float, anchor: str = "center") -> "MapEditor":
-        gx, gy = _snap_entity(x, y, anchor)
+        """Place gold. Same contract as :meth:`add_mine`, but gold's store-time
+        offset already centres it, so ``anchor="center"`` adds no extra bias."""
+        gx, gy = _snap_entity(x, y, anchor, center_bias=0.0)
         if self.in_bounds(int(gx), int(gy)):
             self._gold.append((gx, gy))
         return self

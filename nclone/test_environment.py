@@ -10,6 +10,7 @@ Map sources (pick one):
   (default)            the env's default / custom map
   --map FILE           a single map file (hot-reloads on disk changes)
   --test-generators    browse EVERY curriculum generator + live solvability
+  --test-buckets       browse BUCKET_CATALOG cells (bucket x tier), generated LIVE
   --test-official-maps cycle the bundled official SI maps
   --benchmark-dataset  sample a mechanic-primary benchmark dataset
   --benchmark-montage  render the WHOLE dataset to per-bucket contact-sheet PNGs
@@ -18,6 +19,10 @@ Examples
 --------
 python -m nclone.test_environment
 python -m nclone.test_environment --test-generators
+# Validate one bucket's difficulty ladder: [ / ] change bucket, - / = change tier,
+# F re-filters live, R re-rolls the seed. The panel names the hazard entities in
+# the level, which is what tells a correct DRONE level from a valid-looking one.
+python -m nclone.test_environment --test-buckets --bucket-filter DRONE
 python -m nclone.test_environment --headless --export-frame /tmp/level.png
 python -m nclone.test_environment --benchmark-dataset --test-dataset-path datasets/mechanic_benchmark_v2
 # Visualize the ENTIRE curriculum at a glance (one contact sheet per bucket):
@@ -51,6 +56,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Runtime / profiling.
     p.add_argument("--headless", action="store_true", help="Run without a GUI window.")
+    p.add_argument("--sdl-driver", type=str, default="auto",
+                   help="SDL video driver ('auto', 'x11', 'wayland', ...). 'auto' "
+                        "prefers x11 under WSLg, where the wayland backend does "
+                        "not present the mouse cursor.")
     p.add_argument("--log-frametimes", action="store_true", help="Print per-frame times.")
     p.add_argument("--profile-frames", type=int, default=None,
                    help="Run N frames then exit (for cProfile timing).")
@@ -80,6 +89,30 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Browse every curriculum generator + live solvability.")
     p.add_argument("--generator-seed-start", type=int, default=10000,
                    help="Starting seed for generator testing (default: 10000).")
+    p.add_argument("--generator-filter", type=str, default="",
+                   help="With --test-generators, restrict browsing to generators "
+                        "whose 'type:preset' contains this (case-insensitive). "
+                        "e.g. --generator-filter mine_maze, or mine_maze:heavy.")
+    p.add_argument("--generator-certify", action="store_true",
+                   help="Run the d* ROUTE CERTIFICATE while browsing overlay "
+                        "generators (mine_overlay / hazard_overlay). OFF by "
+                        "default: it forks a planner per level with a 12s cap and "
+                        "up to 12 base retries, which freezes the window for as "
+                        "long as it takes. With it off you see the same LAYOUT, "
+                        "solvability is still checked, but no validated route is "
+                        "produced. Turn it on to browse exactly what a dataset "
+                        "build would emit.")
+    p.add_argument("--test-buckets", action="store_true",
+                   help="Browse BUCKET_CATALOG cells (bucket x tier), generating "
+                        "each level LIVE. Unlike --benchmark-dataset this needs no "
+                        "packed dataset, so a bucket can be eyeballed the moment "
+                        "its catalog entry exists.")
+    p.add_argument("--bucket-filter", type=str, default="",
+                   help="With --test-buckets, restrict to buckets whose name "
+                        "contains this (case-insensitive), e.g. --bucket-filter DRONE. "
+                        "Editable live in the panel via the Filter field (F).")
+    p.add_argument("--bucket-tier", type=int, default=None, choices=(1, 2, 3, 4),
+                   help="With --test-buckets, restrict to a single tier.")
     p.add_argument("--test-official-maps", action="store_true",
                    help="Cycle the bundled official SI maps.")
     p.add_argument("--benchmark-dataset", action="store_true",
@@ -95,6 +128,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Benchmark: advance on any episode end (not just success).")
     p.add_argument("--no-benchmark-hud", action="store_true",
                    help="Benchmark: skip the on-screen HUD text.")
+    p.add_argument("--no-linger-on-death", dest="linger_on_death",
+                   action="store_false",
+                   help="Reset immediately when the ninja dies. By default a "
+                        "death keeps running so the ragdoll plays out, and R "
+                        "resets. Ignored under --headless / --auto-advance / "
+                        "while recording.")
     p.add_argument("--benchmark-montage", action="store_true",
                    help="Render EVERY level in the dataset to per-bucket contact-sheet "
                         "PNGs (one image per mechanic bucket) and exit. Visualizes the "
@@ -134,10 +173,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def resolve_args(args) -> None:
     """Validate mutually exclusive modes and derive a couple of fields."""
-    sources = [args.test_generators, args.test_official_maps, args.benchmark_dataset, bool(args.map)]
+    sources = [args.test_generators, getattr(args, "test_buckets", False),
+               args.test_official_maps, args.benchmark_dataset, bool(args.map)]
     if sum(bool(s) for s in sources) > 1:
         sys.exit("Error: choose only one of --map / --test-generators / "
-                 "--test-official-maps / --benchmark-dataset.")
+                 "--test-buckets / --test-official-maps / --benchmark-dataset.")
 
     # Benchmark dataset root convenience default.
     args.benchmark_root = args.test_dataset_path
@@ -302,12 +342,61 @@ def run_tas(env, args) -> None:
     run_tas_editor(env, initial_actions=preload, output_dir=args.tas_output, level_id=level_id)
 
 
-def main() -> None:
-    pygame.init()
-    pygame.display.set_caption("N++ Environment Test")
+def _select_sdl_driver(requested: str) -> None:
+    """Choose the SDL video driver before pygame initialises the display.
 
+    Under WSLg, SDL 2.28 picks the `wayland` backend, whose client-side cursor
+    surface WSLg's compositor commonly fails to present -- the mouse pointer
+    simply does not appear over the window. The dev panel is mouse-driven, so
+    that makes the tool unusable. WSLg also exports a working X server, and the
+    `x11` backend draws the cursor correctly there.
+
+    Only applied when every condition holds: we are on WSL, the user has not
+    already pinned SDL_VIDEODRIVER, a DISPLAY is available, AND the x11 backend
+    actually initialises. That last check is not paranoia -- pygame wheels are
+    routinely built without x11 (this machine's SDL 2.28.4 has only wayland,
+    offscreen and dummy), and pinning a missing driver makes `pygame.display.init`
+    raise, taking the whole tool down. When x11 is unavailable the dev tool falls
+    back to drawing a software cursor instead; see `dev_tool.app`.
+
+    On any other platform this is a no-op, so a native Linux/Wayland desktop
+    keeps the backend it chose.
+    """
+    if requested and requested != "auto":
+        os.environ["SDL_VIDEODRIVER"] = requested
+        return
+    if os.environ.get("SDL_VIDEODRIVER"):
+        return  # explicitly pinned by the caller; respect it
+    try:
+        is_wsl = "microsoft" in open("/proc/version").read().lower()
+    except OSError:
+        is_wsl = False
+    if not (is_wsl and os.environ.get("WAYLAND_DISPLAY") and os.environ.get("DISPLAY")):
+        return
+    os.environ["SDL_VIDEODRIVER"] = "x11"
+    try:
+        pygame.display.init()
+        pygame.display.quit()
+    except pygame.error:
+        # No x11 in this SDL build. Leave the driver unset so SDL picks its
+        # default, and let the software cursor cover the WSLg gap.
+        del os.environ["SDL_VIDEODRIVER"]
+
+
+def main() -> None:
+    # Parse BEFORE pygame.init(): the video driver has to be chosen before the
+    # display subsystem comes up, and pygame.init() brings it up.
     args = build_parser().parse_args()
     resolve_args(args)
+    if not args.headless:
+        _select_sdl_driver(getattr(args, "sdl_driver", "auto"))
+
+    pygame.init()
+    pygame.display.set_caption("N++ Environment Test")
+    if not args.headless:
+        pygame.mouse.set_visible(True)
+        print(f"SDL video driver: {pygame.display.get_driver()}")
+
     print(f"Headless: {args.headless}")
 
     if args.benchmark_montage:

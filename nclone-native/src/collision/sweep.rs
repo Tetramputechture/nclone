@@ -59,27 +59,21 @@ pub fn get_single_closest_point(
         ypos + radius,
     );
 
-    let mut shortest_distance = f64::INFINITY;
+    // Python's initial bound (`physics.py:116`), not `f64::INFINITY`. Unreachable
+    // on a real level -- the longest diagonal squares to ~1.5e6 -- but it is the
+    // reference value, so it stays the reference value.
+    let mut shortest_distance = 9999999.0f64;
     let mut result = 0i32;
     let mut closest_point: Option<(f64, f64)> = None;
 
-    let query_min_x = xpos - radius;
-    let query_min_y = ypos - radius;
-    let query_max_x = xpos + radius;
-    let query_max_y = ypos + radius;
-
+    // NO AABB rejection against the query box. `gather_segments_from_region`
+    // returns everything registered in the overlapped CELLS, and Python then
+    // considers every one of them -- a segment can sit well outside the query box
+    // yet still be the closest point returned. Filtering here made the native sim
+    // miss a door segment 36px from a dual laser that Python sees, flipping the
+    // laser's spinner-vs-surface mode at construction.
     for seg_idx in seg_indices {
         let seg = &all_segments[seg_idx];
-        let (seg_min_x, seg_min_y, seg_max_x, seg_max_y) = seg.get_bounds();
-
-        // Fast AABB rejection
-        if seg_max_x < query_min_x
-            || seg_min_x > query_max_x
-            || seg_max_y < query_min_y
-            || seg_min_y > query_max_y
-        {
-            continue;
-        }
 
         let (is_back_facing, a, b) = seg.get_closest_point(xpos, ypos);
         let mut distance_sq = (xpos - a) * (xpos - a) + (ypos - b) * (ypos - b);

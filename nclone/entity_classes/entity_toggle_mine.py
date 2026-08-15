@@ -79,8 +79,13 @@ class EntityToggleMine(Entity):
         super().__init__(entity_type, sim, xcoord, ycoord)
         self.is_thinkable = True
         self.is_logical_collidable = True
+        #: Cosmetic only: set when this mine has gone off, either by killing
+        #: the ninja or by a ragdoll limb landing on it. Nothing in the physics
+        #: or logic reads it -- the renderer skips the entity so a spent mine
+        #: stops being drawn. See `Ragdoll.collide_vs_mines`.
+        self.detonated = False
         self.set_state(state)
-        
+
         # Store initial values for fast reset
         self._initial_state = state
         self._initial_xpos = self.xpos
@@ -89,6 +94,12 @@ class EntityToggleMine(Entity):
 
     def think(self):
         """Handle interactions between the ninja and the untoggled mine"""
+        if self.detonated:
+            # Spent. Only reachable once the ninja is dead, and a dead ninja is
+            # not a valid target, so every branch below is a no-op -- skip the
+            # overlap tests rather than run them once per mine per frame for as
+            # long as the corpse keeps tumbling.
+            return
         ninja = self.sim.ninja
         if ninja.is_valid_target():
             if self.state == 1:  # Set state to toggling if ninja touches untoggled mine
@@ -119,12 +130,15 @@ class EntityToggleMine(Entity):
 
     def logical_collision(self):
         """Kill the ninja if it touches a toggled mine"""
+        if self.detonated:
+            return
         ninja = self.sim.ninja
         if ninja.is_valid_target() and self.state == 0:
             if overlap_circle_vs_circle(
                 self.xpos, self.ypos, self.RADIUS, ninja.xpos, ninja.ypos, NINJA_RADIUS
             ):
                 self.set_state(1)
+                self.detonated = True  # cosmetic; stops the renderer drawing it
                 ninja.kill(0, 0, 0, 0, 0, cause="mine")
 
     def set_state(self, state):
@@ -146,4 +160,5 @@ class EntityToggleMine(Entity):
         self.ypos = self._initial_ypos
         self.cell = self._initial_cell
         self.active = True
+        self.detonated = False
         self.set_state(self._initial_state)

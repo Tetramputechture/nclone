@@ -8,6 +8,7 @@ is now just argument parsing + env construction + a call to :func:`run_dev_tool`
 
 from __future__ import annotations
 
+import os
 import time
 from typing import List, Optional
 
@@ -15,9 +16,10 @@ import pygame
 
 from . import controls, layout
 from .controls import ACTION, FIELD, HEADER, STATUS, TOGGLE, Row
-from .generators import GeneratorBrowser
+from .generators import BucketBrowser, GeneratorBrowser
 from .loaders import (
     BenchmarkSource,
+    BucketSource,
     DefaultMapSource,
     FileMapSource,
     GeneratorSource,
@@ -45,6 +47,16 @@ class DevToolApp:
         self.panel = DevPanel() if self.use_panel else None
         self.focused_field: Optional[str] = None
         self.field_buffer: str = ""
+        #: field_name -> (commit callback, accepts-non-digits). Registered by
+        #: :meth:`_focus_field` when a field row is activated, so adding a field
+        #: does not mean editing the keydown handler.
+        self._field_commit: dict = {}
+        #: Last contained control failure, shown in the panel. See
+        #: :meth:`_safe_activate`.
+        self.last_action_error: Optional[str] = None
+        #: True while a death is being watched instead of reset. See
+        #: :meth:`_should_linger`.
+        self._lingering = False
 
         # Optional live 3D view of the same sim, blitted into a reserved strip.
         self.panel3d = None
@@ -112,8 +124,22 @@ class DevToolApp:
     def _build_map_source(self) -> MapSource:
         args = self.args
         if getattr(args, "test_generators", False):
-            browser = GeneratorBrowser(start_seed=getattr(args, "generator_seed_start", 10000))
+            browser = GeneratorBrowser(
+                start_seed=getattr(args, "generator_seed_start", 10000),
+                name_filter=getattr(args, "generator_filter", "") or "",
+                certify_routes=getattr(args, "generator_certify", False),
+            )
             src = GeneratorSource(browser)
+            src.load_current(self.env)
+            return src
+        if getattr(args, "test_buckets", False):
+            browser = BucketBrowser(
+                start_seed=getattr(args, "generator_seed_start", 10000),
+                bucket_filter=getattr(args, "bucket_filter", "") or "",
+                tier=getattr(args, "bucket_tier", None),
+                certify_routes=getattr(args, "generator_certify", False),
+            )
+            src = BucketSource(browser)
             src.load_current(self.env)
             return src
         if getattr(args, "test_official_maps", False):
@@ -140,6 +166,7 @@ class DevToolApp:
     # -- actions wired to controls ----------------------------------------
 
     def reset_current(self):
+        self._lingering = False
         if self.recorder is not None and self.recorder.is_recording:
             won = self.env.nplay_headless.ninja_has_won()
             self.recorder.stop_recording(success=won, save=won)
@@ -165,24 +192,114 @@ class DevToolApp:
         if isinstance(self.map_source, GeneratorSource):
             self.map_source.browser.scan_all()
 
+    def scan_buckets(self):
+        if isinstance(self.map_source, BucketSource):
+            self.map_source.browser.scan_all()
+
+    def _safe_activate(self, callback, label: str = "") -> None:
+        """Run a panel control's callback, containing and REPORTING any failure.
+
+        Every control used to dispatch straight into its callback, so a single
+        raising generator closed the window -- with the traceback going to a
+        terminal the user may not have been watching, which made it look like a
+        crash with no cause.
+
+        Generators raise legitimately and often: `map_hazard_overlay` and
+        `map_mine_overlay` both raise `RuntimeError` when they cannot certify a
+        level within their retry budget, and that is a normal outcome for a
+        seed, not a bug. Browsing exists to FIND those, so the tool has to
+        survive them: the env keeps the previously loaded level, the reason is
+        printed once with a traceback, and the panel shows it until the next
+        successful action.
+        """
+        if callback is None:
+            return
+        try:
+            callback()
+            self.last_action_error = None
+        except Exception as exc:  # noqa: BLE001 - containment is the point
+            import sys
+            import traceback
+
+            where = label or getattr(callback, "__name__", "control")
+            self.last_action_error = f"{where}: {type(exc).__name__}: {exc}"
+            # Traceback to STDOUT, with the message, deliberately: print_exc
+            # defaults to stderr, which interleaves unpredictably with the rest
+            # of the tool's output and is lost entirely by a `> log` redirect --
+            # so the report would arrive split in half or not at all.
+            print(f"\n[dev-tool] '{where}' failed and was contained:")
+            traceback.print_exc(file=sys.stdout)
+            print("[dev-tool] the previous level is still loaded; carry on.\n")
+
+    def _nav(self, method: str):
+        """Call a navigation method on the current source's browser and reload."""
+        browser = getattr(self.map_source, "browser", None)
+        fn = getattr(browser, method, None)
+        if fn is None:
+            return
+        fn()
+        self.map_source.load_current(self.env)
+
     def dump_ascii(self):
-        if isinstance(self.map_source, GeneratorSource):
-            print("\n" + self.map_source.browser.to_ascii() + "\n")
+        browser = getattr(self.map_source, "browser", None)
+        if browser is not None and hasattr(browser, "to_ascii"):
+            print("\n" + browser.to_ascii() + "\n")
 
-    def focus_seed(self):
-        if isinstance(self.map_source, GeneratorSource):
-            self.focused_field = "seed"
-            self.field_buffer = str(self.map_source.browser.seed)
+    # -- editable panel fields --------------------------------------------
 
-    def commit_seed(self):
-        if isinstance(self.map_source, GeneratorSource) and self.field_buffer:
+    def _focus_field(self, name: str, initial: str, commit, numeric: bool = True):
+        self.focused_field = name
+        self.field_buffer = str(initial)
+        self._field_commit[name] = (commit, numeric)
+
+    def commit_field(self):
+        """Apply the focused field's buffer through its registered callback."""
+        name = self.focused_field
+        entry = self._field_commit.get(name) if name else None
+        if entry is not None and self.field_buffer:
+            commit, _numeric = entry
             try:
-                self.map_source.browser.set_seed(int(self.field_buffer))
-                self.map_source.load_current(self.env)
-            except ValueError:
-                pass
+                commit(self.field_buffer)
+            except (ValueError, RuntimeError) as exc:
+                # A typo'd seed or a filter that matches nothing must not take
+                # the tool down; the browser keeps its previous state.
+                print(f"[panel] {name}: {exc}")
         self.focused_field = None
         self.field_buffer = ""
+
+    def _focused_is_numeric(self) -> bool:
+        entry = self._field_commit.get(self.focused_field or "")
+        return True if entry is None else entry[1]
+
+    def focus_seed(self):
+        browser = getattr(self.map_source, "browser", None)
+        if browser is None:
+            return
+        self._focus_field(
+            "seed", browser.seed,
+            lambda text: (browser.set_seed(int(text)),
+                          self.map_source.load_current(self.env)),
+        )
+
+    def focus_filter(self):
+        """Type a generator or bucket filter without restarting the tool.
+
+        The CLI flags can only be set before the window opens, so validating a
+        second generator used to mean quitting and relaunching.
+        """
+        browser = getattr(self.map_source, "browser", None)
+        if browser is None or not hasattr(browser, "set_filter"):
+            return
+        current = getattr(browser, "bucket_filter", None)
+        if current is None:
+            current = getattr(browser, "name_filter", "")
+
+        def _commit(text: str) -> None:
+            if not browser.set_filter(text):
+                raise RuntimeError(f"no match for {text!r} — filter unchanged")
+            self.map_source.load_current(self.env)
+
+        self._focus_field("filter", current, _commit, numeric=False)
 
     def start_recording(self):
         if self.recorder is None or self.recorder.is_recording:
@@ -216,9 +333,40 @@ class DevToolApp:
                         on_activate=self.toggle_mirror))
 
         if isinstance(self.map_source, GeneratorSource):
+            # Type is the coarse axis: ~155 presets across ~39 generators, so
+            # stepping preset-by-preset to reach another generator is hopeless.
+            rows.append(Row(ACTION, "Prev generator", "[", pygame.K_LEFTBRACKET,
+                            on_activate=lambda: self._nav("prev_type")))
+            rows.append(Row(ACTION, "Next generator", "]", pygame.K_RIGHTBRACKET,
+                            on_activate=lambda: self._nav("next_type")))
+            rows.append(Row(FIELD, "Filter", "F", pygame.K_f,
+                            get_value=lambda: self.map_source.browser.name_filter or "(all)",
+                            on_activate=self.focus_filter, field_name="filter",
+                            numeric=False))
             rows.append(Row(FIELD, "Seed", get_value=lambda: str(self.map_source.browser.seed),
                             on_activate=self.focus_seed, field_name="seed"))
             rows.append(Row(ACTION, "Scan all generators", "", None, on_activate=self.scan_generators))
+            rows.append(Row(ACTION, "Dump ASCII", "V", pygame.K_v, on_activate=self.dump_ascii))
+        if isinstance(self.map_source, BucketSource):
+            rows.append(Row(ACTION, "Prev bucket", "[", pygame.K_LEFTBRACKET,
+                            on_activate=lambda: self.map_source.prev_bucket(self.env)))
+            rows.append(Row(ACTION, "Next bucket", "]", pygame.K_RIGHTBRACKET,
+                            on_activate=lambda: self.map_source.next_bucket(self.env)))
+            # Tier moves WITHIN the current bucket. Comparing T1 against T4 of
+            # one bucket is the check that matters: a T4 that reads easier than
+            # T1 is exactly what the tier presets exist to prevent.
+            rows.append(Row(ACTION, "Prev tier", "-", pygame.K_MINUS,
+                            on_activate=lambda: self.map_source.prev_tier(self.env)))
+            rows.append(Row(ACTION, "Next tier", "=", pygame.K_EQUALS,
+                            on_activate=lambda: self.map_source.next_tier(self.env)))
+            rows.append(Row(FIELD, "Filter", "F", pygame.K_f,
+                            get_value=lambda: self.map_source.browser.bucket_filter or "(all)",
+                            on_activate=self.focus_filter, field_name="filter",
+                            numeric=False))
+            rows.append(Row(FIELD, "Seed", get_value=lambda: str(self.map_source.browser.seed),
+                            on_activate=self.focus_seed, field_name="seed"))
+            rows.append(Row(ACTION, "Scan all buckets", "", None,
+                            on_activate=self.scan_buckets))
             rows.append(Row(ACTION, "Dump ASCII", "V", pygame.K_v, on_activate=self.dump_ascii))
         if isinstance(self.map_source, BenchmarkSource):
             rows.append(Row(ACTION, "Prev bucket", "[", pygame.K_LEFTBRACKET,
@@ -228,6 +376,11 @@ class DevToolApp:
 
         for line in self.map_source.status_lines():
             rows.append(Row(STATUS, line))
+        if self.last_action_error:
+            # Shown until the next successful action. Without this the only
+            # trace of a contained failure is a terminal the user may not be
+            # watching, which reads as "the button did nothing".
+            rows.append(Row(STATUS, f"! {self.last_action_error}"[:44]))
 
         rows.append(Row(HEADER, "Overlays"))
         for name, label, key, key_label in self.overlays.toggle_specs():
@@ -266,7 +419,7 @@ class DevToolApp:
                 if row is not None and row.on_activate is not None:
                     if row.kind != FIELD:
                         self.focused_field = None
-                    row.on_activate()
+                    self._safe_activate(row.on_activate, row.label)
             elif event.type == pygame.MOUSEWHEEL and self.panel:
                 # Wheel-up (+y) reveals content above, i.e. a smaller offset.
                 if self.panel.contains(pygame.mouse.get_pos()):
@@ -280,13 +433,16 @@ class DevToolApp:
         # Field editing takes priority over hotkeys / movement registration.
         if self.focused_field is not None:
             if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-                self.commit_seed()
+                self.commit_field()
             elif event.key == pygame.K_ESCAPE:
                 self.focused_field = None
                 self.field_buffer = ""
             elif event.key == pygame.K_BACKSPACE:
                 self.field_buffer = self.field_buffer[:-1]
-            elif event.unicode and event.unicode.isdigit():
+            elif event.unicode and (
+                event.unicode.isdigit()
+                or (not self._focused_is_numeric() and event.unicode.isprintable())
+            ):
                 self.field_buffer += event.unicode
             return
 
@@ -297,7 +453,9 @@ class DevToolApp:
             return
 
         # Panel hotkeys (toggles / actions).
-        if controls.dispatch_key(rows, event.key):
+        row = controls.row_for_key(rows, event.key)
+        if row is not None:
+            self._safe_activate(row.on_activate, row.label)
             return
 
         # Discrete-action arrow registration.
@@ -386,7 +544,16 @@ class DevToolApp:
                 self.memory_profiler.take_snapshot(self.frame_counter, obs=self.observation)
 
             if did_step and (terminated or truncated):
-                self._on_episode_end()
+                if self._should_linger(truncated):
+                    # Keep stepping: `env.step` still ticks the sim after it
+                    # reports terminated, and `nsim.tick` drives the ragdoll for
+                    # as long as the ninja is in state 6. So the corpse plays
+                    # out on screen instead of vanishing on the death frame.
+                    if not self._lingering:
+                        self._lingering = True
+                        print("Ninja died -- watching the ragdoll. R to reset.")
+                else:
+                    self._on_episode_end()
 
             self._render(clock, rows)
 
@@ -399,7 +566,27 @@ class DevToolApp:
 
         self._finalize()
 
+    def _should_linger(self, truncated: bool) -> bool:
+        """Whether to let a death play out on screen rather than reset.
+
+        The ragdoll is the only thing worth watching after a death and it is
+        gone the instant the episode resets, so in the interactive tool a death
+        holds until the user presses R. Anything running unattended -- headless,
+        auto-advance, an active recording -- keeps the old behaviour, as does a
+        truncation, which has no corpse to show.
+        """
+        if truncated or self.headless:
+            return False
+        if not getattr(self.args, "linger_on_death", True):
+            return False
+        if getattr(self.args, "auto_advance", False):
+            return False
+        if self.recorder is not None and self.recorder.is_recording:
+            return False
+        return self.env.nplay_headless.ninja_has_died()
+
     def _on_episode_end(self):
+        self._lingering = False
         if getattr(self.args, "step_on_input", False):
             self.input_sequence.clear()
         won = self.env.nplay_headless.ninja_has_won()
@@ -436,8 +623,10 @@ class DevToolApp:
                 self.panel3d = None
         if self.panel is not None:
             self.panel.draw(screen, rows, self.focused_field, self.field_buffer)
+            _draw_software_cursor(screen)
             pygame.display.flip()
         elif self.panel3d is not None:
+            _draw_software_cursor(screen)
             pygame.display.flip()
         if clock is not None:
             clock.tick(60)
@@ -449,6 +638,54 @@ class DevToolApp:
                 self.memory_profiler.compare_snapshots(0, -1)
         if self.recorder is not None:
             self.recorder.print_statistics()
+
+
+def _software_cursor_wanted() -> bool:
+    """True when SDL will not present a hardware cursor and we must draw one.
+
+    SDL's wayland backend under WSLg routinely fails to show the pointer: the
+    client has to attach its own cursor surface and WSLg's compositor commonly
+    drops it. The dev panel is mouse-driven -- toggles, sliders, text fields --
+    so an invisible pointer makes the tool unusable.
+
+    The clean fix is the x11 backend, which draws the cursor correctly, but
+    pygame wheels are frequently built without it (SDL 2.28.4 here ships only
+    wayland/offscreen/dummy), so `test_environment._select_sdl_driver` cannot
+    always get there. This is the fallback for that case, and it is deliberately
+    narrow: only when the wayland backend is actually in use, so a working
+    hardware cursor is never doubled up with a drawn one.
+
+    ``NCLONE_SOFTWARE_CURSOR=1`` / ``=0`` forces it on or off.
+    """
+    forced = os.environ.get("NCLONE_SOFTWARE_CURSOR")
+    if forced is not None:
+        return forced == "1"
+    try:
+        return pygame.display.get_driver() == "wayland"
+    except pygame.error:
+        return False
+
+
+_SW_CURSOR_CACHE = {}
+
+
+def _draw_software_cursor(screen) -> None:
+    """Blit an arrow at the mouse position, if a software cursor is needed."""
+    if screen is None or not _software_cursor_wanted():
+        return
+    if not pygame.mouse.get_focused():
+        return  # pointer is outside the window; drawing one would be a lie
+    cursor = _SW_CURSOR_CACHE.get("arrow")
+    if cursor is None:
+        # A classic arrow: white fill, black outline so it reads against both
+        # the dark level art and the light panel.
+        points = [(0, 0), (0, 16), (4, 12), (7, 18), (10, 17), (7, 11), (12, 11)]
+        cursor = pygame.Surface((14, 20), pygame.SRCALPHA)
+        pygame.draw.polygon(cursor, (0, 0, 0, 255), points)
+        pygame.draw.polygon(cursor, (255, 255, 255, 255), points, 0)
+        pygame.draw.polygon(cursor, (0, 0, 0, 255), points, 1)
+        _SW_CURSOR_CACHE["arrow"] = cursor
+    screen.blit(cursor, pygame.mouse.get_pos())
 
 
 def run_dev_tool(env, args):

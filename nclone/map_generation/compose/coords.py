@@ -15,9 +15,14 @@ The relationship (verified against ``map.Map._to_map_data_units`` and
 
 Entity store-time offsets (applied inside ``Map.add_entity`` /
 ``Map.set_ninja_spawn``) are PER ENTITY TYPE: ninja / exit door / exit switch /
-locked door carry +6, gold carries -6, and a toggle mine carries 0. Recovering a
-grid coordinate therefore requires subtracting the *type-appropriate* offset
-before dividing -- a single global offset would be wrong for mines.
+locked door / gold carry +6, and a toggle mine carries 0. Recovering a grid
+coordinate therefore requires subtracting the *type-appropriate* offset before
+dividing -- a single global offset would be wrong for mines.
+
+The +6 decomposes as 4 units of border (map_data tile ``(i,j)`` is sim tile
+``(i+1,j+1)``) plus 2 units of half-tile, so an integer grid coordinate names the
+CENTRE of that tile. Gold used to carry -6 and therefore landed three tiles
+up-and-left of everything else placed at the same coordinate.
 """
 
 from __future__ import annotations
@@ -48,7 +53,7 @@ ENTITY_OFFSET_UNITS: Dict[str, int] = {
     "ninja": 6,
     "exit_door": 6,
     "exit_switch": 6,
-    "gold": -6,
+    "gold": 6,
     "toggle_mine": 0,
     "locked_door": 6,
     "locked_door_switch": 6,

@@ -24,6 +24,19 @@ class OverlayManager:
         ("tile_types", "Tile types", "set_tile_types_debug_enabled", pygame.K_i, "I"),
         ("action_mask", "Action mask", "set_action_mask_debug_enabled", pygame.K_w, "W"),
         ("mine_sdf", "Mine SDF", "set_mine_sdf_debug_enabled", pygame.K_m, "M"),
+        # The threat field's time-to-lethal channels, read straight out of the
+        # native sim. Complements "Mine SDF": that one shows how FAR danger is,
+        # this one shows WHEN it arrives -- a cell 50px from a drone reads
+        # identically on an SDF whether the drone is approaching or leaving, and
+        # those need opposite play. Cyan hatch = reactive tier (worst-case
+        # envelope rather than exact forecast).
+        (
+            "threat_ttl",
+            "Threat time-to-lethal",
+            "set_threat_ttl_debug_enabled",
+            pygame.K_u,
+            "U",
+        ),
         (
             "jump_cost_to_go",
             "Jump cost-to-go",
@@ -43,6 +56,25 @@ class OverlayManager:
         ("raycasts", "Cardinal raycasts", "set_raycasts_debug_enabled", pygame.K_k, "K"),
         ("hazard_combo", "Hazard combo", "set_hazard_debug_combo_enabled", pygame.K_h, "H"),
         ("reachability", "Reachability", "set_reachability_overlay_enabled", pygame.K_y, "Y"),
+        # The anisotropic free-space field the PBRS potential reads, plus the
+        # steepest-descent route through it coloured by move class. Cheap enough
+        # (~10ms native flood) to toggle freely, unlike "Jump cost-to-go".
+        (
+            "physics_cost_to_go",
+            "Physics cost-to-go",
+            "set_physics_cost_to_go_debug_enabled",
+            pygame.K_d,
+            "D",
+        ),
+        # Companion switch: same overlay, legacy isotropic field. Toggling this
+        # against the one above on a single level is the A/B.
+        (
+            "physics_ctg_geometric",
+            "Physics ctg: geometric",
+            "set_physics_cost_to_go_geometric",
+            pygame.K_e,
+            "E",
+        ),
     ]
 
     # Data-fed overlays surfaced as toggles too (name, label, key, key label).

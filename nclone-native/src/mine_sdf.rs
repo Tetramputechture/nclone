@@ -8,6 +8,7 @@
 //! effective radius of toggled mines (see `compute_hazard_map_if_changed`).
 
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 use rstar::primitives::GeomWithData;
 use rstar::RTree;
 
@@ -381,5 +382,141 @@ impl MineThreatMap {
     #[staticmethod]
     fn hazard_playfield_offset() -> f64 {
         PLAYFIELD_OFFSET_PX
+    }
+}
+
+/// Signed-distance field for a set of **moving** lethal hazards (drones).
+///
+/// Same grid, sign convention and normalization as the mine `hazard_map`
+/// (`clip((d - kill_radius) / 24, -1, 1)`, positive outside the kill zone) so a
+/// drone channel co-registers with `hazard_map` cell-for-cell and its encoder
+/// reads the same units. Two things make it a separate class rather than a flag
+/// on [`MineThreatMap`]:
+///
+/// * **The kill radius is per-hazard-class.** It is `NINJA_RADIUS + entity
+///   radius`: 17.5 px for a zap drone (10 + 7.5), 14 px for a mini drone
+///   (10 + 4) — which happens to equal the mine's 14 px (10 + 4), but only by
+///   coincidence of radii, so it is passed in rather than shared.
+/// * **`MineThreatMap`'s incremental path is unsound for movers.** It rebuilds
+///   only cells near the symmetric difference of the position sets, valid
+///   *because mine positions never move* — a mine only appears in or leaves the
+///   deadly set when its `state` toggles. A drone changes position every frame,
+///   so there is no cheap dirty set and every call is a full grid rebuild.
+///
+/// There is deliberately **no change-gate**: with movers it would miss on
+/// essentially every frame, so testing it would only add a position compare.
+/// Instead the cost is bounded by *scattering* rather than gathering — see
+/// [`HazardSdf::compute`].
+#[pyclass]
+pub struct HazardSdf {
+    kill_radius: f64,
+}
+
+#[pymethods]
+impl HazardSdf {
+    /// `kill_radius` is the contact-death boundary in world px
+    /// (`NINJA_RADIUS + hazard radius`).
+    #[new]
+    fn new(kill_radius: f64) -> Self {
+        HazardSdf { kill_radius }
+    }
+
+    /// Flat row-major `[H * W]` SDF over `positions`, floats in `[-1, 1]`.
+    ///
+    /// An empty `positions` yields an all-`1.0` grid ("no hazard anywhere"),
+    /// matching the mine path's saturation value so a hazard-free level is
+    /// indistinguishable from a hazard that is merely far away.
+    ///
+    /// **Scatter, not gather.** The obvious implementation asks every one of the
+    /// 15,456 cells for its nearest drone; that costs ~950 us per frame for a
+    /// 28-drone level, which on a ~1 ms env step would roughly halve throughput
+    /// — and unlike the mine map, this runs *every* frame because drones move.
+    ///
+    /// Instead: the SDF saturates to exactly `1.0` once `d >= kill_radius +
+    /// SDF_SCALE_PX`, so a drone can only influence cells inside a box of that
+    /// radius (~7 cells each way). Prefill `1.0` and scatter each drone into its
+    /// own box, keeping the element-wise minimum. This is EXACT, not an
+    /// approximation — every skipped cell provably holds 1.0 — and it turns the
+    /// cost into `O(n_drones * 196)` instead of `O(15456 * log n)`.
+    ///
+    /// Taking the min of the SDF values (rather than of the distances) is
+    /// equivalent because the SDF is monotonically increasing in `d`.
+    ///
+    /// **Returns raw little-endian f32 bytes, not a list.** Handing back a
+    /// `Vec<f32>` makes pyo3 build a 15,456-element Python list (~170 us) that
+    /// numpy then has to walk (~280 us) — together an order of magnitude more
+    /// than the SDF math itself. `np.frombuffer(...).reshape(H, W)` is a single
+    /// memcpy-free view. Callers must treat the result as read-only.
+    fn compute<'py>(&self, py: Python<'py>, positions: Vec<(f64, f64)>) -> Bound<'py, PyBytes> {
+        let mut out = vec![1.0_f32; THREAT_WIDTH * THREAT_HEIGHT];
+        if positions.is_empty() {
+            return Self::as_bytes(py, &out);
+        }
+
+        // Beyond this distance the SDF is saturated at 1.0 and the prefill is
+        // already correct.
+        let effect_radius = self.kill_radius + SDF_SCALE_PX;
+
+        for &(px, py) in &positions {
+            // Cell-index bounds of the influence box, clamped to the grid.
+            let col_lo = ((px - PLAYFIELD_OFFSET_PX - effect_radius) / THREAT_CELL_SIZE - 0.5)
+                .floor()
+                .max(0.0) as usize;
+            let col_hi = ((px - PLAYFIELD_OFFSET_PX + effect_radius) / THREAT_CELL_SIZE - 0.5)
+                .ceil()
+                .clamp(0.0, (THREAT_WIDTH - 1) as f64) as usize;
+            let row_lo = ((py - PLAYFIELD_OFFSET_PX - effect_radius) / THREAT_CELL_SIZE - 0.5)
+                .floor()
+                .max(0.0) as usize;
+            let row_hi = ((py - PLAYFIELD_OFFSET_PX + effect_radius) / THREAT_CELL_SIZE - 0.5)
+                .ceil()
+                .clamp(0.0, (THREAT_HEIGHT - 1) as f64) as usize;
+
+            if col_lo > col_hi || row_lo > row_hi {
+                continue; // drone is off-grid
+            }
+
+            for row in row_lo..=row_hi {
+                let cy = PLAYFIELD_OFFSET_PX + (row as f64 + 0.5) * THREAT_CELL_SIZE;
+                let dy = cy - py;
+                let dy2 = dy * dy;
+                let base = row * THREAT_WIDTH;
+                for col in col_lo..=col_hi {
+                    let cx = PLAYFIELD_OFFSET_PX + (col as f64 + 0.5) * THREAT_CELL_SIZE;
+                    let dx = cx - px;
+                    let d = (dx * dx + dy2).sqrt();
+                    let sdf = ((d - self.kill_radius) / SDF_SCALE_PX).clamp(-1.0, 1.0) as f32;
+                    let cell = &mut out[base + col];
+                    if sdf < *cell {
+                        *cell = sdf;
+                    }
+                }
+            }
+        }
+        Self::as_bytes(py, &out)
+    }
+
+    #[getter]
+    fn kill_radius(&self) -> f64 {
+        self.kill_radius
+    }
+
+    /// Grid dimensions, so Python never hardcodes the reshape.
+    #[staticmethod]
+    fn shape() -> (usize, usize) {
+        (THREAT_HEIGHT, THREAT_WIDTH)
+    }
+}
+
+impl HazardSdf {
+    /// Reinterpret the f32 grid as little-endian bytes for a zero-conversion
+    /// hand-off to `np.frombuffer`.
+    fn as_bytes<'py>(py: Python<'py>, buf: &[f32]) -> Bound<'py, PyBytes> {
+        // SAFETY: f32 has no padding or invalid bit patterns, and the slice is
+        // alive for the duration of the copy PyBytes performs.
+        let raw = unsafe {
+            std::slice::from_raw_parts(buf.as_ptr() as *const u8, std::mem::size_of_val(buf))
+        };
+        PyBytes::new_bound(py, raw)
     }
 }

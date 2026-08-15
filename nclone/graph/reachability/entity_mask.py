@@ -75,6 +75,7 @@ class EntityMask:
         self.doors = self._extract_doors()
         self.mines = self._extract_mines()
         self.one_ways = self._extract_one_ways()
+        self.solid_bodies = self._extract_solid_bodies()
 
         # Build switch->door mapping (static per level)
         self.switch_to_door = self._build_switch_door_mapping()
@@ -101,6 +102,38 @@ class EntityMask:
     def _extract_one_ways(self) -> List[Dict]:
         """Extract one-way platform entities (type 11)."""
         return [e for e in self.entities if e.get("type") == EntityType.ONE_WAY]
+
+    #: Solid entity bodies the ninja cannot pass through, with their half-extent
+    #: in px. These occupy space the tile grid does not know about, so without
+    #: them the reachability graph routes STRAIGHT THROUGH a thwump or a bounce
+    #: block and claims a route that does not exist -- the dangerous direction
+    #: for a potential, because it shapes the agent toward a phantom path.
+    #:
+    #: Blocking is the conservative half of modelling these. The permissive half
+    #: -- that their tops are standable surfaces, which opens routes -- is a
+    #: separate change to the support model, deliberately not bundled here: this
+    #: one can only REMOVE phantom edges, so it cannot invent reachability.
+    _SOLID_BODY_SEMI = {
+        EntityType.THWUMP: 9.0,
+        EntityType.SHWUMP: 12.0,
+        EntityType.BOUNCE_BLOCK: 9.0,
+    }
+
+    def _extract_solid_bodies(self) -> List[Dict]:
+        """Extract entities with a solid, ninja-blocking body.
+
+        Positions are taken as given, which for level_data built at load time are
+        the entities' RESTING positions. That is deliberate and matches the
+        potential's design: a thwump's phase and a bounce block's displacement
+        are agent- or time-dependent, and a graph that tracked them would make
+        Phi oscillate for reasons unrelated to progress -- the v39 hazard-PBRS
+        pathology arriving through a different door. A bounce block additionally
+        only ever moves because the agent pushed it, so anchoring at rest also
+        removes any incentive to farm shaping by shoving one toward the goal.
+        """
+        return [
+            e for e in self.entities if e.get("type") in self._SOLID_BODY_SEMI
+        ]
 
     def _build_switch_door_mapping(self) -> Dict[str, Dict]:
         """
@@ -160,6 +193,21 @@ class EntityMask:
         from ...constants.physics_constants import NINJA_RADIUS
 
         blocked = set()
+
+        # Block solid entity bodies (thwump / shove thwump / bounce block).
+        # A node is blocked when the ninja's disc would overlap the body, i.e.
+        # within `semi + NINJA_RADIUS` on BOTH axes -- the bodies are
+        # axis-aligned squares, not circles, so this is a box test rather than
+        # the radial one the mines use.
+        for body in self.solid_bodies:
+            pos = self._get_entity_pixel_position(body)
+            if pos is None:
+                continue
+            semi = self._SOLID_BODY_SEMI[body.get("type")] + NINJA_RADIUS
+            bx, by = float(pos[0]), float(pos[1])
+            for node in all_nodes:
+                if abs(node[0] - bx) < semi and abs(node[1] - by) < semi:
+                    blocked.add(node)
 
         # Block doors (tile-based, all 4 sub-nodes per tile)
         blocked_tiles = set()
@@ -242,7 +290,16 @@ class EntityMask:
             if self._is_door_closed(door):
                 pos = self._get_entity_pixel_position(door)
                 doors.append((int(pos[0]), int(pos[1])) if pos is not None else id(door))
-        return (tuple(sorted(mines)), tuple(sorted(doors)))
+        # Solid bodies are anchored at rest, so they never change within a
+        # level -- but they MUST still appear here: the signature keys a shared
+        # cache, and two levels that differ only in their thwump layout would
+        # otherwise collide on it.
+        bodies: list = []
+        for body in self.solid_bodies:
+            pos = self._get_entity_pixel_position(body)
+            if pos is not None:
+                bodies.append((int(pos[0]), int(pos[1]), int(body.get("type", 0))))
+        return (tuple(sorted(mines)), tuple(sorted(doors)), tuple(sorted(bodies)))
 
     def get_blocked_edges(
         self, adjacency: Optional[Dict] = None

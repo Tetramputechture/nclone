@@ -16,7 +16,7 @@ class EntityOneWayPlatform(Entity):
         - Max Per Level: 512 instances
         - Orientation: 8 possible directions (0-7)
         - Collision Zones:
-            * Wide Zone: 0.91 * NINJA_RADIUS when moving toward center
+            * Wide Zone: 0.9 * NINJA_RADIUS when moving toward center
             * Narrow Zone: 0.51 * NINJA_RADIUS when moving away
 
     Behavior:
@@ -87,9 +87,22 @@ class EntityOneWayPlatform(Entity):
             ninja.yspeed * self.normal_x - ninja.xspeed * self.normal_y
         ) * lateral_dist
         # The platform has a bigger width if the ninja is moving towards its center.
-        radius_scalar = 0.91 if direction < 0 else 0.51
+        # 0.9 and the inclusive `<= 0` are `DAT_10571cd8` and the comparison in
+        # `docs/decomp/full/entity_1040ED60.c`. The inherited value was 0.91, and
+        # that hundredth is worth a tenth of a radius of reach: on `10139391` the
+        # ninja clears a platform edge by |lateral| = 21.07 against the true bound
+        # of 21.0, and 0.91 turned the miss into a ceiling on frame 183. Five
+        # demos of one map family left the game's trajectory right there.
+        radius_scalar = 0.9 if direction <= 0 else 0.51
         if abs(lateral_dist) < radius_scalar * NINJA_RADIUS + self.SEMI_SIDE:
             normal_dist = dx * self.normal_x + dy * self.normal_y
+            # `FUN_1040ED60` gates on `|normal_dist| < RADIUS + arg8` instead.
+            # Ported literally with `arg8 = 0` -- what the physical caller
+            # `FUN_1040EF70` passes -- it costs 599 demos, so one of the two
+            # readings is wrong. The logical caller `FUN_1040EEC0` forwards a
+            # real eighth argument, so the game likely runs this test at two
+            # slacks and one shared helper cannot express that. Kept as the
+            # inherited form until the logical caller is decompiled.
             if 0 < normal_dist <= NINJA_RADIUS:
                 normal_proj = (
                     ninja.xspeed * self.normal_x + ninja.yspeed * self.normal_y

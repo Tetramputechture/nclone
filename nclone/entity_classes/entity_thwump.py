@@ -239,5 +239,5 @@ class EntityThwump(Entity):
                 if overlap_circle_vs_segment(
                     ninja.xpos, ninja.ypos, NINJA_RADIUS + 2, px1, py1, px2, py2
                 ):
-                    ninja.kill(0, 0, 0, 0, 0)
+                    ninja.kill(0, 0, 0, 0, 0, cause="thwump")
                 return depen[0][0]

@@ -45,7 +45,41 @@ SHOVE_THWUMP_PROJECTILE_RADIUS = 8  # Shove thwump projectile radius in pixels
 ONE_WAY_PLATFORM_SEMI_SIDE = 12  # One-way platform semi-side size in pixels
 
 # Toggle mine radii by state (from entity_toggle_mine.py)
-TOGGLE_MINE_RADII = {0: 4.0, 1: 3.5, 2: 4.5}  # 0:toggled, 1:untoggled, 2:toggling
+# 0:toggled, 1:untoggled, 2:toggling.
+#
+# The mine's `+0x28` reads **4.0 in every captured frame of every state** -- 8867
+# samples in state 0, 2514 in state 1, 88 in state 2, and no other value. That
+# looks like proof the 3.5/4.5 pair (which was `[I]`) is wrong, and it was
+# briefly changed to a flat 4.0 on the strength of it.
+#
+# **It is not the collision radius.** A flat 4.0 costs 13 demos, all of them
+# mine deaths the state-dependent radii avoid; `1006151` and `10131429` are the
+# clearest. So `+0x28` is a stored or drawn radius that the contact test does not
+# read, and the three values stay.
+#
+# Two process notes, because this one got shipped wrong for several rounds:
+# the flat-4.0 change was measured on the **native** engine while it only ever
+# affected **python** -- the Rust twin has its own `radius_for_state` in
+# `entities/toggle_mine.rs`, so patching `constants::toggle_mine_radius` changed
+# nothing there. The measurement said "exactly neutral" because it was measuring
+# an engine the change had not reached, and the resulting python/native
+# divergence was invisible to `ab_cmp` because that only replays `losers.txt`,
+# which by construction contains no demo either engine wins.
+#
+# **Diff the two engines' win sets over `smoke.txt`, not `losers.txt`,** after
+# any change that could touch only one of them.
+# Toggle mine radii by state: 0=toggled(deadly), 1=untoggled(safe), 2=toggling.
+#
+# Only the state-0 entry is the KILL radius, and that one is confirmed: the
+# mine's `+0x28` is what `FUN_10417F30` hands to `FUN_1050C650`, and
+# `tools/npptrace/minefields.py` reads it as 4.0 over 36 captures and 326,539
+# mine-frames. It is 4.0 in *every* state there -- but propagating that to all
+# three entries costs 44 demos, because 3.5 and 4.5 do not govern the kill. They
+# govern the two contact tests in `think` (untoggled -> toggling and toggling ->
+# toggled), which live in a different function and do not read `+0x28`. The
+# state machine they drive agrees with the game on 100% of 207,895 captured
+# mine-frames, so leave them alone; `+0x28` simply is not the field behind them.
+TOGGLE_MINE_RADII = {0: 4.0, 1: 3.5, 2: 4.5}
 
 # Bounce block constants
 BOUNCE_BLOCK_SEMI_SIDE = 4.5  # Bounce block semi-side size in pixels (9x9 pixel square)
@@ -304,13 +338,56 @@ MIN_SURVIVABLE_CRUSHING = 0.05
 # Jump velocities (exact values from sim_mechanics_doc.md)
 # Floor Jump: From flat ground, applies velocity (0, -2)
 JUMP_FLOOR_X = 0
-JUMP_FLOOR_Y = -2
+JUMP_FLOOR_Y = -2  # legacy alias: equals floor.y * JUMP_IMPULSE_Y_SCALE on flat ground
 
-# Wall Jump (Regular): Applies velocity (1 * wall_normal, -1.4)
+#: `Ninja::jump` (`docs/decomp/R5_07_jump_apply_105110C0.c:24-26`) scales its two
+#: raw arguments by three ninja fields, evaluated **left to right**:
+#:
+#:     x_impulse = (field(+0xE8) * jx) * field(+0x1C8)
+#:     y_impulse = ((field(+0xE8) + field(+0xF0)) * jy) * field(+0x1C8)
+#:
+#: The field values below were read live out of the running game at
+#: `ninja + 0xE8 / 0xF0 / 0x1C8` (`docs/game_traces/`, frame 29 of 10131738).
+#:
+#: DO NOT collapse these to `jx * 2/3` and `jy * 2`. That is algebraically
+#: identical and numerically is not: `(3 * fy) * (2/3)` and `2 * fy` differ by
+#: 1 ULP for most `fy`, and this port used to do the latter. On frame 29 of
+#: 10131738 that single last bit was the entire difference between winning and
+#: dying -- see `docs/ENTITY_RE_ROUND8_FINDINGS.md` §3.
+JUMP_SCALE_A = 1.0  # ninja + 0xE8
+JUMP_SCALE_B = 2.0  # ninja + 0xF0
+JUMP_SCALE_C = 2 / 3  # ninja + 0x1C8
+
+#: Kept for callers that only need the effective magnitude. Never use these to
+#: compute an impulse -- go through `Ninja._apply_jump` instead.
+JUMP_IMPULSE_X_SCALE = 2 / 3
+JUMP_IMPULSE_Y_SCALE = 2
+#: `DAT_10586710 = -0.7`, the adverse-slope row, as passed to `Ninja::jump`
+#: (`NINJA_update_10515300.c:352`). This is the RAW argument, not the impulse.
+JUMP_UPSLOPE_Y_RAW = -0.7
+JUMP_UPSLOPE_Y = JUMP_UPSLOPE_Y_RAW * JUMP_IMPULSE_Y_SCALE
+
+# Wall jump rows, as passed to `Ninja::jump` at
+# `docs/decomp/NINJA_update_10515300.c:387-396`:
+#
+#     jump(wall_normal * mult, field(+0x118) - sub, 1)
+#
+# with `(mult, sub) = (1.5, 0.7)` regular and `(1.0, 0.5)` for the slide-away
+# case. These are RAW arguments -- the A/B/C scaling in `Ninja::jump` turns them
+# into the effective impulses. `field(+0x118)` reads 0.0 in every captured frame,
+# so the raw Y is just `-sub`.
+#
+# The effective impulses are -1.3999999999999997 and -0.9999999999999999, NOT the
+# exact -1.4 and -1 this port used to apply. Frame 318 of 10131738.
+JUMP_WALL_REGULAR_X_RAW_MULT = 1.5  # DAT_105729e8
+JUMP_WALL_REGULAR_Y_RAW = -0.7  # 0.0 - DAT_105866b8
+JUMP_WALL_SLIDE_X_RAW_MULT = 1.0  # DAT_1056c350
+JUMP_WALL_SLIDE_Y_RAW = -0.5  # 0.0 - DAT_1056c348
+
+#: Effective magnitudes, for callers that only need to reason about the size of
+#: the impulse. Never use these to compute one.
 JUMP_WALL_REGULAR_X_MULTIPLIER = 1
 JUMP_WALL_REGULAR_Y = -1.4
-
-# Wall Jump (Slide): From wall slide state, applies velocity (2/3 * wall_normal, -1)
 JUMP_WALL_SLIDE_X_MULTIPLIER = 2 / 3
 JUMP_WALL_SLIDE_Y = -1
 
@@ -325,9 +402,177 @@ JUMP_SLOPE_UPHILL_PERP_Y_MULTIPLIER = 2
 JUMP_LAUNCH_PAD_BOOST_SCALAR = 1.7
 JUMP_LAUNCH_PAD_BOOST_FACTOR = 2 / 3
 
-# Ragdoll physics constants
-RAGDOLL_GRAVITY = 0.06666666666666665
-RAGDOLL_DRAG = 0.99999
+# === RAGDOLL CONSTANTS ===
+# Every value below is read out of npp.dll's .data / .rdata, not fitted:
+# `tools/npptrace/dump_ragdoll_tables.py` prints the tables and
+# `tools/npptrace/dump_consts.py <va>` prints any scalar. The decompiled
+# ragdoll lives in `docs/decomp/full/ninja_105184A0.c` (integrate),
+# `ninja_105193A0.c` (constraints), `ninja_10517310.c` (tiles),
+# `ninja_10517100.c` (entities), `ninja_105188A0.c` (post) and
+# `ninja_10516A80.c` (activate).
+
+RAGDOLL_GRAVITY = 0.06666666666666665  # 0x10586518, == GRAVITY_FALL
+RAGDOLL_DRAG = 0.99999  # 0x10586AE0
+
+#: 13 bones. `0x10586AD0`.
+RAGDOLL_NUM_BONES = 13
+
+#: The ragdoll numbers its bones differently from the animation. `activate`
+#: copies `ninja.bones[RAGDOLL_BONE_SOURCE[i]]` into ragdoll bone `i`
+#: (`ninja_10516A80.c` lines 22-60). Everything in this module -- the stick
+#: table, the angle table, the collision loops -- is in *ragdoll* order.
+RAGDOLL_BONE_SOURCE = (12, 1, 0, 11, 9, 10, 8, 5, 3, 4, 2, 6, 7)
+
+#: Inverse of the above: ragdoll bone index for a given animation bone index.
+#: The renderer needs this because `render_utils.LIMBS` is in animation order.
+RAGDOLL_BONE_OF_ANIM = (2, 1, 10, 8, 9, 7, 11, 12, 6, 4, 5, 3, 0)
+
+#: The 11 sticks and their rest lengths, `0x10586730`, `{i32 a; i32 b; f64 len}`.
+#: Expressed in animation-bone indices these are exactly `render_utils.LIMBS`.
+RAGDOLL_SEGS = (
+    (0, 1),
+    (0, 2),
+    (1, 3),
+    (2, 4),
+    (1, 5),
+    (2, 6),
+    (3, 7),
+    (4, 8),
+    (5, 9),
+    (6, 10),
+    (11, 12),
+)
+RAGDOLL_SEG_LENGTHS = (3.0, 3.0, 4.0, 6.0, 4.0, 6.0, 4.0, 6.0, 4.0, 6.0, 4.0)
+
+#: The 9 angle constraints, `0x10586890`,
+#: `{i32 centre; i32 arm_a; i32 arm_b; i32 pad; f64 target; f64 tolerance}`.
+#: `target` is multiplied by the ninja's facing before use.
+RAGDOLL_ANGLES = (
+    (0, 1, 2, 3.141592653589793, 0.31415926535897953),
+    (3, 1, 7, 1.7278759594743862, 1.1309733552923256),
+    (4, 8, 2, 1.7278759594743862, 1.1309733552923256),
+    (5, 1, 9, 1.7278759594743862, 1.1309733552923256),
+    (6, 10, 2, 1.7278759594743862, 1.1309733552923256),
+    (1, 0, 3, 5.497787143782138, 2.670353755551324),
+    (2, 0, 4, 2.827433388230814, 1.8849555921538759),
+    (1, 0, 5, 5.497787143782138, 2.670353755551324),
+    (2, 0, 6, 2.827433388230814, 1.8849555921538759),
+)
+
+#: `0x105723A8`. The game's "two pi" is a *truncated* literal, not 2*math.pi;
+#: the angle solver wraps against this exact value.
+RAGDOLL_TWO_PI = 6.283185
+
+# --- the exploded skeleton -------------------------------------------------
+# `FUN_10517F80` (`docs/decomp/full/ninja_10517F80.c`) rebuilds the corpse as
+# the *second* ragdoll kind: 17 bones, where 13..16 are fresh copies of the
+# shoulder (1) and hip (2). The stick table then hangs each limb off its own
+# copy instead of off the torso, so the arms and legs come away. Same two
+# tables, second half: `0x105867E0` and `0x10586950`.
+
+RAGDOLL_EXPLODED_NUM_BONES = 17
+
+#: Which intact bone each of the four new bones is cloned from.
+RAGDOLL_EXPLODED_BONE_SOURCE = (1, 2, 1, 2)
+
+#: And the kick each one gets, in pixels per frame.
+RAGDOLL_EXPLODED_KICKS = ((2.0, 0.0), (0.0, 4.0), (0.0, -6.0), (-8.0, 0.0))
+
+RAGDOLL_EXPLODED_SEGS = (
+    (0, 1),
+    (0, 2),
+    (13, 3),
+    (14, 4),
+    (15, 5),
+    (16, 6),
+    (3, 7),
+    (4, 8),
+    (5, 9),
+    (6, 10),
+    (11, 12),
+)
+RAGDOLL_EXPLODED_SEG_LENGTHS = RAGDOLL_SEG_LENGTHS
+
+RAGDOLL_EXPLODED_ANGLES = (
+    (0, 1, 2, 1.7278759594743862, 1.1309733552923256),
+    (3, 13, 7, 1.7278759594743862, 1.1309733552923256),
+    (4, 8, 14, 1.7278759594743862, 1.1309733552923256),
+    (5, 15, 9, 1.7278759594743862, 1.1309733552923256),
+    (6, 10, 16, 1.7278759594743862, 1.1309733552923256),
+)
+
+#: A death only bursts the corpse when its kill type maps to category 0 or 4
+#: (`0x10586520`, applied in `ninja_10515F90.c` line 62). Resolving that table
+#: through the entity->kill-type table at `0x10586CE0` leaves exactly these:
+#: both mine types (1, 21), the rocket (18), the evil ninja (22) and the
+#: player-controlled rocket (29). Drones, lasers, thwumps, the death ball,
+#: falling impacts and crushes all leave the corpse intact.
+RAGDOLL_EXPLODING_DEATH_CAUSES = frozenset(
+    {"mine", "rocket", "evil_ninja", "pc_rocket"}
+)
+
+# --- blast, an nclone extension -------------------------------------------
+# The game's own `explode` only nudges the four cloned bones (see
+# RAGDOLL_EXPLODED_KICKS); the outward burst you see on screen is particles it
+# spawns, which nclone does not draw. These add a real radial impulse instead,
+# so the corpse actually comes apart. Set RAGDOLL_EXPLOSION_FORCE to 0.0 to get
+# the game's literal behaviour back.
+
+#: Peak outward speed, in pixels per frame, added to a bone at the blast centre.
+RAGDOLL_EXPLOSION_FORCE = 8.0
+
+#: Distance over which the blast decays. Beyond it a bone still gets the floor
+#: below, so a limb across the room is thrown too, just less hard.
+RAGDOLL_EXPLOSION_RADIUS = 24.0
+
+#: Fraction of the peak that survives at maximum distance.
+RAGDOLL_EXPLOSION_FLOOR = 0.25
+
+#: A flying limb arms and sets off any live mine it touches, which bursts the
+#: corpse again and throws the pieces on. This is the bone-vs-entity collision
+#: the game runs in `FUN_105188A0` (the branch that checks for entity types
+#: 0x01 and 0x15), narrowed to the case nclone can draw. Slack added to the
+#: mine's own radius before a bone counts as touching it.
+RAGDOLL_MINE_TOUCH_SLACK = 1.0
+
+#: Stop after this many chained detonations in one frame, so a dense minefield
+#: cannot spin forever on a single tick.
+RAGDOLL_MAX_CHAIN_PER_FRAME = 8
+
+RAGDOLL_BONE_RADIUS = 1.0  # 0x1056C350, depenetration radius of one bone
+RAGDOLL_SWEEP_RADIUS = 0.5  # 0x1056C348, radius used for the per-bone sweep
+RAGDOLL_STICK_RADIUS = 0.9  # 0x10571CD8, half-thickness of a limb
+RAGDOLL_GATHER_RADIUS = 10.0  # 0x10571D08, segment-gather box for a bone
+RAGDOLL_SWEEP_MIN_DIST_SQ = 0.1  # 0x10571D98, below this the sweep is skipped
+RAGDOLL_MAX_DEPEN_ITERS = 32  # 0x20, per bone per pass
+RAGDOLL_SLIDE_SCALE = 1.5  # 0x105729E8, tangential-correction clamp
+RAGDOLL_DEGENERATE_SQ = 0.01  # 0x10571CB8, shared-corner tolerance
+RAGDOLL_EPSILON = 2.220446049250313e-16  # 0x105705C0
+
+#: Bounce off an accumulated contact normal: `v -= 1.8 * (v.n) * n` (so a
+#: restitution of 0.8) with `0.1` of the tangential component removed.
+#: `0x10586CA0` / `0x10571D98`, `ninja_105188A0.c` lines 100-105.
+RAGDOLL_BOUNCE = 1.8
+RAGDOLL_FRICTION = 0.1
+
+#: `activate` scales the death impulse by `(1 - min(dist/12, 1)) * 1.5 + 0.5`.
+#: `0x1056C358` / `0x105729E8` / `0x1056C348`, `ninja_10516A80.c` lines 119-123.
+RAGDOLL_IMPULSE_FALLOFF = 12.0
+RAGDOLL_IMPULSE_NEAR = 1.5
+RAGDOLL_IMPULSE_FAR = 0.5
+
+#: `activate` finishes by kicking the two head bones with a uniform random in
+#: [0, 2). The game draws from its global RNG; we use a private, deterministic
+#: one so replays stay reproducible (see `Ragdoll.reseed`).
+RAGDOLL_HEAD_KICK = 2.0
+RAGDOLL_HEAD_KICK_SEED = 0x4E505044  # b"NPPD"
+
+#: Sentinels of the ragdoll's time-of-impact helpers, which do *not* share the
+#: ninja's 0/1 convention: `-1` means "already overlapping at t=0" and `2`
+#: means "no impact this step". `0x10572548` / `0x10571CE8`,
+#: `docs/decomp/R5_04_toi_seg_1050C3A0.c`.
+RAGDOLL_TOI_OVERLAP = -1.0
+RAGDOLL_TOI_MISS = 2.0
 
 # === MAP CONSTANTS ===
 # All N++ levels are exactly the same size: 44x25 tiles (1056x600 pixels)
@@ -406,3 +651,12 @@ STRAIGHT_PATH_MIN_DISTANCE = 12.0  # Only apply masking for goals >12px away (ha
 MIN_SWITCH_HOPS_FOR_PATH_EXTENSION = (
     4  # If path to switch < 4 hops, extend with switch-to-exit path
 )
+
+# --- animation constants that became physics inputs when the limb test landed ---
+#: DAT_105866e0, added to the atan2 result in ull/ninja_10516280.c:35. A
+#: STORED 64-bit constant, not M_PI_2 -- it differs from pi/2 by ~4.9e-12.
+#: Round 7 §3.3 asked for it verbatim; round 9 §2.3 confirmed it from the binary.
+TILT_QUARTER_TURN = 1.57079632679
+#: DAT_10571d98. The airborne tilt decay is  - a*0.1 (:71-72), NOT
+#:  *= 0.9; there is no 0.9 constant in that function. Round 9 §2.1.
+TILT_DECAY = 0.1

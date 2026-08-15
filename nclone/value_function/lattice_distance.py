@@ -42,6 +42,23 @@ from .surface_graph import (
     num_velocity_bins,
 )
 from .surface_extraction import SURFACE_FLOOR, SURFACE_WALL
+from ..constants.physics_constants import (
+    NINJA_RADIUS, EXIT_SWITCH_RADIUS, EXIT_DOOR_RADIUS,
+)
+
+#: Sentinel for "not yet computed" in the goal-spec cache, so a legitimately
+#: ``None`` spec (the locked-door legs) is cached rather than recomputed forever.
+_MISSING = object()
+
+#: Opt-in: prefer the (monotone) flood over the raw surface d* even where the
+#: surface lookup can answer.  See ``_cost_at``.  Off by default — it changes
+#: previously-finite values, so it needs its own training A/B.
+_PREFER_FIELD_ENV = "NCLONE_LATTICE_PREFER_FIELD"
+
+
+def _prefer_field_enabled() -> bool:
+    import os
+    return os.environ.get(_PREFER_FIELD_ENV, "0") not in ("0", "false", "False", "")
 
 
 def _finite_max(arr: np.ndarray) -> float:
@@ -58,6 +75,17 @@ class LatticeDistanceSource:
     physics-aware potential.
     """
 
+    # Class-level defaults for the airborne extension.  Tests (and any other
+    # caller) build a source with ``__new__`` to exercise the lookup logic against
+    # hand-made d* arrays without paying for a real precompute; those instances
+    # never run ``__init__``, so the extension state has to exist on the class or
+    # every such construction raises AttributeError.  Defaulting to "no field"
+    # also makes the surface-only path the safe fallback everywhere.
+    _air = None
+    _cont_cache: Optional[float] = None
+    _goal_spec_cache: dict = {}
+    _prefer_field = False
+
     def __init__(
         self,
         map_data: List[int],
@@ -73,6 +101,9 @@ class LatticeDistanceSource:
         workers: int = 4,
         slope_jump_modes: Optional[str] = None,
         max_nodes: Optional[int] = None,
+        airborne_field: Optional[bool] = None,
+        prefer_field: Optional[bool] = None,
+        seed_mode: Optional[str] = None,
     ):
         self.available = False
         self._graph: Optional[SurfaceGraph] = None
@@ -114,9 +145,99 @@ class LatticeDistanceSource:
             if plan is not None and plan.solvable and plan.necessary_order:
                 self._door_plan = plan
                 self._door_leg_max = [_finite_max(d) for d in plan.door_leg_dstar]
-            self.available = True
+            self.lattice_available = True
         except Exception:
-            self.available = False
+            self.lattice_available = False
+
+        # The surface lattice fails outright on ~13% of official levels — measured
+        # over 60: 8.3% ``LatticeTooLargeError`` (graph over the node budget) and
+        # 5% ``ValueError`` (a goal with no surface contact node and no arc through
+        # its contact zone).  Every one of those levels is still a connected free
+        # space with a goal in it, so the field is built REGARDLESS, and the goal
+        # is always seeded.  With no graph it degenerates to a pure goal-seeded
+        # physics flood: finite everywhere free space reaches the goal, and a
+        # discrete navigation function (its only minimum on that connected
+        # component IS the goal, which Dijkstra gives for free).  With a graph the
+        # exact surface d* seeds dominate and nothing changes.
+        #
+        # One potential, one scale (frames), no per-level source switching and so
+        # no mid-episode scale discontinuity.
+        self._air = None
+        self._cont_cache: Optional[float] = None
+        self._goal_spec_cache = {}
+        self._prefer_field = (
+            _prefer_field_enabled() if prefer_field is None else bool(prefer_field)
+        )
+        try:
+            from .airborne_field import AirborneCostField, airborne_field_enabled
+            want = (airborne_field_enabled() if airborne_field is None
+                    else bool(airborne_field))
+            if want:
+                if self.switch is None or self.exit is None:
+                    self._read_goals_from_map(map_data)
+                if self.switch is not None and self.exit is not None:
+                    air = AirborneCostField(
+                        list(map_data), self._graph, name=name,
+                        seed_mode=seed_mode,
+                        # Only the "spawn" ablation arm needs this, and loading a
+                        # simulator is not free, so it is not paid on the
+                        # default path.
+                        spawn=(self._spawn_pos(map_data)
+                               if seed_mode == "spawn" else None))
+                    self._air = air if air.available else None
+        except Exception:
+            self._air = None
+
+        if not self.lattice_available and self._air is not None:
+            # No lattice, but a usable field: expose distinct empty arrays as the
+            # per-phase tokens.  They carry no surface seeds (so ``_build_field``
+            # falls through to goal seeds only) while still giving ``_goal_spec``
+            # and the field memo their ``is`` / ``id()`` identity per phase.
+            self._d_comb = np.empty(0, dtype=np.float32)
+            self._d_ex = np.empty(0, dtype=np.float32)
+            self._d_max_comb = self._field_scale(self._d_comb)
+            self._d_max_ex = self._field_scale(self._d_ex)
+
+        self.available = bool(self.lattice_available or self._air is not None)
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _spawn_pos(map_data) -> Optional[Tuple[float, float]]:
+        """Ninja spawn, for the ``spawn`` seed-ablation arm.  ``None`` on error."""
+        try:
+            import nclone_native
+            sim = nclone_native.Simulator.load(list(map_data))
+            x, y = sim.get_ninja_pos()
+            return (float(x), float(y))
+        except Exception:
+            return None
+
+    def _read_goals_from_map(self, map_data) -> None:
+        """Recover switch/exit positions without a successful lattice build."""
+        try:
+            import nclone_native
+            from .tools.physics_route_spike import _goal_positions
+            sim = nclone_native.Simulator.load(list(map_data))
+            switch, exit_door, _mines = _goal_positions(sim)
+            self.switch = switch
+            self.exit = exit_door
+        except Exception:
+            pass
+
+    def _field_scale(self, d_star: np.ndarray) -> float:
+        """Per-level normalisation constant taken from the field.
+
+        ``_finite_max`` of the empty phase token would return 1.0, which would
+        make ``nav_feature``'s ``cost/d_max`` saturate at 1.0 everywhere and
+        destroy the very gradient this is for.
+        """
+        if self._air is None:
+            return 1.0
+        f = self._air.field_for(d_star, self._goal_spec(d_star))
+        if f is None:
+            return 1.0
+        finite = f[np.isfinite(f)]
+        return float(finite.max()) if finite.size else 1.0
 
     # ------------------------------------------------------------------
     def _min_dstar_at(self, x: float, y: float, d_star: np.ndarray) -> Optional[float]:
@@ -124,6 +245,8 @@ class LatticeDistanceSource:
         point to ``(x, y)``.  ``None`` if no surface point is found at all;
         ``inf`` if a point is found but every bin is unreachable."""
         g = self._graph
+        if g is None:
+            return None  # no lattice on this level; the field answers instead
         best = float("inf")
         found_point = False
         for stype in (SURFACE_FLOOR, SURFACE_WALL):
@@ -139,6 +262,136 @@ class LatticeDistanceSource:
         if not found_point:
             return None
         return best  # may be inf if all bins unreachable
+
+    def _goal_spec(self, d_star: np.ndarray):
+        """Memoised :meth:`_goal_spec_uncached`, keyed by array identity.
+
+        ``_cost_at`` consults this on every lookup that misses the surface graph,
+        which on an airborne frame is every lookup, and ``nav_feature`` makes nine
+        of those per step.  Recomputing the spec each time (an inline import plus
+        the switch-continuation lookup) measured 160us -> 310us per nav_feature on
+        ``000 hilltops``; the spec is constant per level and phase, so it is
+        computed once and cached.
+        """
+        key = id(d_star)
+        spec = self._goal_spec_cache.get(key, _MISSING)
+        if spec is _MISSING:
+            spec = self._goal_spec_uncached(d_star)
+            self._goal_spec_cache[key] = spec
+        return spec
+
+    def _goal_spec_uncached(self, d_star: np.ndarray):
+        """``(x, y, contact_radius, cost_at_contact)`` for the leg ``d_star`` solves.
+
+        Feeds spec D3's airborne goal nodes.  Two legs are handled; anything else
+        (the locked-door legs) returns ``None`` and the field falls back to
+        surface-only seeding, which is the pre-existing behaviour.
+
+        * phase 1 (``d_ex``): the goal is the exit and reaching it ends the level,
+          so the contact cost is 0.
+        * phase 0 (``d_comb``): the goal is the switch, and touching it leaves the
+          remaining switch->exit journey.  Seeding the contact cost with that
+          continuation is what keeps the two phases on one continuous scale —
+          seeding 0 would make the potential drop to zero at the switch and then
+          jump back up the instant the phase flips.
+        """
+        if d_star is self._d_ex and self.exit is not None:
+            return (self.exit[0], self.exit[1],
+                    NINJA_RADIUS + EXIT_DOOR_RADIUS, 0.0)
+        if d_star is self._d_comb and self.switch is not None:
+            cont = self._switch_continuation()
+            if cont is None:
+                return None
+            return (self.switch[0], self.switch[1],
+                    NINJA_RADIUS + EXIT_SWITCH_RADIUS, cont)
+        return None
+
+    def _switch_continuation(self) -> Optional[float]:
+        """Remaining frames from the switch to the exit.
+
+        Prefers the surface lattice's own answer at the switch; falls back to the
+        exit FIELD at the switch position, which is the only source that exists
+        when the switch floats in open space — exactly the case D3 is for.
+        """
+        if self._cont_cache is not None:
+            return self._cont_cache if self._cont_cache >= 0 else None
+        val = None
+        sx, sy = self.switch
+        c = self._min_dstar_at(sx, sy, self._d_ex)
+        if c is not None and np.isfinite(c):
+            val = float(c)
+        elif self._air is not None and self.exit is not None:
+            ca = self._air.cost_at(
+                sx, sy, self._d_ex,
+                (self.exit[0], self.exit[1],
+                 NINJA_RADIUS + EXIT_DOOR_RADIUS, 0.0),
+            )
+            if np.isfinite(ca):
+                val = float(ca)
+        self._cont_cache = val if val is not None else -1.0
+        return val
+
+    def _cost_at(
+        self, x: float, y: float, d_star: np.ndarray,
+    ) -> Optional[float]:
+        """Surface ``d*`` at ``(x, y)``, falling back to the airborne field.
+
+        The surface answer is returned UNCHANGED whenever it is finite, so every
+        position the lattice could already price keeps its exact previous value
+        (spec A7).  The airborne field is consulted only in the two cases that
+        previously produced no usable signal:
+
+        * ``None`` — no floor/wall point within the 18px lookup radius.  This is
+          the dominant case by a wide margin: measured 54-83% of level cells, and
+          it is what silences the potential for most airborne frames.
+        * ``inf`` — a point was found but every velocity bin is unreachable
+          (genuine graph severance at that node).
+
+        Returns ``None`` only when neither source has anything, so callers keep
+        their existing "no plan here" branch.
+        """
+        air = self._air
+        if air is not None and self._prefer_field:
+            # MONOTONE mode.  Take the flood even where the surface lookup could
+            # answer.  Measured over 8 official levels, 20.21% of surface-sourced
+            # cells are spurious LOCAL MINIMA of the potential, against 0.25% of
+            # field-sourced cells: ``_min_dstar_at`` is a piecewise-constant snap
+            # to the nearest surface point, so neighbouring query cells can land
+            # on different points whose (risk-reweighted, non-metric) d* jumps
+            # around.  The flood is a Dijkstra cost-to-go and therefore monotone
+            # by construction.
+            #
+            # Measured effect on 47.5k cells: coverage IDENTICAL (0 lost, 0
+            # gained), median difference 0, values lowered on 19.7% of cells and
+            # raised on only 1.7% (max +33 frames).  It is not monotonically
+            # lower, and the reason is worth knowing: ``_min_dstar_at`` snaps to
+            # any surface point within +/-18px and charges NOTHING for that
+            # teleport, whereas the flood makes you pay the travel.  So on the
+            # small fraction of cells where the free teleport was doing the work,
+            # the flood is (correctly) a little more expensive.
+            #
+            # The trade is monotonicity against calibration: flood travel costs
+            # are approximate, so values get more optimistic.  For a PBRS
+            # potential that is the right side of the trade — HWM normalises per
+            # phase, so "only the gradient matters" (see this module's header) —
+            # but it is off by default until it has had a training A/B.
+            ca = air.cost_at(x, y, d_star, self._goal_spec(d_star))
+            if np.isfinite(ca):
+                return float(ca)
+        if air is not None and not air.surface_lookup_can_hit(x, y):
+            # Provably no surface point in range, so ``_min_dstar_at`` would
+            # return None after two empty 7x7 scans.  Skip straight to the field;
+            # the result is identical, just without the wasted scans.
+            ca = air.cost_at(x, y, d_star, self._goal_spec(d_star))
+            return float(ca) if np.isfinite(ca) else None
+        c = self._min_dstar_at(x, y, d_star)
+        if c is not None and np.isfinite(c):
+            return c
+        if air is not None:
+            ca = air.cost_at(x, y, d_star, self._goal_spec(d_star))
+            if np.isfinite(ca):
+                return float(ca)
+        return c
 
     def door_phase(
         self, switch_activated: bool, open_door_indices=None
@@ -189,7 +442,7 @@ class LatticeDistanceSource:
         if not self.available:
             return float("inf")
         d_star, d_max = self._phase_arrays(switch_activated, open_door_indices)
-        c = self._min_dstar_at(x, y, d_star)
+        c = self._cost_at(x, y, d_star)
         if c is None:
             return float("inf")
         if not np.isfinite(c):
@@ -264,7 +517,7 @@ class LatticeDistanceSource:
         per-level gate for using the lattice potential this episode."""
         if not self.available:
             return False
-        c = self._min_dstar_at(spawn_x, spawn_y, self._d_comb)
+        c = self._cost_at(spawn_x, spawn_y, self._d_comb)
         return c is not None and np.isfinite(c)
 
     # 8-neighbour unit directions (axis + diagonal) for next-hop sampling.
@@ -308,7 +561,7 @@ class LatticeDistanceSource:
                                          gold_frame_value=gold_frame_value)
                 return c if np.isfinite(c) else None
             d_star, _ = self._phase_arrays(switch_activated, open_door_indices)
-            c = self._min_dstar_at(px, py, d_star)
+            c = self._cost_at(px, py, d_star)
             return c if (c is not None and np.isfinite(c)) else None
 
         c0 = cost_at(x, y)

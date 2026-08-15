@@ -9,8 +9,9 @@ precision / flat). Difficulty uses the winning-demo frame length as a free proxy
 
 from __future__ import annotations
 
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+from ..constants.entity_types import MINIMAL_TRAINING_SUBSET, PHANTOM_ENTITY_TYPES
 from .tokenizer import ENT_START, ENT_STRIDE, TILE_END, TILE_START, MECHANIC_TAGS
 
 # tile-type families (see nclone tile semantics)
@@ -47,11 +48,26 @@ def entity_counts(map_data: Sequence[int]) -> Dict[int, int]:
     return counts
 
 
-def subset_ok(map_data: Sequence[int]) -> bool:
-    """Entities subset of {mine,gold,exit_door,exit_switch,toggled_mine}, 1 door+1 switch."""
-    allowed = {1, 2, 3, 4, 21}
+def subset_ok(
+    map_data: Sequence[int], allowed: Optional[Iterable[int]] = None
+) -> bool:
+    """Entities are within ``allowed``, and there is exactly 1 exit door + 1 switch.
+
+    ``allowed`` defaults to :data:`MINIMAL_TRAINING_SUBSET` -- the *contract* a
+    procedural generator declares about its own output, not a statement about
+    what the simulator can run (which is much wider; see
+    :data:`NATIVE_IMPLEMENTED_TYPES`). Callers ingesting **human** levels should
+    pass the wider profile explicitly; callers gating **generated** levels should
+    keep the default, since a narrow contract is the point there.
+    """
+    allowed_set = MINIMAL_TRAINING_SUBSET if allowed is None else frozenset(allowed)
     counts = entity_counts(map_data)
-    if set(counts) - allowed:
+    # A locked/trap door writes a second record carrying its switch coordinates,
+    # tagged with the phantom type 7/9. No entity is ever constructed for those,
+    # so they are not a capability question -- but counting them as ordinary
+    # entities rejects every door level, which is what kept the packable corpus
+    # at ~7% even after the allowed-set was widened.
+    if set(counts) - allowed_set - PHANTOM_ENTITY_TYPES:
         return False
     return counts.get(3, 0) == 1 and counts.get(4, 0) == 1
 

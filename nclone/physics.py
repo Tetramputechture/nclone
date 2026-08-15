@@ -1,4 +1,5 @@
 import math
+import os
 from itertools import product
 from .constants import NINJA_RADIUS
 
@@ -42,13 +43,23 @@ def gather_segments_from_region(sim, x1, y1, x2, y2):
     Iterates over cells covered by the query rectangle and returns all active
     segments registered in those cells via ``sim.segment_dic``. No additional
     bounding-box filtering is applied -- callers perform exact collision tests.
+
+    **Order is load-bearing.** ``get_single_closest_point`` keeps the first
+    segment of an exact tie (strict ``<``), so at a corner -- where two segments
+    report the same closest point -- the gather order alone decides which normal
+    the ninja is ejected along. The game's gather (``FUN_1050DDF0``,
+    `docs/decomp/gs_sweep_DDF0.c`) runs **y outer, x inner**, and within a cell
+    emits the static tile segments before the door segments. This loop is that
+    order; ``itertools.product`` gave the transpose.
     """
     cx1, cy1 = clamp_cell(math.floor(x1 / 24), math.floor(y1 / 24))
     cx2, cy2 = clamp_cell(math.floor(x2 / 24), math.floor(y2 / 24))
-    cells = product(range(cx1, cx2 + 1), range(cy1, cy2 + 1))
+    segment_dic = sim.segment_dic
     segment_list = []
-    for cell in cells:
-        segment_list += [segment for segment in sim.segment_dic[cell] if segment.active]
+    for ycell in range(cy1, cy2 + 1):
+        for xcell in range(cx1, cx2 + 1):
+            segment_list += [segment for segment in segment_dic[(xcell, ycell)]
+                             if segment.active]
     return segment_list
 
 
@@ -113,7 +124,7 @@ def get_single_closest_point(sim, xpos, ypos, radius, segments=None):
         segments = gather_segments_from_region(
             sim, xpos - radius, ypos - radius, xpos + radius, ypos + radius
         )
-    shortest_distance = 9999999
+    shortest_distance = 99999999.0  # DAT_10572540
     result = 0
     closest_point = None
     for segment in segments:
@@ -336,10 +347,22 @@ def get_raycast_distance(sim, xpos, ypos, dx, dy):
 def intersect_ray_vs_cell_contents(sim, xcell, ycell, xpos, ypos, dx, dy):
     """Given a cell and a ray, return the shortest time of intersection between the ray and one of
     the cell's tile segments. Return 1 if the ray hits nothing.
+
+    **Inactive segments do not block.** `FUN_1050E410` walks a cell in two
+    passes: the static tile segments, which are always live, and then a linked
+    list of the dynamic ones -- the door segments -- each gated on
+    `(*seg & 8) != 0` before its hit is allowed to count. That bit is the same
+    `active` flag `gather_segments_from_region` already filters on for the
+    ninja's own collision, and this loop was the one place that ignored it, so an
+    OPEN door still stopped every sightline in the game: shooter-drone
+    acquisition, the turret, the rocket, the eye bat and the dual laser all
+    funnel through here.
     """
     segments = sim.segment_dic[clamp_cell(xcell, ycell)]
     shortest_time = 1
     for segment in segments:
+        if not segment.active:
+            continue
         time = segment.intersect_with_ray(xpos, ypos, dx, dy, 0)
         shortest_time = min(time, shortest_time)
     return shortest_time
@@ -356,54 +379,203 @@ def raycast_vs_player(sim, xstart, ystart, ninja_xpos, ninja_ypos):
         dx /= dist
         dy /= dist
         length = get_raycast_distance(sim, xstart, ystart, dx, dy)
+        # `get_raycast_distance` returns None when the ray leaves the map without
+        # hitting anything, which is a CLEAR sightline -- not a blocked one. The
+        # original `length > dist - NINJA_RADIUS` raised TypeError on that path; it
+        # had never been reached because no entity called this until the turret,
+        # rocket and laser types landed.
+        if length is None:
+            return True
         return length > dist - NINJA_RADIUS
     return True
 
 
-def check_lineseg_vs_ninja(x1, y1, x2, y2, ninja):
-    # TODO
+def find_visible_ninja(sim, xpos, ypos):
+    """Return the nearest ninja with unobstructed line of sight, else None.
+
+    Port of the shared query `FUN_1051E690` in `npp.dll`, which the Rocket (18),
+    Turret (19) and EyeBat (27) all call to decide whether they have a target
+    (`docs/ENTITY_INTEGRATION_SPEC.md` §10). The binary returns a ninja index or a
+    negative value; returning the ninja object or None is the same contract.
+
+    The game loops over the 8 co-op ninja slots and takes the NEAREST visible one
+    (spec §6.5). This sim has a single ninja, so the loop degenerates -- but the
+    signature is kept nearest-selecting rather than "the ninja" so multi-ninja
+    support does not have to rewrite every caller.
+    """
+    ninja = sim.ninja
+    if ninja is None or not ninja.is_valid_target():
+        return None
+    if raycast_vs_player(sim, xpos, ypos, ninja.xpos, ninja.ypos):
+        return ninja
+    return None
+
+
+#: Radius the BEAM hit test uses. The game reads it from
+#: `FUN_105136b0`, whose body is not in the decomp corpus; this
+#: exists to sweep it. Defaults to NINJA_RADIUS, i.e. no change.
+_BEAM_RADIUS = float(
+    os.environ.get("NCLONE_AB_BEAM_RADIUS", NINJA_RADIUS)
+)
+
+
+def beam_hits_ninja(x1, y1, x2, y2, ninja, seg_len=None, use_limbs=None):
+    """Does a laser/hitscan beam from (x1,y1) to (x2,y2) hit the ninja?
+
+    Every hitscan hazard funnels through here -- turret (19), the two shooter
+    drones (12, 13) and the dual laser (23) all call the game's one shared
+    `check_lineseg_vs_ninja` -- so a change here moves all of them at once.
+
+    **The real test is `check_lineseg_vs_ninja` below, and it is now the default.**
+    It is a circle reject at NINJA_RADIUS followed by an exact intersection against
+    the ninja's 11 skeleton segments, so a beam can thread *between* limbs and
+    miss. The circle test alone is strictly MORE lethal than the game.
+
+    Both engines now carry the skeleton (`nclone-native/src/anim.rs`) and both
+    maintain it on exactly the maps that have a beam-capable entity, so this is
+    frame-exact across engines. `NCLONE_AB_NO_LASER_LIMBS=1` restores the circle
+    test in *both* -- it is the one env var that A/Bs this, deliberately, so the
+    two can never be flipped independently.
+    """
+    # A zero-length beam hits nothing. Callers legitimately produce one -- every
+    # entity here collapses (xend, yend) onto its own position when the raycast
+    # finds no wall -- and `overlap_circle_vs_segment` divides by the segment
+    # length, so without this guard those frames raise ZeroDivisionError.
+    if x1 == x2 and y1 == y2:
+        return False
+    # `use_limbs=False` is an explicit per-entity opt-out: §73 shows the
+    # chaingun's `FUN_1050c690` is a bare circle test with no skeleton, while the
+    # global env var cannot distinguish entity types. None = global behaviour.
+    if (
+        use_limbs is False
+        or os.environ.get("NCLONE_AB_NO_LASER_LIMBS") == "1"
+        or not getattr(ninja, "bones", None)
+    ):
+        # Opted out, or no skeleton (a map with no beam never builds one): keep
+        # the old circle test EXACTLY, because `nclone-native`'s fallback is a
+        # byte-for-byte copy of it. The prefilter inside `check_lineseg_vs_ninja`
+        # is the same test algebraically but divides by `seglen` rather than
+        # `seg_lensq`, so it is not bit-identical.
+        return overlap_circle_vs_segment(
+            ninja.xpos, ninja.ypos, _BEAM_RADIUS, x1, y1, x2, y2
+        )
+    return check_lineseg_vs_ninja(x1, y1, x2, y2, ninja, seg_len)
+
+
+#: The 11 limbs `FUN_1050B070` tests the beam against, as bone-index pairs
+#: (round-7 §3.1). 0 and 1 are the two hubs, `2-8-0` and `3-9-0` the legs,
+#: `4-10-1` and `5-11-1` the arms, 12 the head, and `6-7` one extra limb.
+#: **Note this differs from `render_utils.LIMBS` in one entry** -- the renderer
+#: draws `(1, 12)` where the collision skeleton has `(0, 1)`. Only ten of the
+#: eleven are shared, so the two lists are deliberately kept separate.
+NINJA_LIMB_PAIRS = (
+    (12, 0), (0, 1), (2, 8), (8, 0), (3, 9), (9, 0),
+    (4, 10), (10, 1), (5, 11), (11, 1), (6, 7),
+)
+
+#: Bones are stored normalised; the game places each at
+#: `ninja.pos + 24.0 * bone` (`DAT_1056C360`), which is also how the renderer
+#: draws them (`bone * 2 * radius`).
+BONE_SCALE = 24.0
+
+
+def check_lineseg_vs_ninja(x1, y1, x2, y2, ninja, seg_len=None):
+    """The game's real beam-vs-ninja test: a circle prefilter, then 11 limbs.
+
+    `FUN_1050B070` (`docs/decomp/full/physics_1050B070.c`). A beam that passes
+    within the ninja's radius but *between* two limbs does **not** kill -- which
+    is why the circle test alone is biased too lethal.
+
+    The per-limb predicate is `FUN_1050B840`, proper intersection with **strict**
+    `< 0` on both cross-product products, so a beam that merely grazes a limb
+    endpoint is not a hit either.
+
+    **`seg_len` is the raycast's returned distance, passed in.** The binary takes
+    it as `param_5` and never recomputes it; `hypot(x2 - x1, y2 - y1)` equals it
+    only up to rounding, because the endpoint was built as `A + dir * seg_len` in
+    the first place. `seg_vs_circle` (the turret's test) takes it the same way and
+    for the same reason. `None` recomputes, for callers with no raycast to hand.
+
+    Both dot products below put the **y term first**, which is the binary's order
+    and not this port's original one.
+    """
     dx = x2 - x1
     dy = y2 - y1
-    len = math.sqrt(dx**2 + dy**2)
-    if len == 0:
+    if seg_len is None:
+        seg_len = math.sqrt(dx * dx + dy * dy)
+    if seg_len == 0.0 or seg_len != seg_len:
         return False
-    # This part returns false if the segment does not interscet the ninja's circular hitbox, to speed things up.
-    dx /= len
-    dy /= len
-    proj = (ninja.xpos - x1) * dx + (ninja.ypos - y1) * dy
-    x = x1
-    y = y1
-    if proj > 0:
-        x += dx * proj
-        y += dy * proj
-    if NINJA_RADIUS**2 <= (ninja.xpos - x) ** 2 + (ninja.ypos - y) ** 2:
+    ux, uy = dx / seg_len, dy / seg_len
+    # Projection is NOT clamped before the branch; the branch does the clamping.
+    t = (ninja.ypos - y1) * uy + (ninja.xpos - x1) * ux
+    if t <= 0.0:
+        cx, cy = x1, y1
+    elif t >= seg_len:
+        cx, cy = x2, y2
+    else:
+        cx, cy = t * ux + x1, t * uy + y1
+    if (ninja.ypos - cy) * (ninja.ypos - cy) + (ninja.xpos - cx) * (
+        ninja.xpos - cx
+    ) >= NINJA_RADIUS * NINJA_RADIUS:
         return False
-    # Now test the segment against each of ninja's 11 segments. Return true if it intersects any.
-    NINJA_SEGS = (
-        (0, 12),
-        (1, 12),
-        (2, 8),
-        (3, 9),
-        (4, 10),
-        (5, 11),
-        (6, 7),
-        (8, 0),
-        (9, 0),
-        (10, 1),
-        (11, 1),
-    )
-    for seg in NINJA_SEGS:
-        x3 = ninja.xpos + 24 * ninja.bones[seg[0]][0]
-        y3 = ninja.ypos + 24 * ninja.bones[seg[0]][1]
-        x4 = ninja.xpos + 24 * ninja.bones[seg[1]][0]
-        y4 = ninja.ypos + 24 * ninja.bones[seg[1]][1]
-        det1 = (x1 - x3) * (y2 - y3) - (y1 - y3) * (x2 - x3)
-        det2 = (x1 - x4) * (y2 - y4) - (y1 - y4) * (x2 - x4)
-        det3 = (x3 - x1) * (y4 - y1) - (y3 - y1) * (x4 - x1)
-        det4 = (x3 - x2) * (y4 - y2) - (y3 - y2) * (x4 - x2)
-        if det1 * det2 < 0 and det3 * det4 < 0:
+
+    bones = getattr(ninja, "bones", None)
+    if not bones:
+        # No skeleton available: fall back to the prefilter alone, i.e. the old
+        # circle test. Slightly more lethal than the game, never less.
+        return True
+
+    nx, ny = ninja.xpos, ninja.ypos
+    for ia, ib in NINJA_LIMB_PAIRS:
+        ax = nx + BONE_SCALE * bones[ia][0]
+        ay = ny + BONE_SCALE * bones[ia][1]
+        bx = nx + BONE_SCALE * bones[ib][0]
+        by = ny + BONE_SCALE * bones[ib][1]
+        d1 = dx * (ay - y1) - dy * (ax - x1)
+        d2 = dx * (by - y1) - dy * (bx - x1)
+        if d1 * d2 >= 0.0:
+            continue
+        lx, ly = bx - ax, by - ay
+        d3 = lx * (y1 - ay) - ly * (x1 - ax)
+        d4 = lx * (y2 - ay) - ly * (x2 - ax)
+        if d3 * d4 < 0.0:
             return True
     return False
+
+def seg_vs_circle(cx, cy, radius, ax, ay, bx, by, seg_len):
+    """`FUN_1050C690`: the hitscan test the TURRET and the chaingun drone use.
+
+    Distinct from `beam_hits_ninja` -- the callers split cleanly in the binary.
+    `FUN_1050B070` (the 11-limb test) is called only by the laser family: dual
+    laser (23, both modes) and the drone laser (13). `FUN_1050C690` is called by
+    the turret (19, `1041A150`) and the chaingun drone (12, `103FE790`). Routing
+    the turret through the limb test made it *less* lethal than the game.
+
+    Project the centre onto the segment, clamp to the endpoints, compare the
+    distance to the radius with a **strict** `<`. The radius is the ninja's own
+    (`FUN_105136B0`) -- there is no separate shot radius.
+
+    `seg_len` is passed in rather than recomputed because the game passes the
+    raycast's returned distance. `|B - A|` equals it only up to rounding, and the
+    two orderings below (the y term first in both dot products, and `A + d*t`
+    with `d` pre-divided) are the binary's, not an algebraic simplification.
+    """
+    # `if (NAN(len) != (len == 0.0)) return false` -- reject a zero or NaN length
+    # before the divide.
+    if seg_len == 0.0 or seg_len != seg_len:
+        return False
+    dx = (bx - ax) / seg_len
+    dy = (by - ay) / seg_len
+    t = (cy - ay) * dy + (cx - ax) * dx
+    if t > 0.0:
+        if t < seg_len:
+            px = dx * t + ax
+            py = dy * t + ay
+        else:
+            px, py = bx, by
+    else:
+        px, py = ax, ay
+    return (cy - py) * (cy - py) + (cx - px) * (cx - px) < radius * radius
 
 
 def overlap_circle_vs_segment(xpos, ypos, radius, px1, py1, px2, py2):

@@ -46,14 +46,25 @@ class GridSegmentLinear:
         """
         dx = xpos - self.x1
         dy = ypos - self.y1
-        # seg_lensq is now pre-calculated and accessed via self.seg_lensq
-        u = (dx * self.px + dy * self.py) / self.seg_lensq
-        u = max(u, 0)
-        u = min(u, 1)
-        # If u is between 0 and 1, position is closest to the line segment.
-        # If u is exactly 0 or 1, position is closest to one of the two edges.
-        a = self.x1 + u * self.px
-        b = self.y1 + u * self.py
+        # `FUN_1050ECA0` (`docs/decomp/A5_surface_kind2.c`) branches on the raw
+        # projection and returns the **stored endpoints verbatim** when the
+        # position falls outside the segment. Clamping `u` to 0..1 and evaluating
+        # `x1 + u * px` instead is algebraically the same and numerically is not:
+        # at `u == 1`, `x1 + (x2 - x1)` misses `x2` by up to an ulp. Contacts at a
+        # tile corner are exactly the case that lands here, and that ulp decides
+        # whether `dx` comes out zero -- which is how the ninja tells flat ground
+        # from a slope. `corner_tie_break` in `ninja.py` was compensating for it
+        # with hand-fitted +-2^-47 offsets, half an ulp at those coordinates.
+        t = dx * self.px + dy * self.py
+        if t > 0:
+            if t < self.seg_lensq:
+                u = t / self.seg_lensq
+                a = self.x1 + u * self.px
+                b = self.y1 + u * self.py
+            else:
+                a, b = self.x2, self.y2
+        else:
+            a, b = self.x1, self.y1
         # Note: can't be backfacing if segment belongs to a door.
         is_back_facing = dy * self.px - dx * self.py < 0 and self.oriented
         return is_back_facing, a, b
@@ -146,8 +157,16 @@ class GridSegmentCircular:
                     a, b = self.p_ver
                 return is_back_facing, a, b
 
-            a = self.xpos + self.radius * dx / dist
-            b = self.ypos + self.radius * dy / dist
+            # Normalise FIRST, then scale by the radius, then translate -- the
+            # order in `FUN_1050ED60` (`docs/decomp/R5_06_closest_kind1_1050ED60.c`),
+            # which divides `param_2`/`param_3` by the distance in place and only
+            # then computes `param_2 * radius + cx`. `cx + radius * dx / dist`
+            # is algebraically identical and rounds differently: on `1011495` it
+            # is one ulp of `ypos` and twenty of `yspeed` at frame 76, and the
+            # ninja rides a 24px curve for another 1400 frames while that grows
+            # into the 10px that walks it into a drone.
+            a = dx / dist * self.radius + self.xpos
+            b = dy / dist * self.radius + self.ypos
             is_back_facing = dist < self.radius if self.convex else dist > self.radius
         else:  # If closer to edges of arc, find position of closest point of the two.
             if dx * self.hor > dy * self.ver:

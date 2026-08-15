@@ -150,7 +150,11 @@ class EntityDeathBall(Entity):
                 self.yspeed -= dy * dot_product * bounce_strength
 
         # Handle bounces with other deathballs
-        db_count = self.sim.map_data[1200]
+        # NOT `map_data[1200]` -- that slot is 0 on every map that has death
+        # balls, so this whole pass was dead code in both engines. Verified
+        # against `10132476` frame 273, where the game kicks balls 1 and 2 apart
+        # at 15.245 px with exactly the +-4 impulse below.
+        db_count = len(self.sim.entity_dic.get(self.type, ()))
         if self.index + 1 < db_count:
             db_targets = self.sim.entity_dic[self.type][self.index + 1 :]
             for db_target in db_targets:
@@ -178,4 +182,4 @@ class EntityDeathBall(Entity):
                 dist = math.sqrt(dx**2 + dy**2)
                 self.xspeed += dx / dist * 10
                 self.yspeed += dy / dist * 10
-                ninja.kill(0, 0, 0, 0, 0)
+                ninja.kill(0, 0, 0, 0, 0, cause="death_ball")

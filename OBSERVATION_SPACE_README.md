@@ -29,6 +29,7 @@ observation_space = Dict({
     # "ego_crop_mines":  Box(0, inf, (2, 21, 21), f32)     # enable_ego_crop
     # "ego_crop_route":  Box(-1, 1, (2, 21, 21), f32)      # enable_ego_crop (v14 B2)
     # "ego_crop_coarse": Box(0, inf, (4, 21, 21), f32)     # enable_ego_crop_coarse (P1-6)
+    # "drone_hazard_map": Box(-1, 1, (4, 84, 46), f32)     # enable_drone_hazard
 })
 ```
 
@@ -75,6 +76,76 @@ death-contact boundary), zero at the boundary, negative inside. Recomputed only
 when a mine set changes (e.g. a toggle); mines sealed from reachable space are
 blinded out. The two channels give the policy precise (6px) geometry for both mine
 states, beyond the coarse 24px density in `entity_overlays`.
+
+### `drone_hazard_map`: `(4, 84, 46)` float32, `[-1, 1]` — optional
+
+Off by default; enabled with `ReachabilityConfig.enable_drone_hazard`. Signed
+distance to the nearest lethal patrol drone on the same 6px field as
+`hazard_map` (emitted min-pooled to 12px like it), so the two co-register and
+share units — now, and at each forecast horizon:
+
+| ch | name | encoding |
+|----|------|----------|
+| 0 | `drone_sdf` | `clip((d - kill_radius) / 24, -1, 1)` to the nearest zap (type 14) or mini (type 26) drone, **this frame** |
+| 1 | `drone_sdf_t12` | the same field 12 sim frames from now |
+| 2 | `drone_sdf_t24` | the same field 24 sim frames from now |
+| 3 | `drone_sdf_t48` | the same field 48 sim frames from now |
+
+Channel count is `1 + len(DRONE_HAZARD_HORIZONS)`; the horizons are the
+authoritative list in `constants.py`.
+
+The kill radius is per class — 17.5px for a zap drone (`NINJA_RADIUS 10` + 7.5),
+14px for a mini (10 + 4) — so the two classes are evaluated separately and merged
+by element-wise **minimum**, which keeps the worst case rather than averaging a
+threat away. The same reasoning drives the min-pooling to the policy grid.
+
+Without this key a patrolling drone is indistinguishable from empty space: the
+rest of the hazard pipeline is mine-shaped, and the native backend's
+`entity_dic` deliberately whitelists only static entity types, so drones are
+read from the live sim snapshot instead (`get_drone_positions`).
+
+Unlike `hazard_map` there is **no change-gate** — mines only enter or leave the
+deadly set on a `state` toggle, but drones move every frame. The engine bounds
+cost by scattering each drone into its `kill_radius + 24px` influence box
+(beyond it the SDF is exactly 1.0) rather than querying all 15,456 cells:
+~20µs/frame per channel on a 28-drone level, ~200µs for the whole key including
+the roll-out and the pooling.
+
+#### The forecast channels are exact, not predicted
+
+Channel 0 alone says only "a drone is there now". It cannot distinguish a
+corridor whose drone is walking away from one whose drone is walking in, and
+those demand opposite actions from an identical frame — so timing is not
+learnable from it.
+
+Zap and mini drones patrol a fixed grid with **no ninja dependence**, so their
+future positions are a lookup, not a prediction: channel `i+1` is bit-for-bit
+what channel 0 will read `DRONE_HAZARD_HORIZONS[i]` frames later, pinned by
+`test_forecast_matches_the_sim_it_predicts` against the simulator itself. Mines
+have no analogue of this. The roll-out drives the simulator's own motion code
+(`Drone::forecast` / `EntityDroneBase.predict_positions`) rather than a second
+copy of the patrol rules, which would drift silently.
+
+Horizons are in **sim frames**, not env steps: at the training `frame_skip` of 4
+they are 3, 6 and 12 actions ahead. A zap drone covers a 24px cell in 21 frames,
+so 12/24/48 span roughly half a cell, one cell and two cells, while the ninja at
+full run speed covers ~6.7 cells in 48 frames — the range over which a route
+commitment is still revocable.
+
+The chaser drone (type 15) is deliberately excluded from both the present-frame
+read and the forecast. Its movement depends on the ninja, so unlike types 14/26
+it is not a function of the frame counter; forward-rolling it would amount to
+predicting the agent's own future.
+
+> **Do not combine this key with observation-synthesising mirror augmentation
+> yet.** The level mirror does not reflect drone trajectories (measured
+> 2026-08-03): spawn positions mirror exactly, but paths diverge from frame 1.
+> A synthesised mirrored observation would therefore place drones where the
+> mirrored level does not have them. This is a pre-existing defect in
+> `map_augmentation/transforms.py` — see the caveat on the `drone_hazard_map`
+> entry in `obs_mirror.py` for the diagnosis. Mirroring at the LEVEL level is
+> unaffected in kind (it still produces a valid level, just not a true
+> reflection).
 
 ### `game_state`: `(261,)` float32, `[-1, 1]`
 
@@ -139,5 +210,6 @@ has no finite free-space route (severed / airborne levels).
 
 ```bash
 .venv/bin/python -m pytest tests/test_entity_overlays.py tests/test_hazard_map.py \
+    tests/test_drone_hazard_map.py \
     tests/test_l1_game_state_switch_activated.py tests/test_layer1_mines_fixtures.py
 ```

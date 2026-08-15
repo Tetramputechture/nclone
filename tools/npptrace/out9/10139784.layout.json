@@ -1,0 +1,83 @@
+{
+ "t": "layout",
+ "demo": "cap04",
+ "sim": "0x100230b0",
+ "pools": [
+  {
+   "i": 0,
+   "count": 48,
+   "stride": 48,
+   "base": "0x944a0e0",
+   "vtableRva": 5711568,
+   "offset": 0
+  },
+  {
+   "i": 1,
+   "count": 1,
+   "stride": 72,
+   "base": "0x944a9e0",
+   "vtableRva": 5711392,
+   "offset": 2304
+  },
+  {
+   "i": 2,
+   "count": 1,
+   "stride": 48,
+   "base": "0x944aa28",
+   "vtableRva": 5711440,
+   "offset": 2376
+  },
+  {
+   "i": 6,
+   "count": 6,
+   "stride": 184,
+   "base": "0x944aa58",
+   "vtableRva": 5709464,
+   "offset": 2424
+  },
+  {
+   "i": 9,
+   "count": 35,
+   "stride": 56,
+   "base": "0x944aea8",
+   "vtableRva": 5711868,
+   "offset": 3528
+  },
+  {
+   "i": 16,
+   "count": 1,
+   "stride": 176,
+   "base": "0x944b650",
+   "vtableRva": 5712448,
+   "offset": 5488
+  },
+  {
+   "i": 21,
+   "count": 30,
+   "stride": 208,
+   "base": "0x944b700",
+   "vtableRva": 5711088,
+   "offset": 5664
+  },
+  {
+   "i": 24,
+   "count": 8,
+   "stride": 112,
+   "base": "0x944cf60",
+   "vtableRva": 5711636,
+   "offset": 11904
+  },
+  {
+   "i": 27,
+   "count": 8,
+   "stride": 232,
+   "base": "0x944d2e0",
+   "vtableRva": 5711996,
+   "offset": 12800
+  }
+ ],
+ "entityBytes": 14656,
+ "recBytes": 18052,
+ "ninjaSlab": 3392,
+ "frames": 2912
+}

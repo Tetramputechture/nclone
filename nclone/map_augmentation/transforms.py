@@ -89,6 +89,80 @@ _DRONE_TYPES = frozenset({14, 15, 26})
 _DRONE_MODE_SWAP: Dict[int, int] = {0: 1, 1: 0, 2: 3, 3: 2}
 
 
+#: Entity types whose reflection is KNOWN to be wrong, with the defect.
+#:
+#: 1. ``_ORIENT_FLIP`` above is provably wrong for the four AXIS-ALIGNED
+#:    orientations. Checked against the simulator's own
+#:    ``map_orientation_to_vector``: a horizontal mirror must map 0 <-> 4
+#:    (right / left) and leave 2 and 6 (down / up) alone. The table does the
+#:    opposite -- it leaves 0 and 4 untouched (the ``not in (0, 4)`` guard) and
+#:    swaps 2 <-> 6. The four diagonals are correct. Its comment shows the
+#:    misconception: it calls 0 "up" and 4 "down", but the sim says 0 is (+1, 0).
+#: 2. Drone TRAJECTORIES do not reflect even once the orientation is corrected.
+#:    Measured 2026-08-03: spawn positions mirror exactly but the paths diverge
+#:    from frame 1, up to 312 px over 200 frames on `official/R/173 variational
+#:    mechanics`. Fixing the orientation shrinks it (312 -> 240 px, and 252 -> 36
+#:    px on `R/034 oh, they'll swarm ya`) but does not zero it, so at least one
+#:    further defect remains and is not yet located.
+#:
+#: Consequence for LEVEL mirroring (Tier 0): the mirrored level is still a valid
+#: level, but it is not the reflection of the original -- a wrongly-oriented
+#: launcher or patrol can make it unsolvable, and an unsolvable level in the pool
+#: reads as a policy failure and stalls the phase gate on merit it never lacked.
+#: Consequence for SYNTHESISED observation mirroring (the aux / equivariance
+#: tiers): M(obs) places threats where the mirrored level does not have them.
+#:
+#: This set is used by :func:`is_mirror_faithful` to *exclude* affected maps
+#: rather than to mirror them wrongly. It went unnoticed for a long time because
+#: mines carry no orientation byte, so a mines-only corpus cannot exercise it.
+_MIRROR_UNFAITHFUL_TYPES = frozenset(
+    _ORIENT_TYPES
+    | _DRONE_TYPES
+    # Every phase-1 pure hazard that MOVES or AIMS. Kept explicit rather than
+    # imported from `constants.entity_types.PURE_HAZARD_TYPES` so this module
+    # stays a leaf with no dependency on the training-scope profiles.
+    | {
+        12,  # drone chaingun
+        13,  # drone laser
+        16,  # floor guard
+        18,  # rocket
+        19,  # turret
+        22,  # evil ninja -- replays the ninja's own tape, so it inherits every
+        #      divergence in the ninja's path rather than causing one
+        25,  # death ball
+        27,  # eye bat
+        28,  # shove thwump
+    }
+)
+
+
+def unfaithful_mirror_types(map_data: List[int]) -> Tuple[int, ...]:
+    """Entity types present in ``map_data`` whose reflection is known wrong.
+
+    Empty tuple means the level mirrors exactly. See
+    :data:`_MIRROR_UNFAITHFUL_TYPES` for what "wrong" means per type.
+    """
+    found = set()
+    i = _ENTITY_START
+    n = len(map_data)
+    while i + 4 < n:
+        etype = map_data[i]
+        if etype in _MIRROR_UNFAITHFUL_TYPES:
+            found.add(int(etype))
+        i += _ENTITY_STRIDE
+    return tuple(sorted(found))
+
+
+def is_mirror_faithful(map_data: List[int]) -> bool:
+    """Whether :func:`mirror_map_data` produces the TRUE reflection of this level.
+
+    A mines-and-gold level mirrors exactly and is safe to augment. A level
+    carrying any orientation-bearing or moving entity does not -- see
+    :data:`_MIRROR_UNFAITHFUL_TYPES`.
+    """
+    return not unfaithful_mirror_types(map_data)
+
+
 def mirror_map_data(map_data: List[int]) -> List[int]:
     """Return a horizontally mirrored copy of ``map_data``.
 

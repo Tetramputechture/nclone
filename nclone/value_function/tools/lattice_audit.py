@@ -42,6 +42,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import logging
 import math
 import os
 import sys
@@ -50,6 +51,8 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 import nclone_native as Nnative
 from ...constants.physics_constants import MAX_JUMP_DURATION
@@ -63,7 +66,9 @@ from ..surface_graph import (
     find_mine_blocked_nodes,
     node_id_to_parts,
 )
-from ..edge_enumeration import enumerate_edges, populate_graph_edges
+from ..edge_enumeration import (
+    enumerate_edges, populate_graph_edges, _MINE_INFLATION_BETA_DEFAULT,
+)
 from ..edge_risk import (
     apply_risk_weighting,
     DEFAULT_W_RISK,
@@ -363,7 +368,15 @@ class LatticeAudit:
                      f"|cdjlm={self.cdj_launch_modes}"
                      f"|sjm={self.slope_jump_modes}"
                      f"|kmg={int(self.keep_mine_geometry)}"
-                     "|v16-slopejump|dpv2-faithful".encode()
+                     # v17: the arc-level mine test switched from ``all_mines`` to
+                     # ``deadly`` and the kill-zone prune was decoupled from
+                     # ``mine_inflation``.  Both change the ENUMERATED EDGE SET on
+                     # any level carrying an untoggled mine, so a cache written
+                     # before this point must not be reused (spec §5 trap 1,
+                     # applied to the cache that actually changed — the bin
+                     # schedule is untouched, so BIN_SCHEDULE_VERSION stays put
+                     # rather than needlessly invalidating every tile shard).
+                     "|v17-deadly-mine-arcs|dpv2-faithful".encode()
                    + sched)
         h = hashlib.md5(payload).hexdigest()[:12]
         # Persistent/shared cache location override so an offline corpus job and
@@ -512,10 +525,28 @@ class LatticeAudit:
         import pickle
         cp = self._cache_path()
         if use_cache and os.path.exists(cp):
-            with open(cp, "rb") as f:
-                pc = pickle.load(f)
-            pc["cached"] = True
-            return pc
+            # A TRUNCATED entry must degrade to a miss, never to an exception.
+            # The write below used to be non-atomic, so every killed run left
+            # half-written files behind -- and this project kills runs routinely
+            # (gamma-2 by SIGTERM, gamma-3 by hand). The 2026-08-14 corpus
+            # precompute hit 5 of these as `EOFError: Ran out of input` /
+            # `UnpicklingError: pickle data was truncated`, and the same file
+            # would have crashed a TRAINING worker at env reset, because the
+            # cache is shared between the offline job and the workers.
+            try:
+                with open(cp, "rb") as f:
+                    pc = pickle.load(f)
+                pc["cached"] = True
+                return pc
+            except Exception as exc:  # noqa: BLE001 — corrupt cache is recoverable
+                logger.warning(
+                    "lattice cache entry unreadable (%s: %s); removing and "
+                    "recomputing: %s", type(exc).__name__, exc, cp
+                )
+                try:
+                    os.remove(cp)
+                except OSError:
+                    pass
         t0 = time.time()
         # surface extraction wants mine positions for segment splitting
         from ..physics_step_wrapper import PhysicsStepWrapper
@@ -535,10 +566,30 @@ class LatticeAudit:
         # in the matching frame (tangential => via per-point tangent).
         graph.momentum_model = self.momentum_model
 
+        # Mine positions are passed whenever the level HAS mines, independent of
+        # ``mine_inflation``.  Inside ``enumerate_edges`` this array does double
+        # duty: it enables the entity-aware arc tick (``tick_physics_mines_only``,
+        # which kills the ninja on REAL contact and so prunes lethal arcs by
+        # physics) AND it drives the soft CHOMP proximity inflation.  Coupling the
+        # two meant ``mine_inflation=False`` silently disabled *lethal-arc
+        # pruning* as well, letting d* claim routes that fly straight through a
+        # kill disc.  ``mine_inflation`` now gates only the soft cost penalty
+        # (beta=0 => no inflation), which is what its name says; the hard
+        # kill-zone prune is unconditional.
+        # ``deadly``, not ``all_mines``: a toggle mine in state 1 is inert, and the
+        # geometric kill-zone prune inside ``_inflate_arc_cost`` treats every
+        # supplied position as lethal (clearance <= 0 => arc dropped).  Feeding it
+        # the safe mines too pruned arcs that pass harmlessly through an untoggled
+        # mine, which over-severs the graph — the very failure this work is
+        # chasing.  ``find_mine_blocked_nodes`` below already masks nodes using
+        # ``self.deadly``, so this also makes the arc test and the node mask agree
+        # on what "lethal" means.  (On the native path this array only switches on
+        # ``tick_physics_mines_only``, which reads the simulator's real mine state,
+        # so the change is a no-op there.)
         mine_pos = (
-            np.asarray(self.all_mines, dtype=np.float32)
-            if (self.all_mines and self.mine_inflation) else None
+            np.asarray(self.deadly, dtype=np.float32) if self.deadly else None
         )
+        mine_beta = _MINE_INFLATION_BETA_DEFAULT if self.mine_inflation else 0.0
         # Goal positions for air-reachable-goal detection during enumeration:
         # index 0 = switch, 1 = exit, each (x, y, contact_range).  Lets arcs that
         # pass within contact range of a switch/exit NOT adjacent to any surface
@@ -563,6 +614,7 @@ class LatticeAudit:
             num_workers=self.workers,
             collect_waypoints=False,
             mine_positions=mine_pos,
+            mine_inflation_beta=mine_beta,
             stats_out=stats,
             goal_positions=goal_positions,
             use_native=self.use_native,
@@ -636,7 +688,8 @@ class LatticeAudit:
                 e, _ = enumerate_edges(
                     g, _map_data_doors_open(self.map_data, set(open_set)),
                     num_workers=self.workers, collect_waypoints=False,
-                    mine_positions=mine_pos, goal_positions=goal_positions,
+                    mine_positions=mine_pos, mine_inflation_beta=mine_beta,
+                    goal_positions=goal_positions,
                     use_native=self.use_native, momentum_model=self.momentum_model,
                 )
                 populate_graph_edges(g, e)
@@ -658,8 +711,27 @@ class LatticeAudit:
         }
         try:
             import pickle
-            with open(self._cache_path(), "wb") as f:
-                pickle.dump(pc, f)
+            # ATOMIC: write to a private temp file in the same directory, then
+            # rename. A plain open()+dump() is interrupted by any kill, leaving a
+            # truncated file that still passes os.path.exists() and is then read
+            # back as a cache HIT -- see the recovery path in precompute(). The
+            # cache is shared by the offline job and every training worker, and
+            # os.replace is atomic within a directory, so a reader sees either
+            # the old entry or the complete new one and never a partial write.
+            cp = self._cache_path()
+            tmp = f"{cp}.tmp.{os.getpid()}"
+            try:
+                with open(tmp, "wb") as f:
+                    pickle.dump(pc, f)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, cp)
+            finally:
+                if os.path.exists(tmp):
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
         except Exception:
             pass
         return pc

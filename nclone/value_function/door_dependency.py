@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple  # noqa: F401
 
 import numpy as np
 
@@ -129,8 +129,40 @@ def _reaches(graph: SurfaceGraph, reach: Set[int], x: float, y: float, kind: str
 # ---------------------------------------------------------------------------
 # Faithful solver
 # ---------------------------------------------------------------------------
+class SurfaceGraphOracle:
+    """The original per-configuration surface-graph backend.
+
+    Kept as the default so every existing caller is unchanged.  The solver below
+    talks only to this four-method interface, which is what lets the SAME
+    dependency algorithm run over the free-space flood instead — see
+    ``free_space_door_plan.FreeSpaceDoorOracle``.  The algorithm was never
+    graph-specific; only these four primitives were.
+    """
+
+    def __init__(self, enumerate_graph: Callable[[frozenset], SurfaceGraph]):
+        self._enumerate = enumerate_graph
+        self._cache: Dict[frozenset, SurfaceGraph] = {}
+
+    def config(self, open_set):
+        key = frozenset(open_set)
+        g = self._cache.get(key)
+        if g is None:
+            g = self._enumerate(key)
+            self._cache[key] = g
+        return g
+
+    def reachable_from(self, cfg, x: float, y: float):
+        return _reachable_from(cfg, x, y)
+
+    def reaches(self, cfg, reach, x: float, y: float, kind: str) -> bool:
+        return _reaches(cfg, reach, x, y, kind)
+
+    def leg_field(self, cfg, x: float, y: float, kind: str) -> np.ndarray:
+        return dijkstra_backward(cfg, find_goal_nodes(cfg, x, y, kind))
+
+
 def solve_door_dependencies(
-    enumerate_graph: Callable[[frozenset], SurfaceGraph],
+    enumerate_graph: Optional[Callable[[frozenset], SurfaceGraph]],
     doors: Sequence[DoorDescriptor],
     spawn_x: float,
     spawn_y: float,
@@ -138,31 +170,34 @@ def solve_door_dependencies(
     switch_y: float,
     exit_x: float,
     exit_y: float,
+    oracle=None,
 ) -> DoorPlan:
-    """Resolve locked-door dependencies by faithful per-config edge enumeration.
+    """Resolve locked-door dependencies by faithful per-config re-evaluation.
 
     ``enumerate_graph(frozenset(open_door_indices))`` must return a SurfaceGraph
     with edges enumerated for that door configuration, over a SHARED surface-point
     set (so node ids are comparable across configs). See the module docstring.
+
+    ``oracle`` supplies a different backend for the same algorithm (see
+    :class:`SurfaceGraphOracle` for the interface).  Exactly one of the two is
+    required; ``oracle`` wins when both are given.
     """
     n = len(doors)
     sw = [(d.switch_x, d.switch_y) for d in doors]
 
-    _cache: Dict[frozenset, SurfaceGraph] = {}
+    if oracle is None:
+        if enumerate_graph is None:
+            raise ValueError("solve_door_dependencies needs enumerate_graph or oracle")
+        oracle = SurfaceGraphOracle(enumerate_graph)
 
-    def G(open_set) -> SurfaceGraph:
-        key = frozenset(open_set)
-        g = _cache.get(key)
-        if g is None:
-            g = enumerate_graph(key)
-            _cache[key] = g
-        return g
+    def G(open_set):
+        return oracle.config(open_set)
 
     def exit_ok(open_set) -> bool:
         g = G(open_set)
-        reach = _reachable_from(g, spawn_x, spawn_y)
-        return (_reaches(g, reach, exit_x, exit_y, "exit")
-                and _reaches(g, reach, switch_x, switch_y, "switch"))
+        reach = oracle.reachable_from(g, spawn_x, spawn_y)
+        return (oracle.reaches(g, reach, exit_x, exit_y, "exit")
+                and oracle.reaches(g, reach, switch_x, switch_y, "switch"))
 
     if n == 0:
         return DoorPlan(solvable=exit_ok(frozenset()), necessary_order=[])
@@ -171,9 +206,10 @@ def solve_door_dependencies(
     opened: Set[int] = set()
     while True:
         g = G(opened)
-        reach = _reachable_from(g, spawn_x, spawn_y)
+        reach = oracle.reachable_from(g, spawn_x, spawn_y)
         newly = [di for di in range(n)
-                 if di not in opened and _reaches(g, reach, sw[di][0], sw[di][1], "switch")]
+                 if di not in opened
+                 and oracle.reaches(g, reach, sw[di][0], sw[di][1], "switch")]
         if not newly:
             break
         opened.update(newly)
@@ -199,9 +235,9 @@ def solve_door_dependencies(
     remaining = set(suff)
     while remaining:
         g = G(opened)
-        reach = _reachable_from(g, spawn_x, spawn_y)
+        reach = oracle.reachable_from(g, spawn_x, spawn_y)
         ready = [di for di in remaining
-                 if _reaches(g, reach, sw[di][0], sw[di][1], "switch")]
+                 if oracle.reaches(g, reach, sw[di][0], sw[di][1], "switch")]
         if not ready:
             return DoorPlan(
                 solvable=False,
@@ -220,13 +256,11 @@ def solve_door_dependencies(
     opened = set()
     for di in order:
         g = G(opened)
-        gn = find_goal_nodes(g, sw[di][0], sw[di][1], "switch")
-        door_leg_dstar.append(dijkstra_backward(g, gn))
+        door_leg_dstar.append(oracle.leg_field(g, sw[di][0], sw[di][1], "switch"))
         opened.add(di)
-    # opened == set(order) here; the all-necessary-open graph for the exit leg.
+    # opened == set(order) here; the all-necessary-open config for the exit leg.
     g_final = G(order)
-    exit_leg_dstar = dijkstra_backward(
-        g_final, find_goal_nodes(g_final, exit_x, exit_y, "exit"))
+    exit_leg_dstar = oracle.leg_field(g_final, exit_x, exit_y, "exit")
 
     return DoorPlan(
         solvable=True,

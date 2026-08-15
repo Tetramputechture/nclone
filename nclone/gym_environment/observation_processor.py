@@ -57,6 +57,15 @@ class ObservationProcessor:
         "tile_grid",
         "entity_overlays",
         "hazard_map",
+        "drone_hazard_map",  # optional patrol-drone SDF (only when enabled)
+        "threat_ttl",  # optional time-to-lethal threat field (only when enabled)
+        # Shooter TELEGRAPH, gated with threat_ttl. The field says where a
+        # hazard is lethal now; this says how many frames until one fires. A
+        # turret's beam is hitscan, so the field can only ever show it on the
+        # frame it kills -- omitting this key leaves 138 official levels with a
+        # threat that is, in principle, unlearnable.
+        "threat_proximity",
+        "solid_map",  # optional solid-entity surface map (only when enabled)
         "lattice_nav",  # optional d* nav hint (only present when enabled)
         "waypoint_nav",  # optional waypoint-subgoal nav hint (only when enabled)
         "cost_to_go_map",  # optional Phase-2 O2 global cost-to-go field (only when enabled)

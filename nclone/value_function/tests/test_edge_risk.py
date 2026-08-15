@@ -10,10 +10,12 @@ import unittest
 
 import numpy as np
 
+from nclone.constants.physics_constants import MAX_HOR_SPEED
 from nclone.value_function.surface_graph import (
     build_graph,
     node_id,
     dijkstra_backward_with_tree,
+    velocity_bin_centers,
 )
 from nclone.value_function.surface_extraction import (
     SurfacePoint, SURFACE_FLOOR, SURFACE_WALL,
@@ -46,9 +48,34 @@ def _wall_point(x, y, seg_id):
                         is_edge=False)
 
 
+def _bin_nearest(surface_type, target_velocity):
+    """Index of the velocity bin whose CENTER is closest to ``target_velocity``.
+
+    Bins must be selected by the velocity they mean, never by a literal index.
+    The axis is 8 bins wide for floors and walls but 5 for slides, and it has
+    been resized before: this class previously hard-coded indices from a 16-bin
+    axis, and because ``node_id`` is a plain ``point * max_vel_bins + bin`` with
+    no bounds check, an index past the end silently wrapped into the NEXT
+    POINT's bin range instead of failing. ``src_bin=14`` on an 8-bin axis
+    resolved to (point 1, bin 6) — so a test meant to compare a standstill
+    launch against a sprint launch was comparing bin 6 with bin 6 and got two
+    identical numbers.
+    """
+    centers = np.asarray(velocity_bin_centers(surface_type), dtype=np.float64)
+    return int(np.argmin(np.abs(centers - float(target_velocity))))
+
+
 def _single_edge_graph(src_pt, dst_pt, *, src_bin, dst_bin, jump_hold):
     """One directed jump edge between two surface points at the given bins."""
     g = build_graph([src_pt, dst_pt])
+    # Guard the aliasing described in _bin_nearest: out-of-range bins must fail
+    # loudly here rather than silently addressing a different point.
+    for label, b in (("src_bin", src_bin), ("dst_bin", dst_bin)):
+        if not 0 <= b < g.max_vel_bins:
+            raise ValueError(
+                f"{label}={b} is out of range for max_vel_bins={g.max_vel_bins}; "
+                f"pick it with _bin_nearest(surface_type, velocity)"
+            )
     e = EdgeResult(
         src_node=node_id(0, src_bin, g.max_vel_bins),
         dst_node=node_id(1, dst_bin, g.max_vel_bins),
@@ -128,31 +155,37 @@ class TestMomentumRisk(unittest.TestCase):
     """Wall-chain re-contact + low-launch-speed risk (momentum preservation)."""
 
     def test_upward_wall_recontact_is_chain_risk(self):
-        # Wall bin 0 center = WALL_VEL_MIN (-2.0) => upward re-contact chain-link.
+        # Landing on a wall while still moving UP (vy < 0) is the chain-link.
         g = _single_edge_graph(_floor_point(0.0, 100.0, 0),
                                _wall_point(60.0, 100.0, 1),
-                               src_bin=14, dst_bin=0, jump_hold=5)
+                               src_bin=_bin_nearest(SURFACE_FLOOR, MAX_HOR_SPEED),
+                               dst_bin=_bin_nearest(SURFACE_WALL, -2.0),
+                               jump_hold=5)
         risk = compute_edge_risk(g, deadly_mines=None)
         self.assertGreaterEqual(float(risk[0]), _WALL_CHAIN_RISK - 1e-6)
 
     def test_downward_wall_landing_no_chain_risk(self):
-        # Wall bin 4 center = 0.4 (downward slide) => NOT a chain-link; only the
-        # small jump-hold risk applies, well below the chain penalty.
+        # Arriving on the wall already sliding DOWN (vy > 0) is not a chain-link;
+        # only the small jump-hold risk applies, well below the chain penalty.
         g = _single_edge_graph(_floor_point(0.0, 100.0, 0),
                                _wall_point(60.0, 100.0, 1),
-                               src_bin=14, dst_bin=4, jump_hold=5)
+                               src_bin=_bin_nearest(SURFACE_FLOOR, MAX_HOR_SPEED),
+                               dst_bin=_bin_nearest(SURFACE_WALL, 0.4),
+                               jump_hold=5)
         risk = compute_edge_risk(g, deadly_mines=None)
         self.assertLess(float(risk[0]), _WALL_CHAIN_RISK)
 
     def test_low_launch_speed_penalises_slow_floor_jump(self):
-        # Floor bin 6 center = 0.0 (standstill); bin 14 = MAX_HOR_SPEED (sprint).
-        def floor_jump_risk(src_bin):
-            g = _single_edge_graph(_floor_point(0.0, 100.0, 0),
-                                   _floor_point(120.0, 100.0, 1),
-                                   src_bin=src_bin, dst_bin=7, jump_hold=5)
+        # Standstill launch (|vx| ~ 0) must cost more than a full-sprint launch.
+        def floor_jump_risk(src_velocity):
+            g = _single_edge_graph(
+                _floor_point(0.0, 100.0, 0), _floor_point(120.0, 100.0, 1),
+                src_bin=_bin_nearest(SURFACE_FLOOR, src_velocity),
+                dst_bin=_bin_nearest(SURFACE_FLOOR, MAX_HOR_SPEED),
+                jump_hold=5)
             return float(compute_edge_risk(g, deadly_mines=None)[0])
-        slow = floor_jump_risk(6)
-        fast = floor_jump_risk(14)
+        slow = floor_jump_risk(0.0)
+        fast = floor_jump_risk(MAX_HOR_SPEED)
         self.assertGreater(slow, fast)
         # The standstill jump carries ~the full low-launch penalty.
         self.assertGreaterEqual(slow - fast, _LOW_LAUNCH_SPEED_RISK_MAX - 1e-3)

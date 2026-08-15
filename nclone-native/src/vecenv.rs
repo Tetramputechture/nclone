@@ -158,32 +158,7 @@ impl NativeVecEnv {
         if env_idx < self.sims.len() {
             let sim = &mut self.sims[env_idx];
             if entity_index < sim.entities.len() {
-                match &mut sim.entities[entity_index] {
-                    Entity::ToggleMine(e) => {
-                        e.xpos = x;
-                        e.ypos = y;
-                    }
-                    Entity::Gold(e) => {
-                        e.xpos = x;
-                        e.ypos = y;
-                    }
-                    Entity::ExitSwitch(e) => {
-                        e.xpos = x;
-                        e.ypos = y;
-                    }
-                    Entity::ExitDoor(e) => {
-                        e.xpos = x;
-                        e.ypos = y;
-                    }
-                    Entity::LockedDoor(e) => {
-                        e.xpos = x;
-                        e.ypos = y;
-                    }
-                    Entity::OneWay(e) => {
-                        e.xpos = x;
-                        e.ypos = y;
-                    }
-                }
+                sim.entities[entity_index].set_position(x, y);
                 sim.rebuild_entity_grid();
             }
         }

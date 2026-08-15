@@ -49,6 +49,14 @@ class EntityDroneZap(EntityDroneBase):
     """
 
     MAX_COUNT_PER_LEVEL = 256
+    #: Which hazard the gate reports. Subclasses override it -- the chaser
+    #: inherits this kill, and reporting its deaths as `drone_zap` hid a
+    #: whole mechanic behind the wrong name.
+    KILL_CAUSE = "drone_zap"
+    #: Radius used by the KILL test only. `RADIUS` is also the movement
+    #: footprint, so the two cannot share a value when they differ. Subclasses
+    #: override this; see `entity_drone_chaser.py`.
+    KILL_RADIUS = None
 
     def __init__(self, type, sim, xcoord, ycoord, orientation, mode):
         super().__init__(type, sim, xcoord, ycoord, orientation, mode, 8 / 7)
@@ -58,7 +66,8 @@ class EntityDroneZap(EntityDroneBase):
         """Kill the ninja if it touches the regular drone."""
         ninja = self.sim.ninja
         if ninja.is_valid_target():
+            _r = self.KILL_RADIUS if self.KILL_RADIUS is not None else self.RADIUS
             if overlap_circle_vs_circle(
-                self.xpos, self.ypos, self.RADIUS, ninja.xpos, ninja.ypos, NINJA_RADIUS
+                self.xpos, self.ypos, _r, ninja.xpos, ninja.ypos, NINJA_RADIUS
             ):
-                ninja.kill(0, 0, 0, 0, 0)
+                ninja.kill(0, 0, 0, 0, 0, cause=self.KILL_CAUSE)

@@ -341,7 +341,14 @@ def test_env_observation_parity_one_way():
 
 
 def _flat_map_with_gold(gold_cells: list[tuple[int, int]]) -> list[int]:
-    """A flat floor with the ninja spawned to walk RIGHT through a line of gold."""
+    """A flat floor with the ninja spawned to walk RIGHT through a line of gold.
+
+    Gold sits on the ninja's OWN grid row (10), which is what "on the walking
+    line" now means: gold carries the same +6 store-time offset as the spawn, so
+    the same grid coordinate is the same pixel row. Until 2026-08-07 gold carried
+    -6 and this fixture had to say row 13 to hit row 10 -- a three-tile fudge
+    that silently encoded the offset bug it was compensating for.
+    """
     from nclone.map_generation.map import Map
 
     m = Map()
@@ -363,7 +370,7 @@ def test_gold_collection_parity_across_backends():
     Rust sim; the python-wrapper propagation was the fix — see get_gold_state)."""
     from nclone.gym_environment.entity_overlay_utils import ENTITY_OVERLAY_CH_GOLD
 
-    md = _flat_map_with_gold([(10, 13), (12, 13), (14, 13), (16, 13)])
+    md = _flat_map_with_gold([(10, 10), (12, 10), (14, 10), (16, 10)])
     py_env = _make_env("python")
     nat_env = _make_env("native")
     try:

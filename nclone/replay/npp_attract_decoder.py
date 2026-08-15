@@ -12,6 +12,7 @@ Structure discovered:
 - Ninja spawn: bytes 1231-1232 - EXACT match with official maps
 """
 
+import collections
 import logging
 from typing import List, Dict
 
@@ -108,36 +109,72 @@ class NppAttractDecoder:
             List of entity dictionaries with keys: type, x, y, orientation, mode
         """
         entities = []
-        index = start_pos
 
-        # Skip the first entity (type 0 at position 1230) as it's not a real entity
-        # Real entities start at position 1235
-        index = 1235
+        # The section is COUNT-DRIVEN, not terminator-driven. Verified against the
+        # official corpus: `count(type) = u16 LE at map_data[1150 + 2*type]` for
+        # every type 0..28, and a map file is exactly
+        #     1230 + 5 * (count[0] + sum(count[1..28]))  bytes long.
+        # Slot 0 is the NINJA count, and its records are the leading spawn entries.
+        #
+        # The old parser hardcoded "one ninja, skip to 1235, stop at the first
+        # type-0 byte". Type 0 is not an end marker -- `map_loader.py` skips
+        # unknown types and keeps walking -- and the ninja count is not always 1.
+        # On a two-player CO-OP attract there is a second spawn record at 1235, so
+        # the parser stopped there and returned zero entities, and the map decoded
+        # to bare tiles with no exit. That silently dropped **1496 of 8000**
+        # attract demos (18.7%).
+        counts = {t: self._u16(npp_data, 1150 + 2 * t) for t in range(29)}
+        n_ninjas = counts[0]
+        # Types 7 and 9 -- the switch halves of locked and trap doors -- are NOT
+        # counted (they are not entities; the door owns both positions, spec §2),
+        # but each door DOES emit a second record for its switch. So the stream is
+        # one record longer per locked door and per trap door than the counts say.
+        # Verified on 400 random attract files: this expression reproduces the map
+        # section length (`1230 + 5*total == 8 + header_map_len`) on every one.
+        # Without the correction we truncated that many records off the END of
+        # every map carrying a door -- silently dropping whatever sorted last,
+        # typically one-way platforms, which changes the collision geometry.
+        total = sum(counts[t] for t in range(1, 29)) + counts[6] + counts[8]
 
-        while index + 4 < len(npp_data):
-            entity_type = npp_data[index]
-
-            # Stop parsing when we hit a type 0 entity (end marker)
-            if entity_type == 0:
+        index = start_pos + 5 * max(n_ninjas, 1)
+        for _ in range(total):
+            if index + 4 >= len(npp_data):
                 break
-
-            xcoord = npp_data[index + 1]
-            ycoord = npp_data[index + 2]
-            orientation = npp_data[index + 3]
-            mode = npp_data[index + 4]
-
-            entity = {
-                "type": entity_type,
-                "x": xcoord,
-                "y": ycoord,
-                "orientation": orientation,
-                "mode": mode,
-            }
-
-            entities.append(entity)
+            entities.append({
+                "type": npp_data[index],
+                "x": npp_data[index + 1],
+                "y": npp_data[index + 2],
+                "orientation": npp_data[index + 3],
+                "mode": npp_data[index + 4],
+            })
             index += 5
 
         return entities
+
+    @staticmethod
+    def _u32(data: bytes, offset: int) -> int:
+        """Little-endian u32, 0 if the offset runs past the end."""
+        if offset + 3 >= len(data):
+            return 0
+        return int.from_bytes(data[offset:offset + 4], "little")
+
+    @staticmethod
+    def _u16(data: bytes, offset: int) -> int:
+        """Little-endian u16, 0 if the offset runs past the end."""
+        if offset + 1 >= len(data):
+            return 0
+        return data[offset] | (data[offset + 1] << 8)
+
+    @staticmethod
+    def ninja_count(npp_data: bytes) -> int:
+        """Number of ninjas the file was recorded with.
+
+        Anything above 1 is a co-op demo: the tape carries inputs for several
+        players, so a single-ninja simulator cannot replay it faithfully however
+        correct its physics are. Callers measuring replay fidelity should report
+        these separately rather than counting them as losses.
+        """
+        return NppAttractDecoder._u16(npp_data, 1150)
 
     def create_nclone_map(self, npp_attract_path: str) -> bytes:
         """
@@ -168,20 +205,31 @@ class NppAttractDecoder:
             )  # At least 185 bytes, or more if needed
             entity_section = bytearray(entity_section_size)
 
-            # Count entities by type for the nclone format
-            entity_counts = {1: 0, 2: 0, 3: 0, 4: 0}
-            for entity in decoded_data["entities"]:
-                entity_type = entity["type"]
-                if entity_type in entity_counts:
-                    entity_counts[entity_type] += 1
-
-            # Set entity counts at the beginning of the section
-            # Based on official format analysis:
-            entity_section[0] = entity_counts[1]  # Type 1 (mines) count
-            entity_section[2] = entity_counts[3]  # Type 3 (exits) count
-            entity_section[4] = entity_counts[2]  # Type 2 (gold) count
-            entity_section[6] = entity_counts[4]  # Type 4 (exit switches) count
-            entity_section[8] = 1  # Unknown field (always 1 in official)
+            # Per-type entity counts. Layout read off the official maps:
+            #
+            #     count(type) = u16 little-endian at map_data[1150 + 2*type]
+            #
+            # so slot 0 is "type 0" = the ninja and is always 1, type 1 (mines)
+            # lands at 1152, gold at 1154, exit doors at 1156, switches at 1158.
+            # `map_loader.py` reads `exit_door_count` from 1156.
+            #
+            # Two bugs lived here. The slots were shifted by one (mines written to
+            # the ninja's slot, exits to the mine slot), which survived only
+            # because doors and switches are always 1:1. And each count was
+            # written as a SINGLE byte, so any map with more than 255 of a type
+            # raised `byte must be in range(0, 256)`, the exception was swallowed
+            # by the caller, and the whole map decoded to 1335 zero bytes -- no
+            # tiles, no entities, unwinnable. That silently discarded **1650 of
+            # 8000** attract demos (20.6%); mine-heavy maps routinely carry 300+.
+            entity_counts = collections.Counter(
+                e["type"] for e in decoded_data["entities"]
+            )
+            entity_section[0:2] = (1).to_bytes(2, "little")  # the ninja
+            for entity_type in (1, 2, 3, 4):
+                slot = 2 * entity_type
+                entity_section[slot:slot + 2] = min(
+                    entity_counts.get(entity_type, 0), 0xFFFF
+                ).to_bytes(2, "little")
 
             # Set ninja spawn at positions 81-82 (based on official format)
             ninja_spawn = decoded_data["ninja_spawn"]
@@ -392,6 +440,35 @@ class NppAttractDecoder:
 
             # Read demo data section header
             demo_header_start = demo_data_start
+
+            # The header states both the start and the length, so parse it rather
+            # than hunting for the tape. Layout, verified across the corpus:
+            #
+            #   +0  u8   0
+            #   +1  u32  total section length
+            #   +5  u32  1
+            #   +9  u32  FRAME COUNT
+            #   +13 u32  level id
+            #   +30      first input byte
+            #
+            # `section_length - frame_count == 30` holds for all 6504 single-ninja
+            # demos, which is what pins the 30. The scan below is kept as a
+            # fallback for anything that does not match -- notably the 1496 co-op
+            # recordings, whose section is laid out differently.
+            #
+            # The scan alone is not safe: it takes the LONGEST run of bytes in
+            # 0..7, so it starts early whenever the trailing header bytes happen
+            # to be small, and it stops at the first byte > 7, which truncated 9
+            # demos by exactly one frame.
+            stated_len = self._u32(npp_data, demo_header_start + 1)
+            frame_count = self._u32(npp_data, demo_header_start + 9)
+            if (
+                frame_count > 0
+                and stated_len - frame_count == 30
+                and demo_header_start + 30 + frame_count <= len(npp_data)
+            ):
+                return list(npp_data[demo_header_start + 30:
+                                     demo_header_start + 30 + frame_count])
 
             # Skip the initial demo header fields (typically ~20-30 bytes)
             # This includes: ?, length of data, ?, frame count, level ID, game mode, etc.

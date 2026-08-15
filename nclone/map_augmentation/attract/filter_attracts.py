@@ -21,7 +21,11 @@ from multiprocessing import Pool
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from ...constants.entity_types import EntityType
+from ...constants.entity_types import (
+    ENTITY_PROFILES,
+    PHANTOM_ENTITY_TYPES,
+    EntityType,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,15 +36,17 @@ DEFAULT_MINE_CAP = 64
 DEFAULT_GOLD_CAP = 40
 _MINE_TYPES = frozenset({EntityType.TOGGLE_MINE, EntityType.TOGGLE_MINE_TOGGLED})
 
-ALLOWED_ENTITY_TYPES = frozenset(
-    {
-        EntityType.TOGGLE_MINE,
-        EntityType.EXIT_DOOR,
-        EntityType.EXIT_SWITCH,
-        EntityType.TOGGLE_MINE_TOGGLED,
-        EntityType.GOLD,
-    }
-)
+# Which entities a level may contain and still be ingestible. This used to be a
+# hardcoded five-type set written before `nclone-native` gained entity parity;
+# because it was a bare literal rather than a named profile, it silently kept the
+# corpus at ~6.5% reach for the whole duration of the entity RE effort. It is now
+# selected by name from the authoritative profiles, and the default follows the
+# simulator.
+DEFAULT_ENTITY_PROFILE = "native"
+
+#: Back-compat alias for importers that expect a module-level set. Prefer passing
+#: an explicit ``profile=`` so the choice is recorded rather than assumed.
+ALLOWED_ENTITY_TYPES = ENTITY_PROFILES[DEFAULT_ENTITY_PROFILE]
 
 ENTITY_SECTION_OFFSET = 1235
 # Read enough of the entity section that any level within the sanity caps is fully
@@ -70,16 +76,18 @@ def check_file(
     path: str,
     mine_cap: Optional[int] = None,
     gold_cap: Optional[int] = None,
+    allowed: Optional[frozenset] = None,
 ) -> Tuple[str, bool, str]:
     """Check whether a single attract file meets the entity criteria.
 
-    Criteria: entities subset of {mine, gold, exit door, exit switch, toggled mine},
-    exactly one exit door + one exit switch, and (optionally) at most ``mine_cap``
-    mines and ``gold_cap`` gold.
+    Criteria: entities within ``allowed`` (default: everything the native sim
+    implements), exactly one exit door + one exit switch, and (optionally) at
+    most ``mine_cap`` mines and ``gold_cap`` gold.
 
     Returns:
         (filename, passed, rejection_reason)
     """
+    allowed_set = ALLOWED_ENTITY_TYPES if allowed is None else allowed
     name = os.path.basename(path)
     try:
         with open(path, "rb") as f:
@@ -96,7 +104,11 @@ def check_file(
 
         exit_doors = entity_types.count(EntityType.EXIT_DOOR)
         exit_switches = entity_types.count(EntityType.EXIT_SWITCH)
-        disallowed = set(entity_types) - ALLOWED_ENTITY_TYPES
+        # A locked/trap door writes a SECOND 5-byte record holding its switch
+        # coordinates, tagged with the phantom type 7/9. No entity is ever built
+        # for those, so they are not a capability question -- but leaving them in
+        # rejects every door level as "disallowed type 7".
+        disallowed = set(entity_types) - allowed_set - PHANTOM_ENTITY_TYPES
 
         if disallowed:
             return (name, False, f"disallowed_types={sorted(disallowed)}")
@@ -132,6 +144,7 @@ def filter_attract_files(
     dry_run: bool = False,
     mine_cap: Optional[int] = None,
     gold_cap: Optional[int] = None,
+    profile: str = DEFAULT_ENTITY_PROFILE,
 ) -> Dict[str, int]:
     """Filter attract files and symlink qualifying ones to output_dir.
 
@@ -142,10 +155,18 @@ def filter_attract_files(
         dry_run: If True, only report statistics without creating symlinks.
         mine_cap: Reject levels with more than this many (toggle + toggled) mines.
         gold_cap: Reject levels with more than this many gold pieces.
+        profile: Name in :data:`ENTITY_PROFILES` -- ``"native"`` (everything the
+            simulator implements) or ``"minimal"`` (the legacy five-type set).
 
     Returns:
         Dictionary with filtering statistics.
     """
+    if profile not in ENTITY_PROFILES:
+        raise ValueError(
+            f"unknown entity profile {profile!r}; "
+            f"choose from {sorted(ENTITY_PROFILES)}"
+        )
+    allowed = ENTITY_PROFILES[profile]
     source_path = Path(source_dir).resolve()
     output_path = Path(output_dir).resolve()
 
@@ -169,12 +190,17 @@ def filter_attract_files(
 
     # Parallel entity-byte checking
     logger.info(
-        "Checking entity criteria with %d workers (mine_cap=%s gold_cap=%s)...",
+        "Checking entity criteria with %d workers "
+        "(profile=%s [%d types] mine_cap=%s gold_cap=%s)...",
         workers,
+        profile,
+        len(allowed),
         mine_cap,
         gold_cap,
     )
-    check = functools.partial(check_file, mine_cap=mine_cap, gold_cap=gold_cap)
+    check = functools.partial(
+        check_file, mine_cap=mine_cap, gold_cap=gold_cap, allowed=allowed
+    )
     with Pool(processes=workers) as pool:
         results = pool.map(check, all_files, chunksize=256)
 
@@ -199,6 +225,7 @@ def filter_attract_files(
     n_rejected = total - n_passed
 
     logger.info("=== Filter Results ===")
+    logger.info("  Entity profile: %s (%d types)", profile, len(allowed))
     logger.info("  Total files:    %d", total)
     logger.info("  Passed:         %d (%.1f%%)", n_passed, 100 * n_passed / total)
     logger.info("  Rejected:       %d (%.1f%%)", n_rejected, 100 * n_rejected / total)
@@ -210,7 +237,12 @@ def filter_attract_files(
 
     if dry_run:
         logger.info("Dry run -- no symlinks created.")
-        return {"total": total, "passed": n_passed, "rejected": n_rejected}
+        return {
+            "total": total,
+            "passed": n_passed,
+            "rejected": n_rejected,
+            "profile": profile,
+        }
 
     # Create output directory and symlinks
     output_path.mkdir(parents=True, exist_ok=True)
@@ -229,7 +261,12 @@ def filter_attract_files(
     elapsed_link = time.time() - t1
     logger.info("Created %d symlinks in %.1fs", created, elapsed_link)
 
-    return {"total": total, "passed": n_passed, "rejected": n_rejected}
+    return {
+        "total": total,
+        "passed": n_passed,
+        "rejected": n_rejected,
+        "profile": profile,
+    }
 
 
 def main():
@@ -272,6 +309,14 @@ def main():
         help=f"Reject levels with more than N gold (suggested {DEFAULT_GOLD_CAP})",
     )
     parser.add_argument(
+        "--profile",
+        choices=sorted(ENTITY_PROFILES),
+        default=DEFAULT_ENTITY_PROFILE,
+        help="Entity capability profile: 'native' = every type the simulator "
+        "implements (default); 'minimal' = the legacy 5-type subset, for "
+        "reproducing datasets built before entity parity landed.",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable verbose logging",
@@ -291,9 +336,13 @@ def main():
         dry_run=args.dry_run,
         mine_cap=args.mine_cap,
         gold_cap=args.gold_cap,
+        profile=args.profile,
     )
 
-    print(f"\nDone: {stats['passed']}/{stats['total']} files passed filtering.")
+    print(
+        f"\nDone: {stats['passed']}/{stats['total']} files passed filtering "
+        f"(profile={stats['profile']})."
+    )
 
 
 if __name__ == "__main__":

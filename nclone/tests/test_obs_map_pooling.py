@@ -107,3 +107,45 @@ def test_modes_must_cover_every_channel():
         pool_channels(full, 2, ("min", "max"))
     with pytest.raises(ValueError, match="unknown pooling mode"):
         pool_channels(full, 2, ("min", "max", "mean"))
+
+
+@pytest.mark.parametrize("downsample", [2, 3, 4])
+@pytest.mark.parametrize(
+    "modes", [("min",), ("min", "min"), ("min", "max"), ("max", "min", "min", "max")]
+)
+def test_fold_is_bitwise_identical_to_a_block_reduction(downsample, modes):
+    """`pool_channels` folds the sub-cell offsets together with strided views
+    instead of reducing a `(.., ds, .., ds)` reshape over its block axes, because
+    numpy runs the latter as one tiny reduction per output cell (~320 us for the
+    2-channel hazard map, the largest single cost in the observation).
+
+    The two must agree EXACTLY, not approximately. Mirror augmentation
+    SYNTHESISES the reflected observation rather than letting the sim produce it,
+    so a pooled value that differs in the last bit desynchronises the synthesised
+    map from the real one -- with no shape or range check to catch it.
+    """
+    rng = np.random.default_rng(20260803)
+    full = rng.uniform(-1.0, 1.0, size=(len(modes), 24, 18)).astype(np.float32)
+
+    n_ch, w2, h2 = len(modes), full.shape[1] // downsample, full.shape[2] // downsample
+    blocks = full[:, : w2 * downsample, : h2 * downsample].reshape(
+        n_ch, w2, downsample, h2, downsample
+    )
+    expected = np.empty((n_ch, w2, h2), dtype=np.float32)
+    for ch, mode in enumerate(modes):
+        reduce = blocks[ch].min if mode == "min" else blocks[ch].max
+        expected[ch] = reduce(axis=(1, 3))
+
+    got = pool_channels(full, downsample, modes)
+    assert got.dtype == np.float32
+    np.testing.assert_array_equal(got, expected)
+
+
+def test_pooling_drops_cells_that_do_not_fill_a_block():
+    """Trailing cells are dropped, not partially pooled -- the rewrite must keep
+    that, since a partial block would straddle the mirror's block boundary."""
+    full = np.ones((1, 7, 5), dtype=np.float32)
+    full[0, 6, 4] = -1.0  # in the dropped remainder for ds=2
+    pooled = pool_channels(full, 2, ("min",))
+    assert pooled.shape == (1, 3, 2)
+    assert np.all(pooled == 1.0)

@@ -76,6 +76,13 @@ def test_mines_extremely_difficult_threads_the_channel():
     mine-threading source gives a connected, mine-faithful cost-to-go with spawn,
     switch and exit all finite."""
     from nclone.nplay_headless import NPlayHeadless
+    from .conftest import require_intact_map_fixture
+
+    # This fixture is a replay payload committed under a map filename, so the
+    # level it names does not exist to test against.  See the guard's docstring;
+    # the source itself is verified healthy there against the repo's real mine
+    # levels.
+    require_intact_map_fixture("nclone/test_maps/mines-extremely-difficult")
 
     nph = NPlayHeadless(render_mode="rgb_array")
     nph.load_map("nclone/test_maps/mines-extremely-difficult")

@@ -1,0 +1,146 @@
+[
+ {
+  "id": "cap00",
+  "frames": 321,
+  "rec": 32620,
+  "pools": 9
+ },
+ {
+  "id": "cap01",
+  "frames": 1986,
+  "rec": 11372,
+  "pools": 6
+ },
+ {
+  "id": "cap02",
+  "frames": 1554,
+  "rec": 8948,
+  "pools": 12
+ },
+ {
+  "id": "cap03",
+  "frames": 2121,
+  "rec": 20332,
+  "pools": 10
+ },
+ {
+  "id": "cap04",
+  "frames": 2912,
+  "rec": 18052,
+  "pools": 9
+ },
+ {
+  "id": "cap05",
+  "frames": 1754,
+  "rec": 11372,
+  "pools": 6
+ },
+ {
+  "id": "cap06",
+  "frames": 1484,
+  "rec": 8836,
+  "pools": 7
+ },
+ {
+  "id": "cap07",
+  "frames": 3282,
+  "rec": 8836,
+  "pools": 7
+ },
+ {
+  "id": "cap08",
+  "frames": 1373,
+  "rec": 6668,
+  "pools": 7
+ },
+ {
+  "id": "cap09",
+  "frames": 2318,
+  "rec": 18052,
+  "pools": 9
+ },
+ {
+  "id": "cap10",
+  "frames": 1525,
+  "rec": 8948,
+  "pools": 12
+ },
+ {
+  "id": "cap11",
+  "frames": 1555,
+  "rec": 6668,
+  "pools": 7
+ },
+ {
+  "id": "cap12",
+  "frames": 1794,
+  "rec": 11372,
+  "pools": 6
+ },
+ {
+  "id": "cap13",
+  "frames": 496,
+  "rec": 32620,
+  "pools": 9
+ },
+ {
+  "id": "cap14",
+  "frames": 1755,
+  "rec": 11372,
+  "pools": 6
+ },
+ {
+  "id": "cap15",
+  "frames": 1503,
+  "rec": 6668,
+  "pools": 7
+ },
+ {
+  "id": "cap16",
+  "frames": 2495,
+  "rec": 20332,
+  "pools": 10
+ },
+ {
+  "id": "cap17",
+  "frames": 2331,
+  "rec": 18052,
+  "pools": 9
+ },
+ {
+  "id": "1011932",
+  "frames": 2535,
+  "rec": 11036,
+  "pools": 8
+ },
+ {
+  "id": "cap19",
+  "frames": 495,
+  "rec": 32620,
+  "pools": 9
+ },
+ {
+  "id": "cap20",
+  "frames": 490,
+  "rec": 32620,
+  "pools": 9
+ },
+ {
+  "id": "cap21",
+  "frames": 1986,
+  "rec": 11372,
+  "pools": 6
+ },
+ {
+  "id": "cap22",
+  "frames": 1554,
+  "rec": 8948,
+  "pools": 12
+ },
+ {
+  "id": "cap23",
+  "frames": 2121,
+  "rec": 20332,
+  "pools": 10
+ }
+]

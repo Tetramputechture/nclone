@@ -432,6 +432,29 @@ class RewardConfig:
     stall_radius_px: float = 24.0
     stall_penalty_cap: float = 0.05
 
+    # HAZARD EXEMPTION for the stall penalty. Holding position until a patrol
+    # clears is the CORRECT play against a moving threat, and it is
+    # indistinguishable from dithering by the test above: cost-to-go does not
+    # improve and the ninja does not move. Measured on the gamma-1 DRONE bucket,
+    # patrol drones run at 1.143 px/frame over circuits from 31 px (period ~124
+    # frames) to 855 px (period > 1500), so a worst-case wait for a window is
+    # ~600-700 frames. Un-exempted that costs ~-9.3 against R_EXIT = 10 -- i.e.
+    # waiting for a safe window costs almost exactly as much as completing the
+    # level, and past ~2,100 frames of episode length the per-step penalty
+    # exceeds the whole DISCOUNTED completion reward. The policy's best response
+    # is to rush the drone or die trying, which is the opposite of the skill the
+    # hazard curriculum exists to teach.
+    #
+    # While a threat is live within ``stall_hazard_exempt_radius_px`` the clock
+    # FREEZES rather than resets: a genuine ditherer parked next to a hazard
+    # resumes accruing the moment the threat clears, and
+    # ``stall_hazard_exempt_max_frames`` bounds the total exemption per episode
+    # so "camp beside a drone forever" is not a way to buy immunity. The budget
+    # is set above the measured worst-case wait, not above any wait.
+    stall_hazard_exempt: bool = True
+    stall_hazard_exempt_radius_px: float = 48.0
+    stall_hazard_exempt_max_frames: int = 900
+
     SUCCESS_THRESHOLD_MID: float = 0.15
     SUCCESS_THRESHOLD_LATE: float = 0.40
 

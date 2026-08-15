@@ -159,6 +159,11 @@ def test_covers_mine_difficult_two_where_lattice_is_severed():
     but the free-space grid gives a finite, corridor-following cost-to-go."""
     import nclone_native
     from nclone.value_function.tools.physics_route_spike import _load_map_data, _goal_positions
+    from .conftest import require_intact_map_fixture
+
+    # This fixture is a replay payload committed under a map filename, so the
+    # level it names does not exist to test against.  See the guard's docstring.
+    require_intact_map_fixture("nclone/test_maps/mine-difficult-two")
     md = _load_map_data("nclone/test_maps/mine-difficult-two")
     sim = nclone_native.Simulator.load(list(md))
     spawn = sim.get_ninja_pos()

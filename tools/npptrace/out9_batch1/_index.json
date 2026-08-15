@@ -1,0 +1,182 @@
+[
+ {
+  "id": "cap00",
+  "frames": 136,
+  "rec": 13596,
+  "pools": 8
+ },
+ {
+  "id": "cap01",
+  "frames": 1474,
+  "rec": 10388,
+  "pools": 7
+ },
+ {
+  "id": "cap02",
+  "frames": 1183,
+  "rec": 10388,
+  "pools": 7
+ },
+ {
+  "id": "10131474",
+  "frames": 1690,
+  "rec": 5660,
+  "pools": 4
+ },
+ {
+  "id": "cap04",
+  "frames": 490,
+  "rec": 32620,
+  "pools": 9
+ },
+ {
+  "id": "10137755",
+  "frames": 1232,
+  "rec": 8420,
+  "pools": 7
+ },
+ {
+  "id": "cap06",
+  "frames": 1267,
+  "rec": 10388,
+  "pools": 7
+ },
+ {
+  "id": "cap07",
+  "frames": 496,
+  "rec": 32620,
+  "pools": 9
+ },
+ {
+  "id": "cap08",
+  "frames": 495,
+  "rec": 32620,
+  "pools": 9
+ },
+ {
+  "id": "cap09",
+  "frames": 1810,
+  "rec": 10388,
+  "pools": 7
+ },
+ {
+  "id": "10133925",
+  "frames": 1002,
+  "rec": 9308,
+  "pools": 6
+ },
+ {
+  "id": "10131686",
+  "frames": 886,
+  "rec": 21516,
+  "pools": 6
+ },
+ {
+  "id": "10137734",
+  "frames": 1401,
+  "rec": 6236,
+  "pools": 5
+ },
+ {
+  "id": "10132476",
+  "frames": 854,
+  "rec": 9196,
+  "pools": 7
+ },
+ {
+  "id": "10132599",
+  "frames": 2456,
+  "rec": 9628,
+  "pools": 12
+ },
+ {
+  "id": "10136880",
+  "frames": 1097,
+  "rec": 7572,
+  "pools": 8
+ },
+ {
+  "id": "cap16",
+  "frames": 3282,
+  "rec": 8836,
+  "pools": 7
+ },
+ {
+  "id": "10138634",
+  "frames": 1733,
+  "rec": 9876,
+  "pools": 9
+ },
+ {
+  "id": "cap18",
+  "frames": 1484,
+  "rec": 8836,
+  "pools": 7
+ },
+ {
+  "id": "cap19",
+  "frames": 546,
+  "rec": 13596,
+  "pools": 8
+ },
+ {
+  "id": "cap20",
+  "frames": 538,
+  "rec": 13596,
+  "pools": 8
+ },
+ {
+  "id": "cap21",
+  "frames": 1474,
+  "rec": 10388,
+  "pools": 7
+ },
+ {
+  "id": "cap22",
+  "frames": 1183,
+  "rec": 10388,
+  "pools": 7
+ },
+ {
+  "id": "10131474",
+  "frames": 1690,
+  "rec": 5660,
+  "pools": 4
+ },
+ {
+  "id": "cap24",
+  "frames": 490,
+  "rec": 32620,
+  "pools": 9
+ },
+ {
+  "id": "10137755",
+  "frames": 1232,
+  "rec": 8420,
+  "pools": 7
+ },
+ {
+  "id": "cap26",
+  "frames": 1267,
+  "rec": 10388,
+  "pools": 7
+ },
+ {
+  "id": "cap27",
+  "frames": 496,
+  "rec": 32620,
+  "pools": 9
+ },
+ {
+  "id": "cap28",
+  "frames": 495,
+  "rec": 32620,
+  "pools": 9
+ },
+ {
+  "id": "cap29",
+  "frames": 1810,
+  "rec": 10388,
+  "pools": 7
+ }
+]

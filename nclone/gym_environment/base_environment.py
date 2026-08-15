@@ -12,7 +12,7 @@ import gymnasium
 from gymnasium.spaces import box, discrete, Dict as SpacesDict
 import random
 import numpy as np
-from typing import Tuple, Optional, Dict, Any, List
+from typing import Tuple, Optional, Dict, Any, List, Set
 
 # Core nclone imports
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
@@ -231,6 +231,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # mine mask simply firing more often.
         self._layer3_masked_by_mine_total = 0
         self._layer3_masked_by_impact_total = 0
+        # Audit P0.2: how often the all-masked fail-open forced a NOOP that the
+        # mask had itself judged fatal. `all_masked_events` alone cannot separate
+        # "no safe option existed" from "we fell back to a safe default".
+        self._layer3_fallback_fatal_events = 0
 
         # Action sequence tracking for Go-Explore checkpoint replay
         # Stores all actions since last reset for deterministic replay
@@ -281,6 +285,11 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         # Initialize truncation checker
         self.truncation_checker = TruncationChecker(self)
+        # Count of episodes ended because the ninja left the level (see
+        # `_ninja_out_of_bounds`). Kept as a counter rather than a log line
+        # because the condition previously announced itself only through a
+        # per-step warning that reached 31,837 lines in one gamma-3 run.
+        self._oob_truncations = 0
 
         # Store all configuration flags for logging and debugging
         self.config_flags = {
@@ -533,6 +542,20 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             # Check truncation only once after all frames (expensive curriculum-aware check)
             if not terminated:
                 truncated = self._check_curriculum_aware_truncation()
+                # An episode whose ninja has left the level is producing garbage
+                # and must not be allowed to run out its budget. Measured on
+                # gamma-3: 31,837 `ninja_pos ... outside valid level bounds`
+                # warnings, positions reaching y ~ 38,000 against a 600 bound,
+                # falling at terminal velocity for thousands of frames. Nothing
+                # terminated on it, so those envs burned a full episode each
+                # while `compute_reachability_features_from_graph` silently
+                # returned ZERO features to the policy.
+                #
+                # Truncation, not termination: the state is broken rather than
+                # lost, so it must not inject a death signal into the reward.
+                if not truncated and self._ninja_out_of_bounds():
+                    truncated = True
+                    self._oob_truncations += 1
 
             self._track_position_after_step()
 
@@ -972,6 +995,29 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         return metrics
 
+    #: Playable extent in pixels. Matches the bound
+    #: ``graph.reachability.feature_computation`` already guards on, so the two
+    #: agree by construction: the frames this ends are exactly the frames that
+    #: were being handed zero reachability features.
+    _LEVEL_BOUNDS_PX = (1056.0, 600.0)
+
+    def _ninja_out_of_bounds(self) -> bool:
+        """Has the ninja left the playable area entirely?
+
+        The simulator's border ring is solid tile type 1 on all four sides and
+        both corners (verified from ``get_tile_dict``), so in-bounds play cannot
+        trigger this — reaching it means the ninja escaped, and every observed
+        case then fell at terminal velocity for thousands of frames. Best-effort:
+        any failure to read the position returns False, because a broken read
+        must not end a healthy episode.
+        """
+        try:
+            x, y = self.nplay_headless.ninja_position()
+        except Exception:  # noqa: BLE001 - never let a diagnostic kill a step
+            return False
+        w, h = self._LEVEL_BOUNDS_PX
+        return not (0.0 <= float(x) <= w and 0.0 <= float(y) <= h)
+
     def _check_curriculum_aware_truncation(self) -> bool:
         """Check truncation with curriculum-aware policy that respects reward config.
 
@@ -1279,16 +1325,28 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Death and timeout diagnostics for TensorBoard
         if terminated or truncated:
             ninja_pos = self.nplay_headless.ninja_position()
-            if ninja_pos is not None and exit_switch_pos is not None:
+            if ninja_pos is not None:
                 px, py = float(ninja_pos[0]), float(ninja_pos[1])
-                sx, sy = exit_switch_pos[0], exit_switch_pos[1]
-                dist_to_switch = ((px - sx) ** 2 + (py - sy) ** 2) ** 0.5
-                if terminated and not player_won:
-                    info["death_x"] = px
-                    info["death_y"] = py
-                    info["distance_to_switch_at_death"] = dist_to_switch
+                if exit_switch_pos is not None:
+                    sx, sy = exit_switch_pos[0], exit_switch_pos[1]
+                    dist_to_switch = ((px - sx) ** 2 + (py - sy) ** 2) ** 0.5
+                    if terminated and not player_won:
+                        info["death_x"] = px
+                        info["death_y"] = py
+                        info["distance_to_switch_at_death"] = dist_to_switch
+                    if truncated:
+                        info["distance_to_switch_at_timeout"] = dist_to_switch
+                # D1: where a timeout ended, relative to the floor-mine line.
+                # Deliberately NOT nested under the exit_switch_pos guard -- the
+                # geometry question does not involve the switch, and gating it on
+                # an unrelated field is how a diagnostic silently never fires.
+                # Attribution to a (bucket, tier) row is NOT added here: the
+                # npp-rl ``_BenchmarkLevelWrapper`` already stamps
+                # ``benchmark_bucket`` / ``benchmark_tier`` on every step info,
+                # and a second, competing bucket key is how two diagnostics end
+                # up disagreeing about which row an episode belongs to.
                 if truncated:
-                    info["distance_to_switch_at_timeout"] = dist_to_switch
+                    info.update(self._timeout_geometry_info(px, py))
 
         # Add episode route for visualization if episode is ending
         if terminated or truncated:
@@ -1360,6 +1418,9 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 )
                 info["layer3_candidates_masked_by_impact_per_decision"] = (
                     self._layer3_masked_by_impact_total / decisions
+                )
+                info["layer3_fallback_fatal_events"] = (
+                    self._layer3_fallback_fatal_events
                 )
 
             # CRITICAL: Capture level data for route visualization BEFORE auto-reset
@@ -1547,6 +1608,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # mine mask simply firing more often.
         self._layer3_masked_by_mine_total = 0
         self._layer3_masked_by_impact_total = 0
+        # Audit P0.2: how often the all-masked fail-open forced a NOOP that the
+        # mask had itself judged fatal. `all_masked_events` alone cannot separate
+        # "no safe option existed" from "we fell back to a safe default".
+        self._layer3_fallback_fatal_events = 0
 
         # Reset switch activation tracking
         self._switch_activation_frame = None
@@ -3477,6 +3542,26 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 deadly_positions = [(m.xpos, m.ypos) for m in deadly]
                 n_mines = len(all_mines)
 
+            # NOTE — a geometry pre-filter was tried here and REVERTED as WRONG.
+            # It culled mines whose own tile is full-solid, on the theory that they
+            # were unreachable "phantom" hazards. They are not. Mines are mounted on
+            # FLOOR SURFACES: their y coordinate is an exact multiple of 24 px
+            # (cy % 4 == 0 for every mine in the corpus, vs cy % 4 == 2 for
+            # switches/doors/spawn, which sit at tile centres). So a mine's centre
+            # lies ON the boundary and integer floor assigns it to the SOLID tile
+            # below the surface, while its kill zone protrudes into walkable space.
+            # With NINJA_RADIUS 10 and TOGGLE_MINE_RADII[0] 4.0, the kill threshold
+            # is 14 px, and a ninja standing on that floor is 10 px from the mine
+            # centre -- lethal. Measured: 100% of MINE_NAVIGATION/T1 mines and 49%
+            # of PLATFORMING/T2 mines can kill a standing ninja. Culling them blinded
+            # the agent to real hazards.
+            #
+            # If you want to cull genuinely unreachable mines (PLATFORM_STAIRS/T2's
+            # are 0% lethal, so some do exist), the criterion MUST be geometric:
+            # does the mine's kill disk (mine radius + NINJA_RADIUS) intersect any
+            # reachable ninja position? "Is the centre's tile solid?" is not that
+            # test. See scripts/quantify_phantom_hazard.py.
+
             # Below this many mines the per-mine work is negligible and the
             # flood-fill is not worth it — leave everything unfiltered (also
             # keeps small parity-test maps byte-identical across backends).
@@ -3534,9 +3619,17 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
     def _filter_relevant_mines(self, mines: list) -> list:
         """Drop mines that are sealed away from player-reachable space. No-op when
-        the level has no cullable mines (returns the input list unchanged)."""
+        the level has no cullable mines (returns the input list unchanged).
+
+        ``None`` means "no filtering applies"; an EMPTY SET means "every mine is
+        culled". Those are different, and conflating them via a falsy check
+        inverted the cull precisely where it mattered most: on levels where ALL
+        mines are unreachable (100% of PLATFORMING and MINE_NAVIGATION levels),
+        ``keys`` is empty, ``if not keys`` returned the FULL list, and every
+        phantom mine stayed in the observation. Test the sentinel, not truthiness.
+        """
         keys = self._get_relevant_mine_keys()
-        if not keys:
+        if keys is None:
             return mines
         return [m for m in mines if (round(m.xpos), round(m.ypos)) in keys]
 
@@ -3565,7 +3658,10 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # subset only. Reachability-preserving by construction; non-mine
         # entities pass through untouched.
         relevant_keys = self._get_relevant_mine_keys()
-        if relevant_keys:
+        # `is not None`, not truthiness: an empty set means cull EVERY mine (see
+        # _filter_relevant_mines). A falsy check here let all-unreachable levels
+        # keep their full phantom mine set.
+        if relevant_keys is not None:
             _mine_types = (EntityType.TOGGLE_MINE, EntityType.TOGGLE_MINE_TOGGLED)
             entities = [
                 e
@@ -3651,6 +3747,98 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             List of mine dictionaries with keys: x, y, state, radius
         """
         return self.nplay_headless.get_all_mine_data_for_visualization()
+
+    # Kill threshold for a standing ninja: NINJA_RADIUS 10 + toggle-mine radius 4.
+    # See the retraction note in scripts/launch_v33.sh -- mines are mounted on
+    # FLOOR SURFACES (y an exact multiple of 24), so a mine whose centre tile is
+    # solid still protrudes a kill disk into walkable space. Any hazard claim in
+    # this codebase must be a kill-disk test, never a tile-solidity test.
+    _MINE_KILL_RADIUS_PX = 14.0
+
+    def _floor_mine_span(self) -> Optional[Dict[str, float]]:
+        """x-extent of the level's LOWEST mine row, cached per level.
+
+        Diagnostic D1: ``MapJumpPlatforms``' docstring promises the catch-floor is
+        "ALWAYS mined" so a missed hop "dies instantly (a clean terminal) instead
+        of wandering to a timeout". ``place_floor_mines`` only mines
+        ``chamber_x1+1 .. chamber_x2+1``, so on a 42-tile map the line can leave a
+        wide unmined margin -- and a ninja that lands there survives, immobile,
+        for the level's whole (17,000-24,000 frame) budget.
+
+        Whether that is what the TRAINED policy's timeouts actually are is the
+        single claim most worth checking before acting on it, so this reports the
+        span and the caller records where the timeout landed relative to it.
+
+        "Floor mines" = every mine within one tile of the lowest mine row. Returns
+        None when the level has no mines.
+        """
+        key = self.map_loader.current_map_name
+        cached = getattr(self, "_floor_mine_span_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+
+        span: Optional[Dict[str, float]] = None
+        try:
+            mines = self.nplay_headless.get_all_mine_data_for_visualization() or []
+        except Exception:  # noqa: BLE001 - backend without mine introspection
+            mines = []
+        if mines:
+            floor_y = max(float(m["y"]) for m in mines)
+            row = [m for m in mines if float(m["y"]) >= floor_y - 24.0]
+            xs = [float(m["x"]) for m in row]
+            span = {
+                "y": floor_y,
+                "x_min": min(xs),
+                "x_max": max(xs),
+                "n": float(len(row)),
+                "n_total": float(len(mines)),
+            }
+        self._floor_mine_span_cache = (key, span)
+        return span
+
+    def _timeout_geometry_info(self, px: float, py: float) -> Dict[str, Any]:
+        """D1 payload: where did this timeout end, relative to the mine line?
+
+        ``timeout_outside_mine_span`` is the discriminator the diagnostic turns
+        on. If timeouts overwhelmingly end OUTSIDE the mined span, the timeout is
+        a ninja stranded on unmined catch floor. If they end INSIDE it, the ninja
+        is dithering somewhere survivable and the survivable-catch-floor story is
+        the wrong explanation for this failure mode.
+        """
+        out: Dict[str, Any] = {"timeout_x": px, "timeout_y": py}
+        span = self._floor_mine_span()
+        if span is None:
+            return out
+        out["timeout_mine_span_x_min"] = span["x_min"]
+        out["timeout_mine_span_x_max"] = span["x_max"]
+        out["timeout_floor_mine_count"] = span["n"]
+        inside = span["x_min"] <= px <= span["x_max"]
+        out["timeout_inside_mine_span"] = float(inside)
+        out["timeout_outside_mine_span"] = float(not inside)
+        # Horizontal distance beyond the end of the line (0 while inside it).
+        out["timeout_px_outside_span"] = float(
+            0.0 if inside else min(abs(px - span["x_min"]), abs(px - span["x_max"]))
+        )
+        # Height above the mine row: only a ninja AT floor height is in the
+        # "landed on unmined catch floor" state. A timeout 200 px up is dithering
+        # on a platform and means something else entirely.
+        out["timeout_height_above_mine_row"] = float(span["y"] - py)
+        # The direct kill-disk test at the final position -- the honest measure of
+        # "was this landing survivable", independent of the span rectangle.
+        try:
+            mines = self.nplay_headless.get_all_mine_data_for_visualization() or []
+            if mines:
+                nearest = min(
+                    ((px - float(m["x"])) ** 2 + (py - float(m["y"])) ** 2) ** 0.5
+                    for m in mines
+                )
+                out["timeout_nearest_mine_px"] = float(nearest)
+                out["timeout_in_kill_disk"] = float(
+                    nearest <= self._MINE_KILL_RADIUS_PX
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        return out
 
     def get_route_visualization_locked_door_data(self) -> List[Dict[str, Any]]:
         """Get locked door data for route visualization.

@@ -2,14 +2,22 @@
 
 import numpy as np
 
-# Max time in frames per level before episode truncation (fallback)
-# Note: Actual truncation limits are now calculated dynamically per level
-# based on PBRS surface area and reachable mine count
-MAX_TIME_IN_FRAMES = (
-    4500  # Cap on the dynamic truncation limit (was 10000). Tightened so failed
-    # episodes (mostly timeouts) end ~2x sooner for throughput; still ~75s, far
-    # above a typical solve. Also the fallback when dynamic calc is unavailable.
-)
+# FALLBACK ONLY -- this is NOT a cap on anything.
+#
+# It was documented as "Cap on the dynamic truncation limit", and it is not.
+# ``truncation_calculator`` used to fold it in as
+# ``min(HARD_TRUNCATION_CEILING, max(MAX_TIME_IN_FRAMES, limit))``, which is
+# algebraically identical to clipping at HARD_TRUNCATION_CEILING alone --
+# verified over every integer input in [0, 40000], zero differences. Whenever the
+# formula exceeded 4500 the max() returned the formula; whenever it was below,
+# the value was already under the cap. It therefore never bounded a single
+# episode, while its comment implied episodes were capped at 4500 when the real
+# ceiling was 24000, 5.3x higher. That dead arithmetic has been removed.
+#
+# The ONE thing this value still does: it is ``TruncationChecker``'s initial
+# ``current_truncation_limit``, used on the rare path where a level's surface
+# area cannot be computed and no dynamic limit is ever set.
+MAX_TIME_IN_FRAMES = 4500
 
 # Game state feature dimensions (streamlined, no redundancies)
 # Version 2.1 (Feb 2026): Reduced from 26 to 24 dims by removing hor_input, jump_input
@@ -308,6 +316,105 @@ EGO_CROP_FALL_FINE_SIZE = 31  # 31 * 6px = 186px window (~+-3.9 tiles)
 MINE_PROXIMITY_K = 4
 MINE_PROXIMITY_FEATURES = 5
 MINE_PROXIMITY_DIM = MINE_PROXIMITY_K * MINE_PROXIMITY_FEATURES
+
+# --- Threat proximity: the shooter TELEGRAPH (plan §3.3) --------------------
+#
+# WHY THIS EXISTS. The threat FIELD carries where a hazard is lethal *now*, and
+# for patrol drones that is enough because the field also forecasts them. It is
+# not enough for the shooters, and the audit made the gap concrete: on the maps
+# that isolate them, TURRET and DRONE_CHAINGUN read 0.0% field coverage in every
+# channel over 150 frames of active play.
+#
+# That is not a scatter bug. Their BODIES are deliberately harmless
+# (`body_is_lethal` is false for shooters; a turret is a wall fixture), so the
+# only lethal thing they own is a beam or a shot — and a turret's beam is
+# HITSCAN. It exists on the frame it kills. A field can only ever show it one
+# frame before it is already too late, which makes turret death unlearnable from
+# the field no matter how many horizons it carries.
+#
+# What IS learnable is the wind-up. Every shooter telegraphs:
+#   turret   SEARCHING -> TRACKING (charge to 90) -> FIRING (15f) -> RECOVERING
+#   rocket   IDLE -> CHARGING (15f) -> FLYING
+#   shooters IDLE -> AIMING (charge to 53) -> FIRING -> COOLDOWN (90f)
+# `imminence` is that countdown, normalised to [0, 1]. It converts "a turret
+# exists over there" into "a turret fires in N frames", which is the difference
+# between an unlearnable frame and a learnable one.
+#
+# Grouped by SUPER-CLASS, not per entity, so the width is fixed at 4x5 whatever
+# the corpus contains — the per-entity alternative would be 21 bespoke slots for
+# a flat coverage curve. Own obs key rather than appended to game_state, for the
+# same reasons recorded above for mine_proximity.
+#
+#   class 0  contact-patrol  zap(14), mini(26)          — bodies kill on contact
+#   class 1  homing          chaser(15), death ball(25), eye bat(27), evil ninja(22)
+#   class 2  beam            turret(19), dual laser(23), laser drone(13)
+#   class 3  projectile      rocket(18)
+#
+# per class, ninja-centered and bounded to [-1, 1]:
+#   [0] dx_hat, [1] dy_hat  — unit bearing to the selected member
+#   [2] proximity           — 1.0 at contact, 0.0 at/past range
+#   [3] closing             — RELATIVE closing rate (v_ninja - v_threat)·bearing
+#   [4] imminence           — telegraph countdown; 0.0 when nothing is winding up
+#   [5] vx, [6] vy          — the THREAT's own velocity / speed norm
+#   [7] spin_up             — speed it will gain next frame / its own max speed
+#
+# Dims 5–7 are the motion block, and they are why this is 8 wide rather than the
+# 5 it shipped as. Without them the first five describe a still frame plus a
+# countdown, and two opposite situations collapse onto one vector: a rocket
+# projectile 200px away accelerating straight at the ninja, and one drifting past
+# on a tangent, read IDENTICALLY — because `closing` used the ninja's velocity
+# alone and the threat's own motion appeared nowhere. `spin_up` is the
+# acceleration term and is non-zero only for the rocket projectile, the one
+# hazard in the game that accelerates: it decays to exactly 0.0 at terminal speed
+# (~24 frames after launch), so "still winding up" and "committed at full speed"
+# are distinguishable.
+#
+# An absent class reads all-zero, which is also the "no threat" reading — so a
+# level with no turrets is indistinguishable from one whose turret is idle and
+# far away, which is the correct semantics for a threat signal.
+#
+# COMPUTED IN RUST (`nclone-native/src/threat_proximity.rs`). It has to be: the
+# native `_build_entity_dic` whitelists {1,2,3,4,6,7,11,21} and not one threat
+# type is in that set, so the Python path returned an all-zero vector on the
+# training backend while passing every unit test. `threat_proximity_reference.py`
+# is the pinned Python twin used by the Python backend and the dev tool.
+THREAT_PROX_CLASSES = 4
+THREAT_PROX_FEATURES = 8
+THREAT_PROXIMITY_DIM = THREAT_PROX_CLASSES * THREAT_PROX_FEATURES
+#: Index of each feature within a class block, so consumers never hardcode 0..7.
+THREAT_PROX_IDX_DX = 0
+THREAT_PROX_IDX_DY = 1
+THREAT_PROX_IDX_PROXIMITY = 2
+THREAT_PROX_IDX_CLOSING = 3
+THREAT_PROX_IDX_IMMINENCE = 4
+THREAT_PROX_IDX_VX = 5
+THREAT_PROX_IDX_VY = 6
+THREAT_PROX_IDX_SPIN_UP = 7
+#: Reaction window. Wider than the mine window: a turret's shot crosses the room,
+#: so "in range" is about line-of-fire, not contact.
+THREAT_PROXIMITY_RANGE_PX = 240.0
+#: Same normaliser as the mine block so the two keys share units.
+THREAT_PROXIMITY_SPEED_NORM_PX = 4.0
+
+#: Super-class membership. Entities appear in exactly one class; where an entity
+#: is both a body and a beam (the laser drone) it is classed by what KILLS.
+THREAT_CLASS_CONTACT = 0
+THREAT_CLASS_HOMING = 1
+THREAT_CLASS_BEAM = 2
+THREAT_CLASS_PROJECTILE = 3
+THREAT_CLASS_OF_TYPE = {
+    14: THREAT_CLASS_CONTACT,
+    26: THREAT_CLASS_CONTACT,
+    15: THREAT_CLASS_HOMING,
+    25: THREAT_CLASS_HOMING,
+    27: THREAT_CLASS_HOMING,
+    22: THREAT_CLASS_HOMING,
+    19: THREAT_CLASS_BEAM,
+    23: THREAT_CLASS_BEAM,
+    13: THREAT_CLASS_BEAM,
+    12: THREAT_CLASS_BEAM,
+    18: THREAT_CLASS_PROJECTILE,
+}
 # NINJA_RADIUS + toggled-mine radius: contact at or inside this distance kills.
 # Must agree with mine_threading_distance._KILL_RADIUS and the hazard SDF's
 # `clip((d - 14) / 24, -1, 1)`.
@@ -369,6 +476,46 @@ HAZARD_MAP_CHANNELS = 2
 HAZARD_MAP_WIDTH = 168  # 1008 / 6
 HAZARD_MAP_HEIGHT = 92  # 552 / 6
 
+# Optional drone hazard map (``drone_hazard_map``), gated by
+# EnvConfig.enable_drone_hazard. Same 6px grid, sign convention and (W, H) axis
+# order as `hazard_map`, so it co-registers cell-for-cell and its encoder reads
+# the same units. Kept as a SEPARATE key rather than a third `hazard_map`
+# channel so the strict Layer 1 contract and every existing checkpoint are
+# unaffected while the drone work is in progress.
+#   ch0        = deadly drone SDF NOW
+#   ch1..chN   = the same field at each horizon in DRONE_HAZARD_HORIZONS
+# Zap and mini drones are merged within a channel because they are behaviourally
+# identical to the policy — deterministic ninja-independent patrols, lethal on
+# contact. They differ only in radius and speed, and the radius difference is
+# already carried by the per-class kill radius below.
+#
+# The forecast channels are what make timing learnable. A single present-frame
+# field says only "a drone is there now"; it cannot distinguish a corridor whose
+# drone is walking away from one whose drone is walking in, and those demand
+# opposite actions. Because patrol drones are ninja-independent, their future is
+# not a prediction problem at all — it is a lookup, exact to the last bit (see
+# `Simulator::forecast_drone_positions`). Mines have no analogue of this.
+#
+# Horizons are in SIM FRAMES, not env steps: at the training frame_skip of 4 they
+# are 3, 6 and 12 actions ahead. A zap drone covers a 24px cell in 21 frames, so
+# 12/24/48 span roughly half a cell, one cell and two cells — while the ninja at
+# full run speed covers ~6.7 cells in 48 frames, which is the range over which a
+# route commitment is still revocable.
+DRONE_HAZARD_HORIZONS = (12, 24, 48)
+DRONE_HAZARD_MAP_CHANNELS = 1 + len(DRONE_HAZARD_HORIZONS)
+
+# Contact-death boundary per drone class, in world px: NINJA_RADIUS + drone
+# radius. This is the true kill distance, mirroring how the mine SDF's 14 px
+# comes from NINJA_RADIUS (10) + mine radius (4).
+DRONE_KILL_RADIUS_PX = 17.5  # zap drone: 10 + 7.5
+MINI_DRONE_KILL_RADIUS_PX = 14.0  # mini drone: 10 + 4
+
+#: Entity type ids of the deterministic patrol drones the drone hazard map
+#: covers. Deliberately EXCLUDES the chaser (15), whose movement depends on the
+#: ninja: a chaser is not predictable from the frame counter, so it cannot be
+#: forward-rolled and would need different treatment entirely.
+DRONE_HAZARD_ENTITY_TYPES = (14, 26)
+
 # Optional cost-to-go map obs (``cost_to_go_map``) is projected at a COARSER grid
 # than the 6px hazard map. Its encoder (_CostToGoEncoder) pools to a 3x3 readout
 # regardless of input resolution, so a 2x (12px) downsample is ~lossless for the
@@ -397,6 +544,61 @@ COST_TO_GO_MAP_HEIGHT = HAZARD_MAP_HEIGHT // COST_TO_GO_MAP_DOWNSAMPLE  # 46
 HAZARD_MAP_OBS_DOWNSAMPLE = 2
 HAZARD_MAP_OBS_WIDTH = HAZARD_MAP_WIDTH // HAZARD_MAP_OBS_DOWNSAMPLE  # 84
 HAZARD_MAP_OBS_HEIGHT = HAZARD_MAP_HEIGHT // HAZARD_MAP_OBS_DOWNSAMPLE  # 46
+
+# Phase 1 threat/surface keys. Both are emitted by the native simulator directly
+# on the 12px observation grid (HAZARD_MAP_OBS_*), so they co-register with the
+# pooled hazard map cell-for-cell and need no pooling pass of their own.
+#
+# `threat_ttl` -- [C_sdf, C_ttl, R_sdf, R_ttl]. The SDF channels give spatial
+# margin, the TTL channels give time-to-lethal (0 = now, 1 = not within the
+# window). Polarity matches the hazard map throughout: 1.0 = safe, so `min`
+# stays the conservative reduction on every channel.
+THREAT_TTL_CHANNELS = 4
+THREAT_TTL_CH_CERTAIN_SDF = 0
+THREAT_TTL_CH_CERTAIN_TTL = 1
+THREAT_TTL_CH_REACTIVE_SDF = 2
+THREAT_TTL_CH_REACTIVE_TTL = 3
+
+# `solid_map` -- entity geometry that gates, carries, propels or blocks. None of
+# it is in `tile_grid`, which carries static tiles only.
+#
+#   0  static         thwump, shove thwump, CLOSED locked/trap/regular door
+#   1  bounce         bounce block (springy, so it changes the jump that leaves it)
+#   2  oneway         one-way platform occupancy
+#   3  oneway_nx      \ the blocking normal -- passable from one side, solid from
+#   4  oneway_ny      / the other, which is the entire point of a one-way
+#   5  door_open      the same doors as ch0, while OPEN
+#   6  door_switch    switch positions of doors that are still CLOSED
+#   7  launchpad      launch pad occupancy
+#   8  launchpad_bx   \ boost direction; two pads in a cell pointing opposite
+#   9  launchpad_by   / ways are opposite affordances
+#  10  boost_pad      boost pad occupancy (scales existing velocity, no vector)
+#
+# Channels 0-4 are SURFACES (what blocks or carries), 5-10 are TRAVERSAL (what
+# gates or propels). Doors are unified by STATE rather than type -- what the
+# policy needs is "is this barrier passable right now", and locked / trap /
+# regular differ only in what flips that bit. Type identity that DOES matter (a
+# trap door closes behind you) belongs in the planner, not the pixel grid.
+#
+# ENTITY_INTEGRATION_PLAN.md section 3.4 proposes twelve traversal channels on
+# `entity_overlays` instead. Six of those already exist here as channels 0-4 --
+# this field shipped after that plan was written -- so only the six genuinely
+# new ones were built, and they were built HERE so they co-register cell for cell
+# with the solid geometry they qualify (an open door is the same barrier as a
+# closed one at a different moment) and so the boost vectors sit alongside the
+# one-way normals they are structurally identical to.
+SOLID_MAP_CHANNELS = 11
+SOLID_MAP_CH_STATIC = 0
+SOLID_MAP_CH_BOUNCE = 1
+SOLID_MAP_CH_ONEWAY = 2
+SOLID_MAP_CH_ONEWAY_NX = 3
+SOLID_MAP_CH_ONEWAY_NY = 4
+SOLID_MAP_CH_DOOR_OPEN = 5
+SOLID_MAP_CH_DOOR_SWITCH = 6
+SOLID_MAP_CH_LAUNCHPAD = 7
+SOLID_MAP_CH_LAUNCHPAD_BX = 8
+SOLID_MAP_CH_LAUNCHPAD_BY = 9
+SOLID_MAP_CH_BOOST_PAD = 10
 
 # v17 episodic visitation map (``visitation_map``): a per-episode "where have I
 # been" grid co-registered EXACTLY with cost_to_go_map (same 12px cells, same

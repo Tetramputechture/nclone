@@ -5,14 +5,23 @@ use crate::constants::{MAP_HEIGHT, MAP_WIDTH, TILE_SIZE};
 use crate::entities::exit_door::ExitDoor;
 use crate::entities::exit_switch::ExitSwitch;
 use crate::entities::gold::Gold;
+use crate::entities::boost_pad::BoostPad;
+use crate::entities::bounce_block::BounceBlock;
+use crate::entities::death_ball::DeathBall;
+use crate::entities::door_base;
+use crate::entities::switch_door::{SwitchDoor, SwitchDoorKind};
+use crate::entities::drone::{Drone, DroneKind};
+use crate::entities::shove_thwump::ShoveThwump;
+use crate::entities::thwump::Thwump;
+use crate::entities::launch_pad::LaunchPad;
 use crate::entities::locked_door::LockedDoor;
 use crate::entities::one_way_platform::OneWayPlatform;
 use crate::entities::toggle_mine::ToggleMine;
 use crate::entities::Entity;
+use crate::grid_edges::GridEdges;
 use crate::map::tiles::{TILE_SEGMENT_CIRCULAR_MAP, TILE_SEGMENT_DIAG_MAP, TILE_SEGMENT_ORTHO_MAP};
 use crate::segments::{CircularSegment, LinearSegment, Segment};
 use crate::types::EntityType;
-use std::collections::HashMap;
 
 /// Parsed map data ready for simulation.
 pub struct MapData {
@@ -20,6 +29,10 @@ pub struct MapData {
     pub segments: Vec<Segment>,
     pub segment_grid: [[Vec<usize>; MAP_HEIGHT]; MAP_WIDTH],
     pub entities: Vec<Entity>,
+    /// Half-cell edge occupancy used by grid-walking entities. The static tile
+    /// layer is filled here; door counters are registered by the simulator once
+    /// entities exist.
+    pub grid_edges: GridEdges,
     pub ninja_spawn_x: f64,
     pub ninja_spawn_y: f64,
 }
@@ -34,6 +47,7 @@ pub fn load_map(map_data: &[i32]) -> MapData {
         segments: Vec::new(),
         segment_grid,
         entities: Vec::new(),
+        grid_edges: GridEdges::new(),
         ninja_spawn_x: 0.0,
         ninja_spawn_y: 0.0,
     };
@@ -88,29 +102,41 @@ fn create_segments_two_phase(data: &mut MapData) {
     //        y=50 → -1 (bottom border, segment pointing up)
     //   ver: x=0 → 1 (left border, segment pointing right)
     //        x=88 → -1 (right border, segment pointing left)
-    let mut hor_segment_dic: HashMap<(i32, i32), i32> = HashMap::new();
-    for x in 0..88i32 {
-        for y in 0..51i32 {
-            let value = if y == 0 { 1 } else if y == 50 { -1 } else { 0 };
-            if value != 0 {
-                hor_segment_dic.insert((x, y), value);
-            }
-        }
+    // Dense arrays, NOT a HashMap. Phase 2 below emits one segment per non-zero
+    // entry, and the order it emits them in becomes the order they sit in inside
+    // `segment_grid[cell]` -- which is what breaks ties between two equidistant
+    // segments in `get_single_closest_point` and in the dual laser's surface walk.
+    // A `HashMap` iterates in an order randomised per PROCESS, so the native sim
+    // was not reproducible run-to-run, and the tie-break disagreed with Python.
+    //
+    // Python pre-fills EVERY key (`nsim.py:426-443`), zeros included, iterating x
+    // outer / y inner, and the tile pass only ever updates existing keys. So its
+    // dict order is exactly x-ascending-outer, y-ascending-inner -- which is what
+    // the phase-2 loops below reproduce.
+    let mut hor_segment_dic = [[0i32; 51]; 88];
+    for (x, col) in hor_segment_dic.iter_mut().enumerate() {
+        let _ = x;
+        col[0] = 1;
+        col[50] = -1;
     }
-    let mut ver_segment_dic: HashMap<(i32, i32), i32> = HashMap::new();
-    for x in 0..89i32 {
-        for y in 0..50i32 {
-            let value = if x == 0 { 1 } else if x == 88 { -1 } else { 0 };
-            if value != 0 {
-                ver_segment_dic.insert((x, y), value);
-            }
-        }
+    let mut ver_segment_dic = [[0i32; 50]; 89];
+    for y in 0..50usize {
+        ver_segment_dic[0][y] = 1;
+        ver_segment_dic[88][y] = -1;
     }
 
     // Phase 1: Process all tiles, accumulate ortho values and create non-ortho segments
     for x in 0..MAP_WIDTH {
         for y in 0..MAP_HEIGHT {
             let tile_type = data.tile_grid[x][y] as usize;
+
+            // Grid edges are folded in for EVERY tile, empty ones included: an
+            // empty tile's all-zero entry clears whatever a neighbour wrote (see
+            // GridEdges::apply_tile). This x-outer / y-inner walk is the same
+            // order Python's `tile_dic` iterates in, which the toggle rule
+            // depends on. Must run before the `tile_type == 0` skip below.
+            data.grid_edges.apply_tile(tile_type as u8, x, y);
+
             if tile_type == 0 {
                 continue;
             }
@@ -125,18 +151,24 @@ fn create_segments_two_phase(data: &mut MapData) {
                 // Process horizontal segments
                 for y_loop_idx in 0..3i32 {
                     for x_loop_idx in 0..2i32 {
-                        let key = (2 * xcoord + x_loop_idx, 2 * ycoord + y_loop_idx);
+                        let kx = (2 * xcoord + x_loop_idx) as usize;
+                        let ky = (2 * ycoord + y_loop_idx) as usize;
                         let val = ortho[(2 * y_loop_idx + x_loop_idx) as usize] as i32;
-                        *hor_segment_dic.entry(key).or_insert(0) += val;
+                        if kx < 88 && ky < 51 {
+                            hor_segment_dic[kx][ky] += val;
+                        }
                     }
                 }
 
                 // Process vertical segments
                 for x_loop_idx in 0..3i32 {
                     for y_loop_idx in 0..2i32 {
-                        let key = (2 * xcoord + x_loop_idx, 2 * ycoord + y_loop_idx);
+                        let kx = (2 * xcoord + x_loop_idx) as usize;
+                        let ky = (2 * ycoord + y_loop_idx) as usize;
                         let val = ortho[(2 * x_loop_idx + y_loop_idx + 6) as usize] as i32;
-                        *ver_segment_dic.entry(key).or_insert(0) += val;
+                        if kx < 89 && ky < 50 {
+                            ver_segment_dic[kx][ky] += val;
+                        }
                     }
                 }
             }
@@ -183,11 +215,28 @@ fn create_segments_two_phase(data: &mut MapData) {
     // Phase 2: Convert accumulated ortho values into actual segments
     // This matches Python's _process_orthogonal_segments exactly.
 
+    // A full tile face is ONE 24 px segment, not two 12 px halves. See the
+    // comment in `tile_segment_factory._process_orthogonal_segments`: the two
+    // parametrisations of `a = x1 + (t / lensq) * px` are not numerically equal,
+    // and the 24 px one is what produces the game's denormal `floor_x`.
+    let half = crate::ab::ab().half_segments;
+
     // Process horizontal segments
-    for (&(hx, hy), &state) in &hor_segment_dic {
+    for hx in 0..88i32 {
+        for hy in 0..51i32 {
+        let state = hor_segment_dic[hx as usize][hy as usize];
         if state == 0 {
             continue;
         }
+        let partner_x = if hx % 2 == 0 { hx + 1 } else { hx - 1 };
+        let joined = !half
+            && (0..88).contains(&partner_x)
+            && hor_segment_dic[partner_x as usize][hy as usize] == state;
+        // The left half emits the joined face; the right half is skipped.
+        if joined && partner_x < hx {
+            continue;
+        }
+        let span = if joined { 24.0 } else { 12.0 };
 
         // Calculate which cell this segment belongs to (matching Python exactly)
         let cell_x = (hx as f64 / 2.0).floor() as usize;
@@ -195,7 +244,7 @@ fn create_segments_two_phase(data: &mut MapData) {
 
         // Create segment endpoints using half-cell coordinates (* 12 pixels)
         let mut p1 = (12.0 * hx as f64, 12.0 * hy as f64);
-        let mut p2 = (12.0 * hx as f64 + 12.0, 12.0 * hy as f64);
+        let mut p2 = (12.0 * hx as f64 + span, 12.0 * hy as f64);
 
         // Reverse direction for negative state
         if state == -1 {
@@ -209,13 +258,24 @@ fn create_segments_two_phase(data: &mut MapData) {
         if cell_x < MAP_WIDTH && cell_y < MAP_HEIGHT {
             data.segment_grid[cell_x][cell_y].push(idx);
         }
+        }
     }
 
     // Process vertical segments
-    for (&(vx, vy), &state) in &ver_segment_dic {
+    for vx in 0..89i32 {
+        for vy in 0..50i32 {
+        let state = ver_segment_dic[vx as usize][vy as usize];
         if state == 0 {
             continue;
         }
+        let partner_y = if vy % 2 == 0 { vy + 1 } else { vy - 1 };
+        let joined = !half
+            && (0..50).contains(&partner_y)
+            && ver_segment_dic[vx as usize][partner_y as usize] == state;
+        if joined && partner_y < vy {
+            continue;
+        }
+        let span = if joined { 24.0 } else { 12.0 };
 
         // Calculate which cell this segment belongs to (matching Python exactly)
         let cell_x = ((vx as f64 - 0.1 * state as f64) / 2.0).floor() as usize;
@@ -223,7 +283,7 @@ fn create_segments_two_phase(data: &mut MapData) {
 
         // Create segment endpoints
         // Note: vertical segments go from bottom to top (p1.y > p2.y)
-        let mut p1 = (12.0 * vx as f64, 12.0 * vy as f64 + 12.0);
+        let mut p1 = (12.0 * vx as f64, 12.0 * vy as f64 + span);
         let mut p2 = (12.0 * vx as f64, 12.0 * vy as f64);
 
         // Reverse direction for negative state
@@ -237,6 +297,7 @@ fn create_segments_two_phase(data: &mut MapData) {
 
         if cell_x < MAP_WIDTH && cell_y < MAP_HEIGHT {
             data.segment_grid[cell_x][cell_y].push(idx);
+        }
         }
     }
 }
@@ -270,6 +331,7 @@ fn load_entities(map_data: &[i32], data: &mut MapData) {
     }
 
     // Second pass: create all other in-scope entities
+    let mut death_ball_seen = 0usize;
     let mut door_idx = 0; // which exit door we're pairing switches with
     let mut index = 1230;
     while index + 4 < map_data.len() {
@@ -327,6 +389,167 @@ fn load_entities(map_data: &[i32], data: &mut MapData) {
                 let orientation = map_data[index + 3] as u8;
                 let one_way = OneWayPlatform::new(xcoord, ycoord, orientation);
                 data.entities.push(Entity::OneWay(one_way));
+            }
+            Some(EntityType::LaunchPad) => {
+                // [10, x, y, orientation, mode]; mode unused. Static directional
+                // impulse pad.
+                let orientation = map_data[index + 3] as u8;
+                data.entities
+                    .push(Entity::LaunchPad(LaunchPad::new(xcoord, ycoord, orientation)));
+            }
+            Some(EntityType::BoostPad) => {
+                // [24, x, y, orientation, mode]; both unused -- the boost direction
+                // comes from the ninja's own velocity.
+                data.entities
+                    .push(Entity::BoostPad(BoostPad::new(xcoord, ycoord)));
+            }
+            Some(EntityType::DroneZap)
+            | Some(EntityType::MiniDrone)
+            | Some(EntityType::DroneChaser)
+            | Some(EntityType::DroneChaingun)
+            | Some(EntityType::DroneLaser) => {
+                // [12|13|14|15|26, x, y, orientation, mode]. Both fields matter:
+                // orientation seeds the initial facing (dir = orientation / 2) and
+                // mode picks the patrol preference order. All five share the whole
+                // grid-patrol model; what differs is radius/speed and what the
+                // drone does in the think pass (see entities/drone.rs).
+                let orientation = map_data[index + 3] as u8;
+                let mode = map_data[index + 4] as u8;
+                let kind = match entity_type {
+                    12 => DroneKind::Chaingun,
+                    13 => DroneKind::Laser,
+                    15 => DroneKind::Chaser,
+                    26 => DroneKind::Mini,
+                    _ => DroneKind::Zap,
+                };
+                data.entities.push(Entity::Drone(Drone::new(
+                    kind, xcoord, ycoord, orientation, mode,
+                )));
+            }
+            Some(EntityType::DeathBall) => {
+                // Per-type index drives the "repel every later ball" pass.
+                data.entities
+                    .push(Entity::DeathBall(DeathBall::new(xcoord, ycoord, death_ball_seen)));
+                death_ball_seen += 1;
+            }
+            Some(EntityType::BounceBlock) => {
+                data.entities
+                    .push(Entity::BounceBlock(BounceBlock::new(xcoord, ycoord)));
+            }
+            Some(EntityType::Thwump) => {
+                // [20, x, y, orientation, mode]; orientation picks the charge axis
+                // and sign (0 right, 2 down, 4 left, 6 up).
+                let orientation = map_data[index + 3] as u8;
+                data.entities
+                    .push(Entity::Thwump(Thwump::new(xcoord, ycoord, orientation)));
+            }
+            Some(EntityType::ShoveThwump) => {
+                // Direction comes from the shove, not the map, so orientation is unused.
+                data.entities
+                    .push(Entity::ShoveThwump(ShoveThwump::new(xcoord, ycoord)));
+            }
+            Some(EntityType::RegularDoor) => {
+                // [5, x, y, orientation, mode]. Self-contained: a regular door is
+                // its own trigger, so the switch coords ARE the door coords
+                // (entity_factory.py:198-201).
+                let orientation = map_data[index + 3] as u8;
+                let (seg, cell) = door_base::make_door_segment(xcoord, ycoord, orientation);
+                let seg_idx = data.segments.len();
+                data.segments.push(seg);
+                data.segment_grid[cell.0][cell.1].push(seg_idx);
+                data.entities.push(Entity::SwitchDoor(SwitchDoor::new(
+                    SwitchDoorKind::Regular,
+                    xcoord,
+                    ycoord,
+                    orientation,
+                    xcoord,
+                    ycoord,
+                    seg_idx,
+                )));
+            }
+            Some(EntityType::TrapDoor) => {
+                // Same 5-byte entry + switch coords at index+6/+7 as the locked
+                // door; the difference is that a trap door starts OPEN.
+                if index + 7 < map_data.len() {
+                    let orientation = map_data[index + 3] as u8;
+                    let sw_xcoord = map_data[index + 6];
+                    let sw_ycoord = map_data[index + 7];
+                    let (mut seg, cell) = door_base::make_door_segment(xcoord, ycoord, orientation);
+                    // Deactivate HERE, not in `resync_doors`. Python's
+                    // `EntityDoorTrap.__init__` calls `change_state(closed=False)`
+                    // during construction, so every entity built later in the
+                    // stream sees the segment already gone. The dual laser picks
+                    // spinner-vs-surface by querying nearby geometry in its own
+                    // ctor, so deferring this to after the load flips its mode
+                    // whenever a trap door precedes it in the entity stream.
+                    match &mut seg {
+                        Segment::Linear(s) => s.active = false,
+                        Segment::Circular(s) => s.active = false,
+                    }
+                    let seg_idx = data.segments.len();
+                    data.segments.push(seg);
+                    data.segment_grid[cell.0][cell.1].push(seg_idx);
+                    data.entities.push(Entity::SwitchDoor(SwitchDoor::new(
+                        SwitchDoorKind::Trap,
+                        xcoord,
+                        ycoord,
+                        orientation,
+                        sw_xcoord,
+                        sw_ycoord,
+                        seg_idx,
+                    )));
+                }
+            }
+            Some(EntityType::FloorGuard) => {
+                data.entities
+                    .push(Entity::FloorGuard(crate::entities::floor_guard::FloorGuard::new(
+                        xcoord, ycoord,
+                    )));
+            }
+            Some(EntityType::EyeBat) => {
+                data.entities
+                    .push(Entity::EyeBat(crate::entities::eye_bat::EyeBat::new(xcoord, ycoord)));
+            }
+            Some(EntityType::Rocket) => {
+                data.entities
+                    .push(Entity::Rocket(crate::entities::rocket::Rocket::new(xcoord, ycoord)));
+            }
+            Some(EntityType::Turret) => {
+                let orientation = map_data[index + 3] as u8;
+                data.entities.push(Entity::Turret(
+                    crate::entities::turret::Turret::new(xcoord, ycoord, orientation),
+                ));
+            }
+            Some(EntityType::EvilNinja) => {
+                data.entities.push(Entity::EvilNinja(
+                    crate::entities::evil_ninja::EvilNinja::new(xcoord, ycoord),
+                ));
+            }
+            Some(EntityType::DualLaser) => {
+                // Mode (spinner vs surface) is decided at construction from
+                // proximity to geometry, so the laser needs the segment grid --
+                // which is why this arm reads `data` rather than just the map row.
+                let orientation = map_data[index + 3] as u8;
+                let mode = map_data[index + 4] as u8;
+                let laser = crate::entities::dual_laser::DualLaser::new(
+                    xcoord,
+                    ycoord,
+                    orientation,
+                    mode,
+                    &data.segment_grid,
+                    &data.segments,
+                    &data.tile_grid,
+                );
+                data.entities.push(Entity::DualLaser(laser));
+            }
+            Some(EntityType::PlayerControlledRocket) => {
+                // Deliberately not constructed: type 29 is spawned at runtime, not
+                // map-placed (spec §2, confirmed absent from 8000 attract maps).
+                // The arm exists so the omission is explicit rather than silent.
+            }
+            Some(EntityType::TrapDoorSwitch) => {
+                // Phantom, like the locked-door switch (type 7): the switch lives
+                // on the type-8 entity. No-op so the 5-byte stride stays aligned.
             }
             Some(EntityType::LockedDoorSwitch) => {
                 // Phantom in the Python model -- the switch lives on the type-6

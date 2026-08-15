@@ -343,6 +343,35 @@ class ReachabilityConfig:
     # deaths happen (around the ninja). Default False (BREAKING obs-dim change; adds
     # a spatial stream to the extractor). Pairs with mine_faithful_obs.
     expose_ego_crop_mines_fine: bool = False
+    # Drone work, step 1: expose ``drone_hazard_map`` (1ch) -- the 6px signed
+    # distance to the nearest lethal patrol drone (zap type 14 + mini type 26),
+    # same grid/sign convention as ``hazard_map``. Without it the policy sees a
+    # patrolling drone as EMPTY SPACE: the whole hazard pipeline is mine-shaped,
+    # and drones are absent from the observation entirely. Default False
+    # (BREAKING obs-dim change; adds a spatial stream to the extractor).
+    #
+    # This channel is PRESENT-FRAME only. Drones are deterministic and
+    # ninja-independent, so their future positions are computable; exposing a
+    # forward roll is the follow-up step, and is what actually makes the timing
+    # learnable from a single frame.
+    enable_drone_hazard: bool = False
+    # Phase 1: the time-to-lethal threat field (`threat_ttl`, 4 channels) and the
+    # solid-entity surface map (`solid_map`, 5 channels). Both are computed
+    # entirely inside the native simulator -- no per-entity data crosses FFI --
+    # and both are OFF by default so existing checkpoints and the strict Layer 1
+    # contract are unaffected.
+    #
+    # They answer different questions and are separately gated on purpose:
+    # `threat_ttl` is "when does this cell kill me", `solid_map` is "what can I
+    # stand on". A thwump is both at once, on different faces, which is exactly
+    # why one tensor cannot carry both.
+    enable_threat_ttl: bool = False
+    #: Window the TTL channels look ahead over, in sim frames.
+    threat_ttl_max_frames: int = 64
+    #: Tier-C sampling interval, in sim frames. The reactive tier is closed-form
+    #: and ignores this.
+    threat_ttl_stride: int = 4
+    enable_solid_map: bool = False
     # v25: expose the directional nearest-mine bearing + CLOSING-SPEED vector
     # (``mine_proximity``, MINE_PROXIMITY_DIM floats). The v24 fine mine crop
     # above is a still frame — it says where the mines are but not whether the

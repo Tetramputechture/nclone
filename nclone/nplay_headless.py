@@ -2,7 +2,7 @@ import os
 import random
 import math
 import logging
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Sequence, Tuple
 from .nsim import Simulator
 from .sim_config import SimConfig
 import numpy as np
@@ -60,6 +60,19 @@ class NPlayHeadless:
         self.render_mode = render_mode
         self.enable_rendering = enable_rendering or render_mode == "human"
         self.debug = debug
+        # The ninja's bone skeleton is not purely cosmetic: every hitscan kill
+        # test (`FUN_1050B070`) intersects its beam against 11 limbs, so a beam
+        # can pass within the ninja's radius and miss between them. Without bones
+        # `check_lineseg_vs_ninja` falls back to the circle prefilter alone, which
+        # is strictly MORE lethal than the game.
+        #
+        # This flag is no longer what decides that. `MapLoader.load_map_entities`
+        # turns the skeleton on for any map carrying a beam-capable entity
+        # regardless, which is every map where it changes an outcome; `enable_anim`
+        # now only forces it on for the *renderer*, which wants limbs everywhere.
+        # `NCLONE_ENABLE_ANIM=1` still does that from the environment.
+        if os.environ.get("NCLONE_ENABLE_ANIM") == "1":
+            enable_animation = True
         self.sim = Simulator(
             SimConfig(
                 enable_anim=enable_animation, log_data=enable_logging, debug=debug
@@ -70,6 +83,27 @@ class NPlayHeadless:
         if self.enable_rendering:
             import pygame
             from .nsim_renderer import NSimRenderer
+
+            # Only human mode ever puts pixels on a screen. Every array mode
+            # draws into an OFFSCREEN surface (see NSimRenderer) and render()
+            # reads the pixels straight back off it, so the display subsystem is
+            # dead weight there. Pin the dummy driver before `pygame.init()`
+            # brings the display up, or a headless caller (lattice precompute,
+            # dataset builds, tests) opens a real window and steals the host's
+            # focus.
+            #
+            # setdefault, and only while the display is still down: an explicit
+            # driver choice by the caller wins, and a process that already has a
+            # window (the dev tool) must not have it pulled out from under it by
+            # an array-mode sim built alongside it.
+            if self.render_mode != "human" and not pygame.display.get_init():
+                os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+
+            # Initialise pygame BEFORE anything opens a window. NSimRenderer
+            # calls `display.set_mode` in its constructor for human mode, and
+            # that used to happen before `pygame.init()` had run.
+            pygame.init()
+            pygame.display.init()
 
             # OPTIMIZATION: Use grayscale surface only for grayscale_array mode
             # RGB is used for human viewing (render_mode="human") and rgb_array (video recording)
@@ -86,18 +120,25 @@ class NPlayHeadless:
             self.current_map_data = None
             self.clock = pygame.time.Clock()
 
-            # init pygame
-            pygame.init()
-            pygame.display.init()
-            if self.render_mode == "grayscale_array":
-                os.environ["SDL_VIDEODRIVER"] = "dummy"
-            else:
-                # Keep the panel strip reserved by NSimRenderer (panel_width > 0
-                # widens the window; this re-set_mode must match or it clobbers it).
-                print("Setting up pygame display")
-                pygame.display.set_mode(
-                    (render_utils.SRCWIDTH + panel_width, render_utils.SRCHEIGHT)
-                )
+            # No `set_mode` here for ANY array mode. rgb_array used to open a
+            # window "for the display flip", but there is no flip on that path:
+            # NSimRenderer only flips in human mode, and render() converts the
+            # offscreen surface it returns. The window was pure cost -- an empty
+            # 1056x600 frame that grabbed focus on every headless run.
+            #
+            # Human mode deliberately does NOT re-set the mode either.
+            # NSimRenderer has already opened the window at this exact size, with
+            # RESIZABLE, and holds the surface it drew into. Calling `set_mode` a
+            # second time recreates the window: it drops the RESIZABLE flag,
+            # leaves `NSimRenderer.screen` pointing at a surface that is no
+            # longer the display, and resets SDL's cursor state -- which is why
+            # the mouse pointer vanished over the dev tool window.
+
+            if self.render_mode == "human":
+                # Be explicit rather than trusting whatever state the window
+                # creation path left behind. The dev panel is mouse-driven, so a
+                # hidden cursor makes it unusable.
+                pygame.mouse.set_visible(True)
 
             # Pre-allocate buffer for surface to array conversion
             self._render_buffer = np.empty(
@@ -699,6 +740,44 @@ class NPlayHeadless:
         """
         entity_dic = self.sim.entity_dic
         return (entity_dic.get(1, []), entity_dic.get(21, []))
+
+    def get_drone_positions(
+        self,
+    ) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]]]:
+        """Return ``(zap_xy, mini_xy)`` — live positions of the patrol drones.
+
+        Backend-uniform accessor mirrored by
+        ``NativePlayHeadless.get_drone_positions``. Split by class because zap
+        (type 14, radius 7.5) and mini (type 26, radius 4) drones have different
+        contact-death radii. The chaser (15) is excluded: its movement depends
+        on the ninja, so it is not forward-rollable and needs separate handling.
+        """
+        entity_dic = self.sim.entity_dic
+        return (
+            [(float(d.xpos), float(d.ypos)) for d in entity_dic.get(14, [])],
+            [(float(d.xpos), float(d.ypos)) for d in entity_dic.get(26, [])],
+        )
+
+    def get_predicted_drone_positions(
+        self, horizons: Sequence[int]
+    ) -> List[Tuple[List[Tuple[float, float]], List[Tuple[float, float]]]]:
+        """Patrol-drone positions ``horizons`` frames from now, one entry per horizon.
+
+        Each entry has the same ``(zap_xy, mini_xy)`` shape as
+        :meth:`get_drone_positions`, so callers treat "now" and "later"
+        identically. ``horizons`` must be sorted ascending.
+
+        The forecast is exact — see ``EntityDroneBase.predict_positions``.
+        Mirrored by ``NativePlayHeadless.get_predicted_drone_positions``.
+        """
+        entity_dic = self.sim.entity_dic
+        horizons = list(horizons)
+        out = [([], []) for _ in horizons]
+        for type_id, slot in ((14, 0), (26, 1)):
+            for drone in entity_dic.get(type_id, []):
+                for entry, xy in zip(out, drone.predict_positions(horizons)):
+                    entry[slot].append(xy)
+        return out
 
     def get_gold_state(self) -> List[Tuple[float, float, bool]]:
         """Return ``[(x, y, active), ...]`` for every gold entity (type 2).

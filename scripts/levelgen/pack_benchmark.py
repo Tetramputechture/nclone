@@ -13,9 +13,12 @@ What it does
 - Reads ``datasets/levelgen/corpus_official`` and keeps only ``subset_ok`` maps
   (1 exit door + 1 switch, entities subset of {mine, gold, ...}); these have no
   demo, so they get difficulty tier 0 ("unknown") and an on-the-fly mechanic tag.
-- ``bucket = dominant mechanic tag`` (first tag in the canonical
-  :data:`MECHANIC_TAGS` order, so ``mine`` -- present on ~84% of levels -- does
-  not swallow the partition; ``wall_jump``/``jump`` levels split out first).
+- ``bucket = the level's RAREST firing mechanic tag`` (measured over the corpus
+  being packed), because levels carry ~3 tags each and the rarest is the most
+  informative. The old first-in-canonical-order rule collapses on a wide corpus:
+  ``jump``/``wall_jump``/``mine`` swallow 90% of levels and ``precision`` /
+  ``composite`` can never be assigned at all. Pass ``--bucket-assignment
+  canonical`` to reproduce the old partition.
 - ``tier = demo-length difficulty band`` (``d0->1 .. d4->5``; official -> 0).
 - **Hold out for the ``test`` split:** every subset-valid official level + a
   ``--holdout-frac`` (default 10%) stratified-by-(bucket,tier) random sample of
@@ -36,6 +39,7 @@ Example::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import pickle
@@ -44,7 +48,13 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from nclone.levelgen.labeling import mechanic_tags, subset_ok
+from nclone.constants.entity_types import ENTITY_PROFILES
+from nclone.levelgen.labeling import (
+    assign_band,
+    difficulty_edges,
+    mechanic_tags,
+    subset_ok,
+)
 from nclone.levelgen.tokenizer import DIFFICULTY_BANDS, MECHANIC_TAGS
 
 logger = logging.getLogger("levelgen.pack_benchmark")
@@ -55,8 +65,20 @@ PROCGEN_TIER_WEIGHTS = {1: 2.0, 2: 1.5, 3: 1.0, 4: 1.0}
 
 
 # --------------------------------------------------------------------------- io
+#: Record fields the pack never reads. ``demo_inputs`` is the winning tape --
+#: comparable in size to ``map_data`` and held for all 212k records at once, so
+#: keeping it roughly doubles peak memory for no benefit. The *length* of the
+#: tape is what the difficulty band needs, and that is already in ``demo_len``.
+_UNUSED_RECORD_FIELDS = ("demo_inputs",)
+
+
 def _load_corpus_records(corpus_dir: Path) -> List[Dict[str, Any]]:
-    """Load every record from a sharded corpus directory."""
+    """Load every record from a sharded corpus directory.
+
+    Drops :data:`_UNUSED_RECORD_FIELDS` as it goes: the full human corpus is
+    212k records, and holding fields nobody reads is the difference between
+    fitting in memory and not.
+    """
     index = json.loads((corpus_dir / "ingest_index.json").read_text())
     shards = index.get("shards") or sorted(
         p.name for p in corpus_dir.glob("shard_*.pkl")
@@ -64,8 +86,30 @@ def _load_corpus_records(corpus_dir: Path) -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
     for name in shards:
         blob = pickle.loads((corpus_dir / name).read_bytes())
-        records.extend(blob["records"] if isinstance(blob, dict) else blob)
+        for rec in blob["records"] if isinstance(blob, dict) else blob:
+            for field in _UNUSED_RECORD_FIELDS:
+                rec.pop(field, None)
+            records.append(rec)
     return records
+
+
+#: Bytes 0..183 of a record are a per-RECORDING header, unique to every attract
+#: file even when the level is byte-identical. Hashing the whole ``map_data`` -- as
+#: the corpus ingest did -- therefore deduplicates nothing: 212,478 records
+#: reduce to ~6,500 distinct levels, each captured ~33 times by different players.
+#: Level identity must start at the tile section.
+_HEADER_END = 184
+
+
+def level_identity(map_data: Sequence[int]) -> bytes:
+    """Stable identity for a *level*, independent of which recording it came from.
+
+    Everything after the per-recording header: tiles, entities, spawn. Two
+    records with the same identity are the same level and must never be split
+    across train/test -- doing so leaks 92% of the test set into training.
+    """
+    payload = bytes(bytearray(v & 0xFF for v in map_data[_HEADER_END:]))
+    return hashlib.blake2b(payload, digest_size=16).digest()
 
 
 def _band_to_tier(band: str) -> int:
@@ -76,8 +120,30 @@ def _band_to_tier(band: str) -> int:
         return 0
 
 
-def _bucket_for_tags(tags: Sequence[str]) -> str:
-    """Dominant bucket = first canonical mechanic tag present (uppercased)."""
+def _bucket_for_tags(
+    tags: Sequence[str], base_rates: Optional[Dict[str, float]] = None
+) -> str:
+    """Pick the one bucket that best characterises a multi-tagged level.
+
+    Levels carry several tags (median 3 on the human corpus), so this decides
+    which one names the level.
+
+    ``base_rates`` given -> the **rarest** firing tag wins: the tag that fires on
+    fewest levels overall is the most informative thing you can say about this
+    one. Without it, falls back to first-in-canonical-order.
+
+    Order-based assignment collapses on a wide corpus, which is why the rates
+    matter. Measured over the human levels: ``mine`` fires on 85% and
+    ``wall_jump`` on 56%, so those two plus ``jump`` swallow 90% of levels, while
+    ``precision`` (35% fire rate) and ``composite`` sit last in the canonical
+    order and can therefore **never** be assigned at all. Rarest-wins gives all
+    8 buckets with the largest at 21%, versus 6 buckets and 38% for order-based.
+    """
+    if not tags:
+        return "FLAT"
+    if base_rates:
+        # Tie-break on the name so the assignment is deterministic across runs.
+        return min(tags, key=lambda t: (base_rates.get(t, 0.0), t)).upper()
     for t in MECHANIC_TAGS:
         if t in tags:
             return t.upper()
@@ -299,25 +365,97 @@ def build(
     procgen_check_solvable: bool = True,
     procgen_workers: Optional[int] = None,
     official_split: str = "test",
+    entity_profile: str = "native",
+    bucket_assignment: str = "rarest",
 ) -> Dict[str, Any]:
     rng = random.Random(seed)
     seen_ids: set[int] = set()
+    seen_identities: set[bytes] = set()
+    demos_per_level: Counter = Counter()
     skipped = Counter()
+
+    # Which entity types a HUMAN level may contain and still be packed. This is a
+    # capability question -- can the simulator run it -- so it follows the sim,
+    # not the much narrower contract procedural generators declare. It defaulted
+    # to that narrow contract for the whole entity-parity effort, which is what
+    # held the packed curriculum at ~8% of the available human levels.
+    human_allowed = ENTITY_PROFILES[entity_profile]
 
     # --- human corpus (subset-valid, demo-graded) --------------------------
     human = _load_corpus_records(corpus_dir)
     if limit is not None:
         human = human[:limit]
+
+    # Difficulty tier from the winning demo's length. Every human record already
+    # carries `demo_len`, but only a pre-computed `labels["difficulty_band"]` was
+    # ever read -- and the full corpus ships with empty labels, so every level
+    # landed in tier 0 and the "curriculum" had no progression at all. Fitting the
+    # quantile edges here makes the tier axis work off the corpus as given.
+    #
+    # Demo length is a *route* difficulty signal -- how long the solution takes --
+    # which is where difficulty actually lives; tile geometry carries almost none
+    # of it (see docs/SYNTHETIC_LEVELGEN_NEXT_STEPS.md §A1-FAILED).
+    demo_edges = difficulty_edges([int(r.get("demo_len") or 0) for r in human])
+    if demo_edges:
+        logger.info("demo-length band edges (frames): %s",
+                    [int(e) for e in demo_edges])
+    else:
+        logger.warning("no demo lengths in corpus -- every human level lands in "
+                       "tier 0 and the difficulty axis is inert")
+
+    # Mechanic-tag base rates over the levels we are about to pack, used to name
+    # each level by its rarest (most informative) tag. Measured on the corpus
+    # being packed rather than hardcoded, because the rates move a long way with
+    # the entity profile -- which is exactly how the previous order-based
+    # assignment went stale.
+    tag_hits: Counter = Counter()
+    n_tagged = 0
+    if bucket_assignment == "rarest":
+        for rec in human:
+            if not subset_ok(rec["map_data"], allowed=human_allowed):
+                continue
+            labels = rec.get("labels") or {}
+            t = labels.get("mechanic_tags") or mechanic_tags(rec["map_data"])
+            if not t:
+                continue
+            n_tagged += 1
+            tag_hits.update(t)
+        base_rates = (
+            {k: v / n_tagged for k, v in tag_hits.items()} if n_tagged else None
+        )
+        if base_rates:
+            logger.info(
+                "mechanic tag base rates: %s",
+                {k: f"{100 * v:.1f}%" for k, v in
+                 sorted(base_rates.items(), key=lambda kv: -kv[1])},
+            )
+    else:
+        base_rates = None
+
     human_levels: List[Dict[str, Any]] = []
     for rec in human:
         labels = rec.get("labels") or {}
-        if not labels.get("subset_ok", subset_ok(rec["map_data"])):
+        # Ignore any cached ``subset_ok`` label: it was computed under whatever
+        # profile was current at ingest time, and silently reusing it would pin
+        # the pack to the old narrow set.
+        if not subset_ok(rec["map_data"], allowed=human_allowed):
             skipped["human_not_subset"] += 1
             continue
         tags = labels.get("mechanic_tags") or mechanic_tags(rec["map_data"])
         if not tags:
             skipped["human_no_tags"] += 1
             continue
+        # Deduplicate by LEVEL, not by recording. `level_id` is per-attract-file,
+        # so it lets ~33 recordings of one level through as 33 "levels"; they then
+        # get split across train and test and the held-out evaluation measures
+        # nothing. Keeping one record per identity is what makes the split honest.
+        ident = level_identity(rec["map_data"])
+        if ident in seen_identities:
+            skipped["human_same_level_other_recording"] += 1
+            demos_per_level[ident] += 1
+            continue
+        seen_identities.add(ident)
+        demos_per_level[ident] += 1
         try:
             int_id = int(rec["level_id"], 16)
         except (TypeError, ValueError):
@@ -326,11 +464,27 @@ def build(
             skipped["human_dup"] += 1
             continue
         seen_ids.add(int_id)
-        bucket = _bucket_for_tags(tags)
-        tier = _band_to_tier(labels.get("difficulty_band", "unknown"))
+        bucket = _bucket_for_tags(tags, base_rates)
+        band = labels.get("difficulty_band")
+        if not band:
+            band = assign_band(int(rec.get("demo_len") or 0), demo_edges)
+        tier = _band_to_tier(band)
         human_levels.append(_level_dict(rec, bucket, tier, "train", int_id=int_id))
 
+    if demos_per_level:
+        n_rec = sum(demos_per_level.values())
+        logger.info(
+            "level dedup: %d recordings -> %d distinct levels (%.1f recordings "
+            "each). The surplus recordings are DIFFERENT human demos of the SAME "
+            "level: valuable for BC/DAPG, worthless as level diversity, and "
+            "actively harmful if split across train/test.",
+            n_rec, len(demos_per_level), n_rec / max(1, len(demos_per_level)),
+        )
+
     # --- stratified holdout of human levels into test ----------------------
+    # Safe to split naively only because `human_levels` now holds one entry per
+    # distinct level; before the identity dedup this split leaked 92% of the test
+    # set into train.
     by_cell: Dict[tuple, List[Dict[str, Any]]] = defaultdict(list)
     for lv in human_levels:
         by_cell[(lv["bucket"], lv["tier"])].append(lv)
@@ -358,7 +512,7 @@ def build(
     _off_target = train_levels if _off_split == "train" else test_levels
     if official_dir is not None and official_dir.exists():
         for rec in _load_corpus_records(official_dir):
-            if not subset_ok(rec["map_data"]):
+            if not subset_ok(rec["map_data"], allowed=human_allowed):
                 skipped["official_not_subset"] += 1
                 continue
             tags = mechanic_tags(rec["map_data"])
@@ -370,7 +524,7 @@ def build(
                 skipped["official_dup"] += 1
                 continue
             seen_ids.add(int_id)
-            bucket = _bucket_for_tags(tags)
+            bucket = _bucket_for_tags(tags, base_rates)
             lv = _level_dict(rec, bucket, 0, _off_split, int_id=int_id)
             lv["generator"] = "official"
             _off_target.append(lv)
@@ -455,6 +609,17 @@ def main() -> None:
                     help="Skip the grid reachability gate on procgen (faster, less safe).")
     ap.add_argument("--procgen-workers", type=int, default=None,
                     help="Process-pool size for procgen generation (default cpu_count-2).")
+    ap.add_argument("--bucket-assignment", choices=["rarest", "canonical"],
+                    default="rarest",
+                    help="How to name a level that fires several mechanic tags. "
+                         "'rarest' (default) picks the least common tag in the "
+                         "corpus, which keeps all 8 buckets populated; "
+                         "'canonical' reproduces the old first-in-order rule.")
+    ap.add_argument("--entity-profile", choices=sorted(ENTITY_PROFILES), default="native",
+                    help="Entity types a human/official level may contain and still "
+                         "be packed. 'native' (default) = everything the simulator "
+                         "implements; 'minimal' = the legacy 5-type set, for "
+                         "reproducing packs built before entity parity landed.")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -471,6 +636,8 @@ def main() -> None:
         procgen_check_solvable=not args.no_procgen_solvable,
         procgen_workers=args.procgen_workers,
         official_split=args.official_split,
+        entity_profile=args.entity_profile,
+        bucket_assignment=args.bucket_assignment,
     )
     logger.info("Benchmark packaged:\n%s", json.dumps(summary, indent=2))
 

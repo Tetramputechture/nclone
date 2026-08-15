@@ -70,20 +70,37 @@ def pool_channels(
             f"{len(modes)} modes"
         )
 
-    w2 = full.shape[1] // downsample
-    h2 = full.shape[2] // downsample
-    blocks = full[:, : w2 * downsample, : h2 * downsample].reshape(
-        n_ch, w2, downsample, h2, downsample
-    )
-
-    pooled = np.empty((n_ch, w2, h2), dtype=np.float32)
     for ch, mode in enumerate(modes):
-        if mode == "min":
-            pooled[ch] = blocks[ch].min(axis=(1, 3))
-        elif mode == "max":
-            pooled[ch] = blocks[ch].max(axis=(1, 3))
-        else:
+        if mode not in ("min", "max"):
             raise ValueError(
                 f"channel {ch}: unknown pooling mode {mode!r} (want 'min'/'max')"
             )
+
+    w2 = full.shape[1] // downsample
+    h2 = full.shape[2] // downsample
+    sub = full[:, : w2 * downsample, : h2 * downsample]
+
+    # Fold the ``downsample**2`` sub-cell offsets together with strided views
+    # rather than reducing a ``(.., ds, .., ds)`` reshape over its two block axes.
+    # Both give bitwise-identical results (min/max are associative and exact),
+    # but numpy's reduction over a length-2 trailing axis runs one tiny reduction
+    # per OUTPUT cell -- ~100 ns each, so ~320 us for the 2-channel mine map,
+    # which made pooling the single largest line item in the observation. The
+    # fold does ``ds**2 - 1`` full-array ufunc passes instead: ~19 us.
+    #
+    # Channels are grouped by reduction so the fold runs at most twice no matter
+    # how many channels there are; the fancy index copies the group (~3 us) and
+    # gives the accumulator its own contiguous buffer to write into.
+    pooled = np.empty((n_ch, w2, h2), dtype=np.float32)
+    for reducer, want in ((np.minimum, "min"), (np.maximum, "max")):
+        chans = [ch for ch, mode in enumerate(modes) if mode == want]
+        if not chans:
+            continue
+        group = sub[chans]
+        acc = group[:, 0::downsample, 0::downsample].copy()
+        for i in range(downsample):
+            for j in range(downsample):
+                if i or j:
+                    reducer(acc, group[:, i::downsample, j::downsample], out=acc)
+        pooled[chans] = acc
     return pooled

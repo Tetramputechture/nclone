@@ -66,6 +66,14 @@ pub struct LinearSegment {
     pub seg_lensq: f64,
     // Cached bounding box
     pub bounds: (f64, f64, f64, f64),
+    /// A DOOR's outward facing, stated rather than inferred from the winding.
+    ///
+    /// Door segments are wound low-to-high like every other segment, because
+    /// that is the numerically exact winding for `get_closest_point` and the
+    /// ninja stands on them -- see `entities/door_base.rs`. The dual laser needs
+    /// the facing and can no longer read it off `(-py, px)`, so it is carried
+    /// here. `None` for tile segments, whose winding *is* their facing.
+    pub door_normal: Option<(f64, f64)>,
 }
 
 impl LinearSegment {
@@ -88,16 +96,34 @@ impl LinearSegment {
             py,
             seg_lensq,
             bounds,
+            door_normal: None,
         }
+    }
+
+    /// Mark this as a door face and record which way it points.
+    pub fn with_door_normal(mut self, nx: f64, ny: f64) -> Self {
+        self.door_normal = Some((nx, ny));
+        self
     }
 
     pub fn get_closest_point(&self, xpos: f64, ypos: f64) -> (bool, f64, f64) {
         let dx = xpos - self.x1;
         let dy = ypos - self.y1;
-        let mut u = (dx * self.px + dy * self.py) / self.seg_lensq;
-        u = u.clamp(0.0, 1.0);
-        let a = self.x1 + u * self.px;
-        let b = self.y1 + u * self.py;
+        // Endpoints are returned verbatim, not as `x1 + 1.0 * px`, which misses
+        // `x2` by up to an ulp -- and that ulp is what decides `dx == 0` at a
+        // tile corner. See `nclone/entities.py:GridSegmentLinear.get_closest_point`
+        // and `docs/decomp/A5_surface_kind2.c`.
+        let t = dx * self.px + dy * self.py;
+        let (a, b) = if t > 0.0 {
+            if t < self.seg_lensq {
+                let u = t / self.seg_lensq;
+                (self.x1 + u * self.px, self.y1 + u * self.py)
+            } else {
+                (self.x2, self.y2)
+            }
+        } else {
+            (self.x1, self.y1)
+        };
         let is_back_facing = (dy * self.px - dx * self.py) < 0.0 && self.oriented;
         (is_back_facing, a, b)
     }
@@ -182,8 +208,16 @@ impl CircularSegment {
                 };
                 return (is_back_facing, a, b);
             }
-            let a = self.xpos + self.radius * dx / dist;
-            let b = self.ypos + self.radius * dy / dist;
+            // Normalise FIRST, then scale by the radius, then translate -- the
+            // order in `FUN_1050ED60` (`docs/decomp/R5_06_closest_kind1_1050ED60.c`),
+            // which divides its `param_2`/`param_3` by the distance in place and
+            // only then computes `param_2 * radius + cx`. `cx + radius * dx / dist`
+            // is algebraically identical and rounds differently: on `1011495` it
+            // is one ulp of `ypos` and twenty of `yspeed` at frame 76, and the
+            // ninja rides a 24px curve for another 1400 frames while that grows
+            // into the 10px that walks it into a drone.
+            let a = dx / dist * self.radius + self.xpos;
+            let b = dy / dist * self.radius + self.ypos;
             is_back_facing = if self.convex {
                 dist < self.radius
             } else {

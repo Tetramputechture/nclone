@@ -1,0 +1,67 @@
+{
+ "t": "layout",
+ "demo": "cap00",
+ "sim": "0x100210b0",
+ "pools": [
+  {
+   "i": 0,
+   "count": 28,
+   "stride": 48,
+   "base": "0x8d8d5a0",
+   "vtableRva": 5711568,
+   "offset": 0
+  },
+  {
+   "i": 1,
+   "count": 1,
+   "stride": 72,
+   "base": "0x8d8dae0",
+   "vtableRva": 5711392,
+   "offset": 1344
+  },
+  {
+   "i": 2,
+   "count": 1,
+   "stride": 48,
+   "base": "0x8d8db28",
+   "vtableRva": 5711440,
+   "offset": 1416
+  },
+  {
+   "i": 9,
+   "count": 60,
+   "stride": 56,
+   "base": "0x8d8db58",
+   "vtableRva": 5711868,
+   "offset": 1464
+  },
+  {
+   "i": 10,
+   "count": 1,
+   "stride": 232,
+   "base": "0x8d8e878",
+   "vtableRva": 5710684,
+   "offset": 4824
+  },
+  {
+   "i": 19,
+   "count": 1,
+   "stride": 64,
+   "base": "0x8d8e960",
+   "vtableRva": 5712832,
+   "offset": 5056
+  },
+  {
+   "i": 27,
+   "count": 8,
+   "stride": 232,
+   "base": "0x8d8e9a0",
+   "vtableRva": 5711996,
+   "offset": 5120
+  }
+ ],
+ "entityBytes": 6976,
+ "recBytes": 10372,
+ "ninjaSlab": 3392,
+ "frames": 2203
+}

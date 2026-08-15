@@ -80,7 +80,18 @@ include = ["nclone*"]
 write_to = "nclone/_version.py"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# All four suites, not just the top-level one. `testpaths = ["tests"]` silently
+# excluded 50 test files living beside the code they cover -- including all three
+# native/Python threat parity tests (test_threat_proximity_parity.py,
+# test_threat_ttl_parity.py, test_death_cause_parity.py), which exist precisely
+# to catch the class of defect that made threat_proximity structurally dead for
+# the whole of gamma-2. They passed when run by hand and were never run by CI.
+testpaths = [
+    "tests",
+    "nclone/tests",
+    "nclone/levelgen/tests",
+    "nclone/value_function/tests",
+]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

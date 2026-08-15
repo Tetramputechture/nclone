@@ -1,0 +1,769 @@
+captured demos: 85
+== 1001030  (1679 frames compared, cap 1918, tape 1679)
+   end: (1679, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 1001920  (1746 frames compared, cap 1985, tape 1746)
+   end: (1746, 'won')
+   first |d| > 0        : frame 81  d=5.684e-14
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+   around first divergence:
+      f=78     d=0.000000e+00
+      f=79     d=0.000000e+00
+      f=80     d=0.000000e+00
+      f=81     d=5.684342e-14
+      f=82     d=5.684342e-14
+      f=83     d=5.684342e-14
+      f=84     d=5.684342e-14
+      f=85     d=5.684342e-14
+      f=86     d=5.684342e-14
+      f=87     d=5.684342e-14
+== 1010625  (1286 frames compared, cap 1525, tape 1286)
+   end: (1286, 'won')
+   first |d| > 0        : frame 825  d=5.684e-14
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+   around first divergence:
+      f=822    d=0.000000e+00
+      f=823    d=0.000000e+00
+      f=824    d=0.000000e+00
+      f=825    d=5.684342e-14
+      f=826    d=5.684342e-14
+      f=827    d=5.684342e-14
+      f=828    d=5.684342e-14
+      f=829    d=5.684342e-14
+      f=830    d=5.684342e-14
+      f=831    d=5.684342e-14
+== 1010640  (1315 frames compared, cap 1554, tape 1315)
+   end: (1315, 'won')
+   first |d| > 0        : frame 844  d=5.684e-14
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+   around first divergence:
+      f=841    d=0.000000e+00
+      f=842    d=0.000000e+00
+      f=843    d=0.000000e+00
+      f=844    d=5.684342e-14
+      f=845    d=5.684342e-14
+      f=846    d=5.684342e-14
+      f=847    d=5.684342e-14
+      f=848    d=5.684342e-14
+      f=849    d=5.684342e-14
+      f=850    d=5.684342e-14
+== 1011495  (2822 frames compared, cap 3061, tape 2822)
+   end: (2822, 'won')
+   first |d| > 0        : frame 2671  d=5.684e-14
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+   around first divergence:
+      f=2668   d=0.000000e+00
+      f=2669   d=0.000000e+00
+      f=2670   d=0.000000e+00
+      f=2671   d=5.684342e-14
+      f=2672   d=5.684342e-14
+      f=2673   d=5.684342e-14
+      f=2674   d=5.684342e-14
+      f=2675   d=5.684342e-14
+      f=2676   d=5.684342e-14
+      f=2677   d=5.684342e-14
+== 1011932  (2296 frames compared, cap 2535, tape 2296)
+   end: (2296, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10131334  (384 frames compared, cap 623, tape 384)
+   end: (384, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10131474  (1451 frames compared, cap 1690, tape 1451)
+   end: (1451, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10131686  (647 frames compared, cap 886, tape 647)
+   end: (647, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10131718  (251 frames compared, cap 490, tape 251)
+   end: (251, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10131858  (357 frames compared, cap 596, tape 357)
+   end: (357, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10132168  (1833 frames compared, cap 2072, tape 1833)
+   end: (1833, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10132175  (1555 frames compared, cap 1794, tape 1555)
+   end: (1555, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10132214  (2070 frames compared, cap 2309, tape 2070)
+   end: (2070, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10132266  (2060 frames compared, cap 2299, tape 2060)
+   end: (2060, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10132476  (615 frames compared, cap 854, tape 615)
+   end: (615, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10132599  (2217 frames compared, cap 2456, tape 2217)
+   end: (2217, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10132610  (2398 frames compared, cap 2637, tape 2398)
+   end: (2398, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10132773  (251 frames compared, cap 490, tape 251)
+   end: (251, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10132975  (2357 frames compared, cap 2596, tape 2357)
+   end: (2357, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10133086  (307 frames compared, cap 546, tape 307)
+   end: (307, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10133250  (407 frames compared, cap 646, tape 407)
+   end: (407, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10133346  (2359 frames compared, cap 2598, tape 2359)
+   end: (2359, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10133681  (258 frames compared, cap 497, tape 258)
+   end: (258, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10133885  (339 frames compared, cap 578, tape 339)
+   end: (339, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10133902  (329 frames compared, cap 568, tape 329)
+   end: (329, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10133925  (763 frames compared, cap 1002, tape 763)
+   end: (763, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10134064  (1611 frames compared, cap 1850, tape 1611)
+   end: (1611, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10134101  (1516 frames compared, cap 1755, tape 1516)
+   end: (1516, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10134102  (1515 frames compared, cap 1754, tape 1515)
+   end: (1515, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10134378  (453 frames compared, cap 692, tape 453)
+   end: (453, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10134943  (371 frames compared, cap 610, tape 371)
+   end: (371, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10134944  (368 frames compared, cap 607, tape 368)
+   end: (368, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10134945  (331 frames compared, cap 570, tape 331)
+   end: (331, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10135009  (1868 frames compared, cap 2107, tape 1868)
+   end: (1868, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10135227  (256 frames compared, cap 495, tape 256)
+   end: (256, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10135513  (1387 frames compared, cap 1626, tape 1387)
+   end: (1387, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10136116  (1747 frames compared, cap 1986, tape 1747)
+   end: (1747, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10136122  (940 frames compared, cap 1179, tape 940)
+   end: (940, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10136174  (257 frames compared, cap 496, tape 257)
+   end: (257, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10136836  (1082 frames compared, cap 1321, tape 1082)
+   end: (1082, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10136880  (858 frames compared, cap 1097, tape 858)
+   end: (858, 'won')
+   first |d| > 0        : frame 656  d=2.842e-14
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+   around first divergence:
+      f=653    d=0.000000e+00
+      f=654    d=0.000000e+00
+      f=655    d=0.000000e+00
+      f=656    d=2.842171e-14
+      f=657    d=2.842171e-14
+      f=658    d=2.842171e-14
+      f=659    d=2.842171e-14
+      f=660    d=2.842171e-14
+      f=661    d=2.842171e-14
+      f=662    d=2.842171e-14
+== 10136993  (386 frames compared, cap 625, tape 386)
+   end: (386, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10137342  (2081 frames compared, cap 2320, tape 2081)
+   end: (2081, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10137651  (502 frames compared, cap 741, tape 502)
+   end: (502, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10137734  (1162 frames compared, cap 1401, tape 1162)
+   end: (1162, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10137755  (993 frames compared, cap 1232, tape 993)
+   end: (993, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10137938  (1901 frames compared, cap 2140, tape 1901)
+   end: (1901, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138203  (1456 frames compared, cap 1695, tape 1456)
+   end: (1456, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138258  (1443 frames compared, cap 1682, tape 1443)
+   end: (1443, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138350  (2014 frames compared, cap 2253, tape 2014)
+   end: (2014, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138394  (1245 frames compared, cap 1484, tape 1245)
+   end: (1245, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138407  (2237 frames compared, cap 2476, tape 2237)
+   end: (2237, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138413  (1483 frames compared, cap 1722, tape 1483)
+   end: (1483, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138435  (1090 frames compared, cap 1329, tape 1090)
+   end: (1090, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138517  (1110 frames compared, cap 1349, tape 1110)
+   end: (1110, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138519  (1993 frames compared, cap 2232, tape 1993)
+   end: (1993, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138522  (2092 frames compared, cap 2331, tape 2092)
+   end: (2092, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138528  (2079 frames compared, cap 2318, tape 2079)
+   end: (2079, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138634  (1494 frames compared, cap 1733, tape 1494)
+   end: (1494, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138659  (248 frames compared, cap 487, tape 248)
+   end: (248, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138672  (1882 frames compared, cap 2121, tape 1882)
+   end: (1882, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138721  (1316 frames compared, cap 1555, tape 1316)
+   end: (1316, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138722  (2421 frames compared, cap 2660, tape 2421)
+   end: (2421, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138727  (1134 frames compared, cap 1373, tape 1134)
+   end: (1134, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138783  (3318 frames compared, cap 3557, tape 3318)
+   end: (3318, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138788  (2005 frames compared, cap 2244, tape 2005)
+   end: (2005, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138789  (3126 frames compared, cap 3365, tape 3126)
+   end: (3126, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138797  (3043 frames compared, cap 3282, tape 3043)
+   end: (3043, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138933  (2256 frames compared, cap 2495, tape 2256)
+   end: (2256, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138936  (1516 frames compared, cap 1755, tape 1516)
+   end: (1516, 'won')
+   first |d| > 0        : frame 242  d=7.105e-15
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+   around first divergence:
+      f=239    d=0.000000e+00
+      f=240    d=0.000000e+00
+      f=241    d=0.000000e+00
+      f=242    d=7.105427e-15
+      f=243    d=7.105427e-15
+      f=244    d=7.105427e-15
+      f=245    d=7.105427e-15
+      f=246    d=7.105427e-15
+      f=247    d=0.000000e+00
+      f=248    d=0.000000e+00
+== 10138974  (2220 frames compared, cap 2459, tape 2220)
+   end: (2220, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10138995  (2130 frames compared, cap 2369, tape 2130)
+   end: (2130, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10139017  (2540 frames compared, cap 2779, tape 2540)
+   end: (2540, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10139043  (3011 frames compared, cap 3250, tape 3011)
+   end: (3011, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10139152  (978 frames compared, cap 1217, tape 978)
+   end: (978, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10139367  (1264 frames compared, cap 1503, tape 1264)
+   end: (1264, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10139391  (299 frames compared, cap 538, tape 299)
+   end: (299, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10139449  (2484 frames compared, cap 2723, tape 2484)
+   end: (2484, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10139460  (2671 frames compared, cap 2910, tape 2671)
+   end: (2671, 'won')
+   first |d| > 0        : frame 134  d=5.684e-14
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+   around first divergence:
+      f=131    d=0.000000e+00
+      f=132    d=0.000000e+00
+      f=133    d=0.000000e+00
+      f=134    d=5.684342e-14
+      f=135    d=5.684342e-14
+      f=136    d=5.684342e-14
+      f=137    d=5.684342e-14
+      f=138    d=5.684342e-14
+      f=139    d=5.684342e-14
+      f=140    d=5.684342e-14
+== 10139784  (2673 frames compared, cap 2912, tape 2673)
+   end: (2673, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10160699  (1349 frames compared, cap 1588, tape 1349)
+   end: (1349, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 10251717  (1 frames compared, cap 1673, tape 1434)
+   end: (1, 'died')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 9000001  (1599 frames compared, cap 1838, tape 1599)
+   end: (1599, 'won')
+   first |d| > 0        : never
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+== 9000002  (566 frames compared, cap 805, tape 566)
+   end: (566, 'won')
+   first |d| > 0        : frame 547  d=5.684e-14
+   first |d| > 1e-09    : never
+   first |d| > 1e-06    : never
+   first |d| > 0.001    : never
+   first |d| > 1        : never
+   first |d| > 10       : never
+   around first divergence:
+      f=544    d=0.000000e+00
+      f=545    d=0.000000e+00
+      f=546    d=0.000000e+00
+      f=547    d=5.684342e-14
+      f=548    d=5.684342e-14
+      f=549    d=5.684342e-14
+      f=550    d=5.684342e-14
+      f=551    d=5.684342e-14
+      f=552    d=5.684342e-14
+      f=553    d=5.684342e-14

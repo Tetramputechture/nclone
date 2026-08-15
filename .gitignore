@@ -78,6 +78,11 @@ nclone-native/target/
 # force-tracked despite the blanket *.bin rule above.
 !anim_data_line_new.txt.bin
 
+# The realism model's calibration is a shipped asset, not a build artifact:
+# nclone/levelgen/realism.py cannot score anything without it, and regenerating
+# it needs the 250k-level human corpus. Force-tracked past the *.npz rule above.
+!nclone/levelgen/realism_calibration.npz
+
 # Local experiment / analysis / render output (kept locally, not published)
 ckpt/
 checkpoints/

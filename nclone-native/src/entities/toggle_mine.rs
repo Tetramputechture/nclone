@@ -30,10 +30,21 @@ pub struct ToggleMine {
 
 impl ToggleMine {
     pub fn new(entity_type: u8, xcoord: i32, ycoord: i32) -> Self {
+        // Type 21 starting untoggled is capture-confirmed: pool 19 holds type 21
+        // and reads `+0x30 == 1` on frame 1 for all 14 mines across the two
+        // captures whose counts line up (`tools/npptrace/mineinit.py`).
+        //
+        // Type 1 starting toggled is NOT confirmed and cannot be from these
+        // captures -- type-1 mines are not recorded in any pool at all, so
+        // `10131738`'s 89 of them have nowhere to live. Flipping it to untoggled
+        // is neutral on the gate (6500/6504 either way, no demo gained or lost);
+        // it only moves `10138350`'s death from the mine to a floor guard a few
+        // hundred frames later, which is how we know the mine was never that
+        // demo's bug.
         let initial_state = if entity_type == 21 {
-            STATE_UNTOGGLED // Type 21 starts safe (untoggled)
+            STATE_UNTOGGLED
         } else {
-            STATE_TOGGLED // Type 1 starts deadly (toggled)
+            STATE_TOGGLED
         };
         let radius = radius_for_state(initial_state);
         let xpos = (xcoord * 6) as f64;

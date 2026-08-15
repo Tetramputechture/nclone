@@ -1,3 +1,4 @@
+import numpy as np
 import pygame
 from typing import Optional, Tuple
 from .constants.physics_constants import (
@@ -438,6 +439,125 @@ class DebugOverlayRenderer:
 
         return surface
 
+    def _draw_threat_ttl(self, ttl_info: dict) -> Optional[pygame.Surface]:
+        """Draw the threat time-to-lethal field.
+
+        This overlay answers a different question from the mine SDF next to it.
+        The SDF shows *how far* danger is; this shows *when it arrives*. A cell
+        50 px from a drone reads "safe" on an SDF whether the drone is walking
+        toward it or away, and those demand opposite play from an identical
+        frame. Here the same two cases are red and unshaded.
+
+        Colour is time, not distance:
+          * red            lethal right now
+          * orange/yellow  lethal within a few frames
+          * pale yellow    lethal late in the window
+          * unshaded       safe for the whole window
+
+        Cyan hatch marks cells whose earliest threat is REACTIVE (chaser drone,
+        death ball, eye bat). Those timings are worst-case envelopes -- the
+        threat reads the ninja, so its future is not forecastable -- and the
+        distinction matters: a certain-tier deadline can be planned against, a
+        reactive one can only be denied.
+
+        Args:
+            ttl_info: payload from ``DebugMixin._get_threat_ttl_data`` --
+                ``field`` ``(4, H, W)``, ``max_frames``, ``stride``,
+                ``cell_size``. May instead carry ``unavailable`` with a reason.
+
+        Returns:
+            pygame.Surface with the overlay, or None if there is nothing to draw.
+        """
+        surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+
+        reason = ttl_info.get("unavailable")
+        if reason:
+            font = self._jump_label_font()
+            if font is not None:
+                label = self._render_text_cached(font, f"Threat TTL: {reason}", (255, 200, 80))
+                surface.blit(label, (self.tile_x_offset + 8, self.tile_y_offset + 8))
+            return surface
+
+        field = ttl_info.get("field")
+        if field is None:
+            return surface
+
+        max_frames = int(ttl_info.get("max_frames", 64))
+        cell_world = float(ttl_info.get("cell_size", 12))
+        cell_px = cell_world * self.adjust
+        # The field covers the PLAYABLE area only, which starts one 24px border
+        # tile in: cell (0, 0) is world (24, 24)..(36, 36), not (0, 0)..(12, 12).
+        # Without this the whole overlay renders two cells up and to the left of
+        # the threats it describes -- close enough to look right, and wrong
+        # exactly where a hazard overlay must not be.
+        origin_px = float(ttl_info.get("origin", 24.0)) * self.adjust
+
+        # Channel layout mirrors threat_field.rs: [C_sdf, C_ttl, R_sdf, R_ttl].
+        certain_ttl = field[1]
+        reactive_ttl = field[3]
+        rows, cols = certain_ttl.shape
+
+        for row in range(rows):
+            sy = origin_px + row * cell_px + self.tile_y_offset
+            for col in range(cols):
+                t_c = float(certain_ttl[row, col])
+                t_r = float(reactive_ttl[row, col])
+                t = min(t_c, t_r)
+                if t >= 1.0:
+                    continue  # safe for the whole window; leave the level visible
+                # Reactive only when it is strictly the earlier of the two, so a
+                # cell a patrol drone already owns is not mislabelled as a
+                # merely-possible threat.
+                is_reactive = t_r < t_c
+
+                if t <= 0.0:
+                    r, g, b, alpha = 220, 30, 30, 190  # lethal NOW
+                else:
+                    # Ramp red -> yellow with time, fading out toward the end of
+                    # the window so imminent danger dominates visually.
+                    r = 235
+                    g = int(40 + 195 * t)
+                    b = 20
+                    alpha = int(165 * (1.0 - t) + 35)
+
+                rect = pygame.Rect(
+                    origin_px + col * cell_px + self.tile_x_offset,
+                    sy,
+                    cell_px,
+                    cell_px,
+                )
+                pygame.draw.rect(surface, (r, g, b, alpha), rect)
+
+                if is_reactive:
+                    # Hatch rather than recolour: the time reading stays legible
+                    # and the tier is a separate visual channel.
+                    pygame.draw.line(
+                        surface,
+                        (80, 230, 240, 190),
+                        (rect.left, rect.bottom),
+                        (rect.right, rect.top),
+                        1,
+                    )
+
+        font = self._jump_label_font()
+        if font is not None:
+            n_now = int((certain_ttl == 0).sum() + (reactive_ttl == 0).sum())
+            soon = np.minimum(certain_ttl, reactive_ttl)
+            n_win = int((soon < 1.0).sum())
+            lines = [
+                f"Threat time-to-lethal  (window {max_frames}f, "
+                f"stride {int(ttl_info.get('stride', 4))})",
+                f"lethal now: {n_now}   within window: {n_win} / {soon.size}",
+                "red = now   yellow = late   cyan hatch = reactive (envelope)",
+            ]
+            y = self.tile_y_offset + 6
+            for text in lines:
+                label = self._render_text_cached(font, text, (255, 255, 255))
+                surface.blit(label, (self.tile_x_offset + 8, y))
+                y += label.get_height() + 2
+
+        return surface
+
     def _jump_label_font(self):
         try:
             return pygame.font.Font(None, int(18 * self.adjust))
@@ -562,6 +682,189 @@ class DebugOverlayRenderer:
             (self.tile_x_offset + 8, self.tile_y_offset + 8),
         )
         return surface
+
+    #: Route-segment colours per move class from ``descent_path``. Vertical
+    #: classes are saturated (they are what the physics model actually gates on);
+    #: horizontal ones are muted so a route reads as "where does it climb".
+    _MOVE_COLORS = {
+        "run": (235, 235, 235),
+        "air": (150, 170, 200),
+        "fall": (80, 210, 230),
+        "jump": (240, 110, 220),
+        "wall": (255, 160, 60),
+        "up": (200, 200, 200),
+        # A wall-launch arc, drawn as a launch->landing CHORD, not the parabola
+        # it stands for — the edge records only its endpoints and flight time.
+        # Distinct colour so it never reads as a step the ninja walks.
+        "arc": (255, 240, 90),
+    }
+
+    def _draw_physics_cost_to_go(self, info: dict) -> Optional[pygame.Surface]:
+        """Free-space cost-to-go heatmap + the steepest-descent route through it.
+
+        The heatmap is a pure function of the level and view params, so it is
+        painted once and cached like the jump heatmap; only the route (which
+        follows the ninja) is redrawn per frame, onto a copy. Each route segment
+        is coloured by the move class the cost model charged for, which is what
+        makes this a view of the PHYSICS rather than just of a scalar field.
+        """
+        import numpy as np
+
+        field = info.get("field")
+        if field is None:
+            return None
+
+        cache_key = (
+            info.get("map_hash"),
+            info.get("phase"),
+            info.get("model"),
+            float(info.get("cell_px", 6)),
+            round(float(self.adjust), 4),
+            int(self.tile_x_offset),
+            int(self.tile_y_offset),
+            self.screen.get_size(),
+        )
+        cache = getattr(self, "_physics_ctg_heatmap_cache", None)
+        if cache is None:
+            cache = self._physics_ctg_heatmap_cache = {}
+        base = cache.get(cache_key)
+        if base is None:
+            base = self._render_physics_ctg_heatmap(field, info)
+            if len(cache) > 8:
+                cache.clear()
+            cache[cache_key] = base
+
+        surface = base.copy()
+        self._draw_physics_ctg_route(surface, info)
+        return surface
+
+    def _render_physics_ctg_heatmap(self, field, info: dict) -> pygame.Surface:
+        """Paint the cost field once (cache miss only). Unreachable = transparent.
+
+        Built as a (W, H) RGBA array and scaled up, rather than ~15k
+        ``draw.rect`` calls: same pixels, and the whole paint stays vectorised.
+        Nearest-neighbour scaling keeps cell edges crisp so the 6px grid the
+        flood actually runs on stays readable.
+        """
+        import numpy as np
+
+        surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        W, H = field.shape
+        cell = float(info.get("cell_px", 6)) * self.adjust
+
+        finite = np.isfinite(field)
+        if not finite.any():
+            return surface
+
+        # Normalise on a high PERCENTILE, not the max. Cost fields have a long
+        # tail (a few cells behind geometry cost hundreds of frames), and
+        # dividing by the max squashes the entire routable region into one flat
+        # band — which is exactly the part worth reading.
+        vals = field[finite]
+        fmax = float(np.percentile(vals, 98)) or float(vals.max()) or 1.0
+        t = np.clip(field / fmax, 0.0, 1.0)
+        t = np.where(finite, t, 0.0)
+
+        lo = t <= 0.5
+        u = np.where(lo, t / 0.5, (t - 0.5) / 0.5)
+        rgb = np.empty((W, H, 3), np.uint8)
+        rgb[..., 0] = np.where(lo, 50 + 205 * u, 255 - 55 * u)
+        rgb[..., 1] = np.where(lo, 200, 200 - 160 * u)
+        rgb[..., 2] = np.where(lo, 50 - 10 * u, 40)
+
+        cells = pygame.Surface((W, H), pygame.SRCALPHA)
+        pygame.surfarray.pixels3d(cells)[:] = rgb
+        # Unreachable cells stay fully transparent: "the field never got here"
+        # must not look like "the field is cheap here".
+        pygame.surfarray.pixels_alpha(cells)[:] = np.where(finite, 105, 0).astype(np.uint8)
+
+        scaled = pygame.transform.scale(
+            cells, (max(1, int(round(W * cell))), max(1, int(round(H * cell))))
+        )
+        surface.blit(scaled, (self.tile_x_offset, self.tile_y_offset))
+        return surface
+
+    def _draw_physics_ctg_route(self, surface: pygame.Surface, info: dict) -> None:
+        """Overlay the descent route, goal marker, legend and HUD, in place."""
+        font = self._jump_label_font()
+        model = info.get("model", "physics")
+        phase = info.get("phase", "switch")
+        coverage = float(info.get("coverage", 0.0))
+
+        def to_screen(p):
+            return (
+                p[0] * self.adjust + self.tile_x_offset,
+                p[1] * self.adjust + self.tile_y_offset,
+            )
+
+        route = info.get("route")
+        pts = (route or {}).get("points") or []
+        moves = (route or {}).get("moves") or []
+        if len(pts) >= 2:
+            width = max(2, int(3 * self.adjust))
+            for i, cls in enumerate(moves):
+                pygame.draw.line(
+                    surface,
+                    self._MOVE_COLORS.get(cls, (255, 255, 255)),
+                    to_screen(pts[i]),
+                    to_screen(pts[i + 1]),
+                    width,
+                )
+            # Start dot so the route's origin is unambiguous when it is short.
+            pygame.draw.circle(
+                surface, (255, 255, 255), to_screen(pts[0]), max(3, int(3 * self.adjust)), 1
+            )
+
+        goal = info.get("goal")
+        if goal:
+            gx, gy = to_screen((float(goal[0]), float(goal[1])))
+            rad = max(5, int(6 * self.adjust))
+            pygame.draw.circle(surface, (255, 255, 255), (gx, gy), rad, 2)
+            pygame.draw.line(surface, (255, 255, 255), (gx - rad, gy), (gx + rad, gy), 1)
+            pygame.draw.line(surface, (255, 255, 255), (gx, gy - rad), (gx, gy + rad), 1)
+
+        # --- HUD -----------------------------------------------------------
+        x0 = self.tile_x_offset + 8
+        y = self.tile_y_offset + 8
+        line_h = int(16 * self.adjust) or 16
+
+        def put(text, color=(255, 255, 255)):
+            nonlocal y
+            surface.blit(font.render(text, True, color), (x0, y))
+            y += line_h
+
+        unit = "frames" if model == "physics" else "grid"
+        put(f"Free-space cost-to-go [{model}] -> {phase}   coverage {coverage * 100:.1f}%",
+            (255, 255, 255) if coverage > 0.5 else (255, 140, 140))
+        if route is None:
+            put("route: unavailable (no finite cost at ninja)", (255, 180, 180))
+            return
+        flag = ""
+        if route.get("truncated"):
+            flag = "  [TRUNCATED]"
+        elif not route.get("reached_goal"):
+            flag = "  [STALLED in local minimum]"
+        put(f"route: {len(moves)} steps, {route.get('total', 0.0):.0f} {unit} total{flag}",
+            (255, 180, 180) if flag else (255, 255, 255))
+
+        # Per-class frame budget, so "where does this route spend its cost" is
+        # readable at a glance. Only classes the route actually used are shown.
+        by_class = route.get("by_class") or {}
+        total = sum(by_class.values()) or 1.0
+        sw = int(10 * self.adjust) or 10
+        for cls, spent in sorted(by_class.items(), key=lambda kv: -kv[1]):
+            if spent <= 0.0:
+                continue
+            pygame.draw.rect(
+                surface, self._MOVE_COLORS.get(cls, (255, 255, 255)),
+                pygame.Rect(x0, y + 2, sw, sw),
+            )
+            surface.blit(
+                font.render(f"{cls}: {spent:.0f} {unit} ({spent / total * 100:.0f}%)",
+                            True, (255, 255, 255)),
+                (x0 + sw + 6, y),
+            )
+            y += line_h
 
     def _draw_action_mask(self, action_mask_info: dict) -> Optional[pygame.Surface]:
         """Draw action mask visualization showing allowed vs masked actions.
@@ -2536,6 +2839,14 @@ class DebugOverlayRenderer:
                 if mine_sdf_surface:
                     surface.blit(mine_sdf_surface, (0, 0))
 
+        # Threat time-to-lethal. Drawn after the mine SDF so the two can be read
+        # together: the SDF is static danger, this is danger with a clock on it.
+        threat_ttl_info = debug_info.get("threat_ttl") if debug_info else None
+        if threat_ttl_info is not None:
+            threat_ttl_surface = self._draw_threat_ttl(threat_ttl_info)
+            if threat_ttl_surface:
+                surface.blit(threat_ttl_surface, (0, 0))
+
         # Draw ghost-arc ballistic projections if provided (Audit II P0-1)
         if debug_info and "ghost_arcs" in debug_info:
             ghost_surface = self._draw_ghost_arcs(debug_info["ghost_arcs"])
@@ -2554,6 +2865,13 @@ class DebugOverlayRenderer:
             jump_cost_surface = self._draw_jump_cost_to_go_heatmap(jump_cost_info)
             if jump_cost_surface:
                 surface.blit(jump_cost_surface, (0, 0))
+
+        # Draw free-space physics cost-to-go field + descent route if provided
+        phys_cost_info = debug_info.get("physics_cost_to_go") if debug_info else None
+        if phys_cost_info is not None:
+            phys_cost_surface = self._draw_physics_cost_to_go(phys_cost_info)
+            if phys_cost_surface:
+                surface.blit(phys_cost_surface, (0, 0))
 
         # Draw action mask visualization if provided
         if debug_info and "action_mask" in debug_info:

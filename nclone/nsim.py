@@ -8,6 +8,30 @@ import os
 
 CACHE_CLEAR_INTERVAL = 100
 
+#: Length of the per-ninja position ring buffer that the evil ninja (type 22)
+#: replays. The game keeps 8 ninjas x 18000 records x 0x78 bytes and wraps the
+#: write index at 17999 -- 18000 frames is 5 minutes at 60Hz. See
+#: docs/ENTITY_INTEGRATION_SPEC.md §8.10; the recorder lives in the frame loop,
+#: not in the entity, and nothing else in the sim needs it.
+NINJA_TAPE_LENGTH = 18000
+
+#: Order the game's frame loop runs the THINK pass in (spec §4). It is **not**
+#: ascending by type: type 1 (mine) is thought tenth, after type 20 and
+#: immediately before type 21, which uses the same function.
+#:
+#: Both this simulator and `nclone-native` used to derive the movable and
+#: thinkable lists from one ascending classification pass, so `move order ==
+#: think order` by construction. The game uses two different orders -- movement
+#: really is ascending, thinking is this.
+#:
+#: Observable when a hazard kills the ninja on the same frame a mine is
+#: mid-toggle: `EntityToggleMine.think` reverts to untoggled if it sees a DEAD
+#: ninja, so whether the killing think already ran decides the mine's state.
+#: Types 18, 19 and 20 all think before type 1 in the game; before the rocket and
+#: turret landed, only the thwump sat in that window.
+THINK_ORDER = (5, 12, 13, 15, 16, 17, 18, 19, 20, 1, 21, 22, 23, 25, 27, 28, 29)
+_THINK_RANK = {t: i for i, t in enumerate(THINK_ORDER)}
+
 logger = logging.getLogger(__name__)
 
 os.environ["SDL_AUDIODRIVER"] = "dsp"
@@ -39,12 +63,19 @@ class Simulator:
         self.map_data = None
         self.map_loader = MapLoader(self)
 
+        # Ninja position recorder for the evil ninja (type 22). None until a map
+        # that needs it is loaded; see _init_ninja_tape.
+        self.ninja_tape = None
+        self.ninja_tape_index = 0
+
         # Optional environment reference for cache invalidation
         # Set by gym environment to enable performance optimizations
         self.gym_env = None
 
-        # Cache SimConfig flags to avoid repeated attribute lookups in tick()
-        self._enable_anim = sc.enable_anim
+        # Cache SimConfig flags to avoid repeated attribute lookups in tick().
+        # NOT the animation flag: whether the skeleton is maintained is decided
+        # per MAP (`MapLoader._map_has_hitscan`), so `tick` reads it off the
+        # ninja rather than off the config.
         self._log_data = sc.log_data
 
         # Cache clear optimization - track next frame to clear instead of using modulo
@@ -98,6 +129,40 @@ class Simulator:
         self._oob_logged = False
         self.reset_map_entity_data()
         self.map_loader.load_map_entities()
+        self._init_ninja_tape()
+
+    def _init_ninja_tape(self):
+        """Arm the ninja position recorder, but only if something replays it.
+
+        The recorder is a per-frame write on every tick, so it is allocated only
+        when the map actually carries an evil ninja (type 22) -- about 3% of
+        official maps. `ninja_tape is None` is the "no recorder" state that
+        `EntityEvilNinja.think` treats as a full reset, matching the binary's
+        "buffer gone" branch.
+        """
+        from .constants.entity_types import EntityType
+
+        if self.entity_dic.get(EntityType.EVIL_NINJA):
+            self.ninja_tape = [(0.0, 0.0)] * NINJA_TAPE_LENGTH
+            self.ninja_tape_index = 0
+        else:
+            self.ninja_tape = None
+            self.ninja_tape_index = 0
+
+    def _record_ninja_tape(self):
+        """Snapshot the ninja's position at the END of the frame.
+
+        Ordering is part of the contract: the game's snapshot loop is the last
+        thing in the frame tick, so an evil ninja thinking on frame N can only
+        ever read records written on frames 1..N-1. The wrap rule is the binary's
+        `(idx + 1 > 17999) ? 0 : idx + 1`, not a modulo -- same result, kept
+        literal so the index is comparable across ports.
+        """
+        if self.ninja_tape is None or self.ninja is None:
+            return
+        self.ninja_tape[self.ninja_tape_index] = (self.ninja.xpos, self.ninja.ypos)
+        idx = self.ninja_tape_index + 1
+        self.ninja_tape_index = 0 if idx > NINJA_TAPE_LENGTH - 1 else idx
 
     def fast_reset(self):
         """Fast reset for same-level training. Resets entity state without recreation.
@@ -130,6 +195,13 @@ class Simulator:
 
         # Reset OOB debug flag so the first OOB in each episode is logged
         self._oob_logged = False
+
+        # Rewind the ninja tape. Leaving stale positions in it would let an evil
+        # ninja replay the PREVIOUS episode's path.
+        if self.ninja_tape is not None:
+            self.ninja_tape_index = 0
+            for i in range(len(self.ninja_tape)):
+                self.ninja_tape[i] = (0.0, 0.0)
 
         # Reset ninja state in-place (no new Ninja object)
         if self.ninja is not None:
@@ -307,9 +379,10 @@ class Simulator:
         # Now clear entity data structures
         # Use dict comprehension for grid_entity initialization (44x25 = 1,100 entries)
         self.grid_entity = {(x, y): [] for x in range(44) for y in range(25)}
-        self.entity_dic = {
-            i: [] for i in range(1, 29)
-        }  # Initialize with expected entity types
+        # One list per entity type. Range goes to 29 inclusive because
+        # EntityPlayerControlledRocket is type 29 (spec §2) -- it is not
+        # map-placed, but a runtime spawn still needs a bucket to land in.
+        self.entity_dic = {i: [] for i in range(1, 30)}
         # Per-type instance indices; must reset each map (see Entity.__init__ / map_loader)
         self.entity_counts = [0] * 40
 
@@ -395,6 +468,14 @@ class Simulator:
                     if e.is_thinkable:
                         active_thinkable_entities.append(e)
 
+        # The move pass is ascending by type, which is what iterating entity_dic
+        # already gives; the think pass is not. Sorting is stable, so entities of
+        # the same type keep map-load order, which is also part of the contract.
+        if len(active_thinkable_entities) > 1:
+            active_thinkable_entities.sort(
+                key=lambda e: _THINK_RANK.get(e.type, len(THINK_ORDER))
+            )
+
         # Move all movable entities
         for entity in active_movable_entities:
             entity.move()
@@ -444,10 +525,10 @@ class Simulator:
                 self._oob_logged = True
 
             self.ninja.think()  # Make ninja think
-            if self._enable_anim:
+            if self.ninja.ninja_anim_mode:
                 self.ninja.update_graphics()  # Update limbs of ninja
 
-        if self.ninja.state == 6 and self._enable_anim:  # Ragdoll state
+        if self.ninja.state == 6 and self.ninja.ninja_anim_mode:  # Ragdoll state
             self.ninja.anim_frame = 105  # Specific animation frame for ragdoll
             self.ninja.anim_state = 7  # Specific animation state for ragdoll
             self.ninja.calc_ninja_position()
@@ -461,6 +542,10 @@ class Simulator:
                 entity
             ) in active_movable_entities:  # Log only active and movable entities
                 entity.log_position()
+
+        # Snapshot the ninja's position for the evil ninja's tape. Last thing in
+        # the frame, as in the game's tick.
+        self._record_ninja_tape()
 
         # Clear physics caches periodically to prevent memory bloat or stale data
         if self.frame >= self._next_cache_clear:

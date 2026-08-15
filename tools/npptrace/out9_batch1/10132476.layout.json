@@ -1,0 +1,67 @@
+{
+ "t": "layout",
+ "demo": "10132476",
+ "sim": "0x100210b0",
+ "pools": [
+  {
+   "i": 0,
+   "count": 67,
+   "stride": 48,
+   "base": "0x9437020",
+   "vtableRva": 5711568,
+   "offset": 0
+  },
+  {
+   "i": 1,
+   "count": 1,
+   "stride": 72,
+   "base": "0x9437cb0",
+   "vtableRva": 5711392,
+   "offset": 3216
+  },
+  {
+   "i": 2,
+   "count": 1,
+   "stride": 48,
+   "base": "0x9437cf8",
+   "vtableRva": 5711440,
+   "offset": 3288
+  },
+  {
+   "i": 4,
+   "count": 1,
+   "stride": 184,
+   "base": "0x9437d28",
+   "vtableRva": 5709384,
+   "offset": 3336
+  },
+  {
+   "i": 9,
+   "count": 3,
+   "stride": 56,
+   "base": "0x9437de0",
+   "vtableRva": 5711868,
+   "offset": 3520
+  },
+  {
+   "i": 23,
+   "count": 4,
+   "stride": 64,
+   "base": "0x9437e88",
+   "vtableRva": 5708616,
+   "offset": 3688
+  },
+  {
+   "i": 27,
+   "count": 8,
+   "stride": 232,
+   "base": "0x9437f88",
+   "vtableRva": 5711996,
+   "offset": 3944
+  }
+ ],
+ "entityBytes": 5800,
+ "recBytes": 9196,
+ "ninjaSlab": 3392,
+ "frames": 854
+}

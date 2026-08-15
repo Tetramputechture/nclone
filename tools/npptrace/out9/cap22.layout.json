@@ -1,0 +1,107 @@
+{
+ "t": "layout",
+ "demo": "cap22",
+ "sim": "0x100230b0",
+ "pools": [
+  {
+   "i": 0,
+   "count": 29,
+   "stride": 48,
+   "base": "0x944a620",
+   "vtableRva": 5711568,
+   "offset": 0
+  },
+  {
+   "i": 1,
+   "count": 1,
+   "stride": 72,
+   "base": "0x944ab90",
+   "vtableRva": 5711392,
+   "offset": 1392
+  },
+  {
+   "i": 2,
+   "count": 1,
+   "stride": 48,
+   "base": "0x944abd8",
+   "vtableRva": 5711440,
+   "offset": 1464
+  },
+  {
+   "i": 4,
+   "count": 4,
+   "stride": 184,
+   "base": "0x944ac08",
+   "vtableRva": 5709384,
+   "offset": 1512
+  },
+  {
+   "i": 8,
+   "count": 2,
+   "stride": 80,
+   "base": "0x944aee8",
+   "vtableRva": 5711600,
+   "offset": 2248
+  },
+  {
+   "i": 9,
+   "count": 4,
+   "stride": 56,
+   "base": "0x944af88",
+   "vtableRva": 5711868,
+   "offset": 2408
+  },
+  {
+   "i": 17,
+   "count": 1,
+   "stride": 272,
+   "base": "0x944b068",
+   "vtableRva": 5712884,
+   "offset": 2632
+  },
+  {
+   "i": 19,
+   "count": 1,
+   "stride": 64,
+   "base": "0x944b178",
+   "vtableRva": 5712832,
+   "offset": 2904
+  },
+  {
+   "i": 21,
+   "count": 2,
+   "stride": 208,
+   "base": "0x944b1b8",
+   "vtableRva": 5711088,
+   "offset": 2968
+  },
+  {
+   "i": 22,
+   "count": 1,
+   "stride": 56,
+   "base": "0x944b358",
+   "vtableRva": 5709144,
+   "offset": 3384
+  },
+  {
+   "i": 23,
+   "count": 4,
+   "stride": 64,
+   "base": "0x944b390",
+   "vtableRva": 5708616,
+   "offset": 3440
+  },
+  {
+   "i": 27,
+   "count": 8,
+   "stride": 232,
+   "base": "0x944b490",
+   "vtableRva": 5711996,
+   "offset": 3696
+  }
+ ],
+ "entityBytes": 5552,
+ "recBytes": 8948,
+ "ninjaSlab": 3392,
+ "frames": 1554
+}

@@ -4,7 +4,6 @@
 
 use crate::collision::{spatial, sweep};
 use crate::constants::*;
-use crate::entities::Entity;
 use crate::segments::Segment;
 use crate::types::NinjaSnapshot;
 
@@ -63,6 +62,12 @@ pub struct Ninja {
     pub x_crush: f64,
     pub y_crush: f64,
     pub crush_len: f64,
+    /// `Ninja::addContact`'s two contact flags. They live on the ninja rather
+    /// than on the collision loop because the shove thwump's physical collision
+    /// only clears `isSolid`, and nothing re-zeroes them between entities or
+    /// between frames -- see `Simulator::collide_vs_objects`.
+    pub contact_is_solid: bool,
+    pub contact_is_moving: bool,
 
     // Inputs
     pub hor_input: i32,
@@ -96,7 +101,31 @@ pub struct Ninja {
     pub ylp_boost_normalized: f64,
 
     // Cached entities from pre_collision
-    cached_entity_indices: Vec<usize>,
+    /// Entity neighbourhood gathered in `pre_collision`, consumed by
+    /// `Simulator::collide_vs_objects`.
+    pub cached_entity_indices: Vec<usize>,
+
+    // --- Animation skeleton (`crate::anim`) -------------------------------
+    // Not cosmetic: `bones` is the input to the game's real beam-vs-ninja test.
+    // Kept field-for-field with `nclone/ninja.py` so the two engines stay
+    // frame-exact. Only maintained when `anim_enabled` is set.
+    /// Whether `update_graphics` runs at all. Off leaves `bones` at the spawn
+    /// pose and makes the hitscan test fall back to the circle prefilter.
+    pub anim_enabled: bool,
+    pub anim_state: i32,
+    pub anim_frame: usize,
+    pub anim_rate: f64,
+    pub tilt: f64,
+    pub facing: f64,
+    /// `+0xC34` (clipB) and `+0xC38` (blend). The run cycle cross-fades OUT of
+    /// the PREVIOUS clip; see `update_graphics`. Round 9 §2.2.
+    pub anim_frame_prev: usize,
+    pub anim_blend: f64,
+    pub run_cycle: i64,
+    pub frame_residual: f64,
+    /// 13 bones, normalised offsets from the ninja centre; scale by
+    /// `anim::BONE_SCALE` to get pixels.
+    pub bones: [[f64; 2]; 13],
 }
 
 impl Ninja {
@@ -144,6 +173,8 @@ impl Ninja {
             x_crush: 0.0,
             y_crush: 0.0,
             crush_len: 0.0,
+            contact_is_solid: false,
+            contact_is_moving: false,
             hor_input: 0,
             jump_input: 0,
             death_xpos: 0.0,
@@ -164,7 +195,30 @@ impl Ninja {
             xlp_boost_normalized: 0.0,
             ylp_boost_normalized: 0.0,
             cached_entity_indices: Vec::new(),
+            anim_enabled: false,
+            anim_state: 0,
+            anim_frame: 11,
+            anim_rate: 0.0,
+            tilt: 0.0,
+            facing: 1.0,
+            anim_frame_prev: 11,
+            anim_blend: 0.0,
+            run_cycle: 0,
+            frame_residual: 0.0,
+            bones: [[0.0; 2]; 13],
         }
+    }
+
+    /// Turn the animation skeleton on and seed the spawn pose.
+    ///
+    /// Python does this inside `Ninja.__init__` (`nclone/ninja.py:213-215`): it
+    /// allocates the bones and calls `update_graphics` once before the first
+    /// frame, so the pose entering frame 1 is already the idle one rather than a
+    /// pile of zeroes at the ninja's centre. A beam on frame 1 sees the same
+    /// skeleton in both engines only if this runs.
+    pub fn enable_anim(&mut self) {
+        self.anim_enabled = true;
+        self.update_graphics();
     }
 
     /// Update position and speed by applying drag and gravity.
@@ -213,65 +267,6 @@ impl Ninja {
         }
     }
 
-    /// Handle physical (depenetration) collisions with entities. Faithful port
-    /// of `Ninja.collide_vs_objects` (nclone/ninja.py): iterate the entity
-    /// neighbourhood cached in `pre_collision` and apply each physically-
-    /// collidable entity's depenetration to position, crush accumulators,
-    /// velocity, and floor/ceiling normals. Currently only one-way platforms
-    /// (type 11) are physically collidable; the type-17/20/28 branches are
-    /// retained verbatim from Python for when bounce blocks/thwumps/shwumps land.
-    pub fn collide_vs_objects(&mut self, entities: &[Entity]) {
-        for i in 0..self.cached_entity_indices.len() {
-            let idx = self.cached_entity_indices[i];
-            if idx >= entities.len() {
-                continue;
-            }
-            let entity = &entities[idx];
-            if !entity.is_physical_collidable() {
-                continue;
-            }
-            if let Some(((depen_x, depen_y), (depen_len, _))) = entity.physical_collision(self) {
-                let pop_x = depen_x * depen_len;
-                let pop_y = depen_y * depen_len;
-                self.xpos += pop_x;
-                self.ypos += pop_y;
-                let etype = entity.entity_type_id();
-                // Update crushing parameters unless collision with a bounce block.
-                if etype != 17 {
-                    self.x_crush += pop_x;
-                    self.y_crush += pop_y;
-                    self.crush_len += depen_len;
-                }
-                // Ninja can only get crushed by a thwump.
-                if etype == 20 {
-                    self.is_crushable = true;
-                }
-                // Depenetration for bounce blocks, thwumps and shwumps.
-                if etype == 17 || etype == 20 || etype == 28 {
-                    self.xspeed += pop_x;
-                    self.yspeed += pop_y;
-                }
-                // Depenetration for one-ways: project velocity onto platform tangent.
-                if etype == 11 {
-                    let xspeed_new = (self.xspeed * depen_y - self.yspeed * depen_x) * depen_y;
-                    let yspeed_new = (self.xspeed * depen_y - self.yspeed * depen_x) * (-depen_x);
-                    self.xspeed = xspeed_new;
-                    self.yspeed = yspeed_new;
-                }
-                // Adjust ceiling variables on ceiling/wall contact, else floor.
-                if depen_y >= -0.0001 {
-                    self.ceiling_count += 1;
-                    self.ceiling_normal_x += depen_x;
-                    self.ceiling_normal_y += depen_y;
-                } else {
-                    self.floor_count += 1;
-                    self.floor_normal_x += depen_x;
-                    self.floor_normal_y += depen_y;
-                }
-            }
-        }
-    }
-
     /// Handle collisions with tile segments (interpolation + depenetration loop).
     pub fn collide_vs_tiles(
         &mut self,
@@ -293,18 +288,6 @@ impl Ninja {
         self.xpos = self.xpos_old + time * dx;
         self.ypos = self.ypos_old + time * dy;
 
-        let rad = NINJA_RADIUS;
-
-        // Gather segments once for the depenetration loop
-        let seg_indices = spatial::gather_segments_from_region(
-            segment_grid,
-            all_segments,
-            self.xpos - rad,
-            self.ypos - rad,
-            self.xpos + rad,
-            self.ypos + rad,
-        );
-
         // Cache into local vars for the tight loop
         let mut xpos = self.xpos;
         let mut ypos = self.ypos;
@@ -320,15 +303,52 @@ impl Ninja {
         let mut floor_normal_x = self.floor_normal_x;
         let mut floor_normal_y = self.floor_normal_y;
 
+        // Gathered once up front only for the `NCLONE_AB_NO_REGATHER` variant;
+        // the default path re-gathers inside the loop and ignores this.
+        let gathered_once = if crate::ab::ab().regather {
+            Vec::new()
+        } else {
+            spatial::gather_segments_from_region(
+                segment_grid,
+                all_segments,
+                self.xpos - NINJA_RADIUS,
+                self.ypos - NINJA_RADIUS,
+                self.xpos + NINJA_RADIUS,
+                self.ypos + NINJA_RADIUS,
+            )
+        };
+
         // Depenetration loop (32 iterations max)
         for _ in 0..32 {
+            // RE-GATHERED every iteration, from the CURRENT position. The game's
+            // `get_single_closest_point` (`FUN_1050B910`,
+            // `docs/decomp/caller_1050B910.c`) calls the region gather itself, so
+            // each depenetration step sees the cells the ninja is in *now*. This
+            // port used to gather once, before the loop, from the pre-depenetration
+            // position -- which loses any segment the ninja is pushed into and
+            // keeps ones it has been pushed out of.
+            let regathered;
+            let seg_indices: &[usize] = if crate::ab::ab().regather {
+                regathered = spatial::gather_segments_from_region(
+                    segment_grid,
+                    all_segments,
+                    xpos - NINJA_RADIUS,
+                    ypos - NINJA_RADIUS,
+                    xpos + NINJA_RADIUS,
+                    ypos + NINJA_RADIUS,
+                );
+                &regathered
+            } else {
+                &gathered_once
+            };
+
             // Find closest point from gathered segments
             let mut shortest_distance: f64 = 9999999.0;
             let mut result = 0i32;
             let mut closest_a = 0.0f64;
             let mut closest_b = 0.0f64;
 
-            for &seg_idx in &seg_indices {
+            for &seg_idx in seg_indices {
                 let seg = &all_segments[seg_idx];
                 if !seg.is_active() {
                     continue;
@@ -350,30 +370,23 @@ impl Ninja {
                 break;
             }
 
-            let mut dx = xpos - closest_a;
+            // `o = pos - cp`, verbatim. `FUN_10511AB0`
+            // (`docs/decomp/R5_01_collide_vs_tiles_10511AB0.c`) has no special
+            // case here, and the corner tie-break that used to sit between these
+            // two lines is gone -- see the note in `nclone/ninja.py` where it
+            // lived. Short version: it faked the 2^-47 that a high-to-low door
+            // winding was producing for real, `10131255` is bit-exact without it,
+            // and switching it back on costs 29 demos.
+            let dx = xpos - closest_a;
             let dy = ypos - closest_b;
-
-            // Reproduce Python corner cases (left-border positions)
-            if dx.abs() <= 0.0000001 {
-                dx = 0.0;
-                if xpos == 50.51197510492316 || xpos == 49.23232124849253 {
-                    dx = -f64::from_bits(0x3D10000000000000u64); // -(2^-47)
-                }
-                if xpos == 49.153536108584795 {
-                    dx = f64::from_bits(0x3D10000000000000u64); // 2^-47
-                }
-                // Mirror-symmetric counterparts (right-border positions, for horizontally-mirrored levels)
-                if xpos == 1005.4880248950768 || xpos == 1006.7676787515074 {
-                    dx = f64::from_bits(0x3D10000000000000u64); // +(2^-47)
-                }
-                if xpos == 1006.8464638914152 {
-                    dx = -f64::from_bits(0x3D10000000000000u64); // -(2^-47)
-                }
-            }
 
             let dist = (dx * dx + dy * dy).sqrt();
             let depen_len = NINJA_RADIUS - dist * (result as f64);
-            if dist == 0.0 || depen_len < 0.0000001 {
+            // `_DAT_10571CA8`. The other epsilon in this file's neighbourhood,
+            // 1e-5 (`DAT_105866A0`), belongs to `post_collision`'s wall-normal
+            // scan, not here. Must stay in step with
+            // `nclone/ninja.py:DEPENETRATION_EPSILON`.
+            if dist == 0.0 || depen_len < 1e-7 {
                 // Write back before returning, matching original's direct self.* updates
                 self.xpos = xpos;
                 self.ypos = ypos;
@@ -391,32 +404,43 @@ impl Ninja {
                 return;
             }
 
-            let depen_x = dx / dist * depen_len;
-            let depen_y = dy / dist * depen_len;
+            // NORMALIZE FIRST, then work in the normalized frame. `Ninja::collideVsTiles`
+            // (`docs/decomp/NINJA_collideVsTiles_10511AB0.c:82-101`) computes
+            // `nx = dx/dist` and `ny = dy/dist` once and uses them for the
+            // depenetration, the velocity projection AND the ceiling/floor test.
+            let norm_x = dx / dist;
+            let norm_y = dy / dist;
+
+            let depen_x = norm_x * depen_len;
+            let depen_y = norm_y * depen_len;
             xpos += depen_x;
             ypos += depen_y;
             x_crush += depen_x;
             y_crush += depen_y;
             crush_len += depen_len;
 
-            // Project velocity onto surface only if moving towards it
-            let dot_product = xspeed * dx + yspeed * dy;
+            // Project velocity onto surface only if moving towards it.
+            //
+            // `v -= dot * n` against the NORMALIZED normal (`:93-96`), not the
+            // cross-product-over-dist_sq form. Algebraically identical, numerically
+            // not: on flat ground `norm_x` is exactly 0.0, so the x update is an
+            // exact no-op, whereas the old form rounds three times and lands 1 ULP
+            // off. See `docs/ENTITY_RE_ROUND8_FINDINGS.md` §2.
+            let dot_product = xspeed * norm_x + yspeed * norm_y;
             if dot_product < 0.0 {
-                let dist_sq = dist * dist;
-                let xspeed_new = (xspeed * dy - yspeed * dx) / dist_sq * dy;
-                let yspeed_new = (xspeed * dy - yspeed * dx) / dist_sq * (-dx);
-                xspeed = xspeed_new;
-                yspeed = yspeed_new;
+                xspeed -= dot_product * norm_x;
+                yspeed -= dot_product * norm_y;
             }
 
-            if dy >= -0.0001 {
+            // The binary tests the NORMALIZED `ny` against -0.0001 (`:98`), not raw `dy`.
+            if norm_y >= -0.0001 {
                 ceiling_count += 1;
-                ceiling_normal_x += dx / dist;
-                ceiling_normal_y += dy / dist;
+                ceiling_normal_x += norm_x;
+                ceiling_normal_y += norm_y;
             } else {
                 floor_count += 1;
-                floor_normal_x += dx / dist;
-                floor_normal_y += dy / dist;
+                floor_normal_x += norm_x;
+                floor_normal_y += norm_y;
             }
         }
 
@@ -575,7 +599,7 @@ impl Ninja {
             if (self.x_crush * self.x_crush + self.y_crush * self.y_crush).sqrt() / self.crush_len
                 < MIN_SURVIVABLE_CRUSHING
             {
-                self.kill(2, self.xpos, self.ypos, 0.0, 0.0, None);
+                self.kill(2, self.xpos, self.ypos, 0.0, 0.0, Some("crush"));
             }
         }
     }
@@ -591,27 +615,30 @@ impl Ninja {
         self.state = 3; // Jumping
         self.applied_gravity = GRAVITY_JUMP;
 
+        // `Ninja::think` has exactly TWO grounded rows
+        // (`docs/decomp/NINJA_update_10515300.c:346-357`, round-4 §8.3):
+        //   floor.x * hor_input < 0  ->  jump(0.0, -0.7, 0)
+        //   otherwise                ->  jump(floor.x, floor.y, 0)
+        // with `Ninja::jump` scaling `(jx, jy)` to `(jx*2/3, jy*2)`. No flat-ground
+        // special case, and no "perp jump" branch zeroing xspeed. See the Python
+        // twin in `nclone/ninja.py:floor_jump`.
         let (jx, jy);
-        if self.floor_normalized_x == 0.0 {
-            // Flat ground jump
-            jx = JUMP_FLOOR_X;
-            jy = JUMP_FLOOR_Y;
-        } else {
-            // Slope jump
-            let dx = self.floor_normalized_x;
-            let dy = self.floor_normalized_y;
-            if self.xspeed * dx >= 0.0 {
-                // Moving downhill
-                if self.xspeed * (self.hor_input as f64) >= 0.0 {
-                    jx = JUMP_SLOPE_DOWNHILL_X_MULTIPLIER * dx;
-                    jy = JUMP_SLOPE_DOWNHILL_Y_MULTIPLIER * dy;
-                } else {
-                    jx = 0.0;
-                    jy = JUMP_SLOPE_UPHILL_DEFAULT_Y;
-                }
+        if crate::ab::ab().legacy_floor_jump {
+            if self.floor_normalized_x == 0.0 {
+                jx = JUMP_FLOOR_X;
+                jy = JUMP_FLOOR_Y;
             } else {
-                // Moving uphill
-                if self.xspeed * (self.hor_input as f64) > 0.0 {
+                let dx = self.floor_normalized_x;
+                let dy = self.floor_normalized_y;
+                if self.xspeed * dx >= 0.0 {
+                    if self.xspeed * (self.hor_input as f64) >= 0.0 {
+                        jx = JUMP_SLOPE_DOWNHILL_X_MULTIPLIER * dx;
+                        jy = JUMP_SLOPE_DOWNHILL_Y_MULTIPLIER * dy;
+                    } else {
+                        jx = 0.0;
+                        jy = JUMP_SLOPE_UPHILL_DEFAULT_Y;
+                    }
+                } else if self.xspeed * (self.hor_input as f64) > 0.0 {
                     jx = 0.0;
                     jy = JUMP_SLOPE_UPHILL_DEFAULT_Y;
                 } else {
@@ -620,9 +647,42 @@ impl Ninja {
                     jy = JUMP_SLOPE_UPHILL_PERP_Y_MULTIPLIER * dy;
                 }
             }
+        } else if self.floor_normalized_x * (self.hor_input as f64) < 0.0 {
+            self.apply_jump(0.0, JUMP_UPSLOPE_Y_RAW);
+            return;
+        } else {
+            self.apply_jump(self.floor_normalized_x, self.floor_normalized_y);
+            return;
         }
 
-        if self.yspeed > 0.0 {
+        // Legacy A/B path only: `jx`/`jy` above are already effective impulses.
+        if self.xspeed * jx < 0.0 {
+            self.xspeed = 0.0;
+        }
+        if self.yspeed * jy < 0.0 {
+            self.yspeed = 0.0;
+        }
+        self.xspeed += jx;
+        self.yspeed += jy;
+        self.xpos += jx;
+        self.ypos += jy;
+        self.jump_duration = 0;
+    }
+
+    /// `Ninja::jump` -- `docs/decomp/R5_07_jump_apply_105110C0.c`.
+    ///
+    /// Takes the RAW row arguments and applies the scaled impulse. The two
+    /// multiplications are written exactly as the binary evaluates them, left to
+    /// right, because the association is observable: see `JUMP_SCALE_A/B/C`.
+    fn apply_jump(&mut self, raw_x: f64, raw_y: f64) {
+        let jx = (JUMP_SCALE_A * raw_x) * JUMP_SCALE_C;
+        let jy = ((JUMP_SCALE_A + JUMP_SCALE_B) * raw_y) * JUMP_SCALE_C;
+        // Zero any velocity component OPPOSING the impulse, then add (`:16-21`,
+        // `:27-30`) -- an add, not an assignment.
+        if self.xspeed * jx < 0.0 {
+            self.xspeed = 0.0;
+        }
+        if self.yspeed * jy < 0.0 {
             self.yspeed = 0.0;
         }
         self.xspeed += jx;
@@ -634,31 +694,28 @@ impl Ninja {
 
     /// Wall jump depending on wall normal and sliding state.
     fn wall_jump(&mut self, was_buffered: bool) {
-        let (jx, jy);
+        // `NINJA_update_10515300.c:387-396`: the binary selects on
+        // `state != 5 || wall_normal * hor_input >= 0` -> regular, the negation
+        // of the slide test below. RAW arguments; `Ninja::jump` scales them.
+        let (raw_x, raw_y);
         if (self.hor_input as f64) * self.wall_normal < 0.0 && self.state == 5 {
             // Slide wall jump
-            jx = JUMP_WALL_SLIDE_X_MULTIPLIER;
-            jy = JUMP_WALL_SLIDE_Y;
+            raw_x = self.wall_normal * JUMP_WALL_SLIDE_X_RAW_MULT;
+            raw_y = JUMP_WALL_SLIDE_Y_RAW;
         } else {
             // Regular wall jump
-            jx = JUMP_WALL_REGULAR_X_MULTIPLIER;
-            jy = JUMP_WALL_REGULAR_Y;
+            raw_x = self.wall_normal * JUMP_WALL_REGULAR_X_RAW_MULT;
+            raw_y = JUMP_WALL_REGULAR_Y_RAW;
         }
         if was_buffered {
             self.last_jump_was_buffered = true;
         }
         self.state = 3; // Jumping
         self.applied_gravity = GRAVITY_JUMP;
-        if self.xspeed * self.wall_normal < 0.0 {
-            self.xspeed = 0.0;
-        }
-        if self.yspeed > 0.0 {
-            self.yspeed = 0.0;
-        }
-        self.xspeed += jx * self.wall_normal;
-        self.yspeed += jy;
-        self.xpos += jx * self.wall_normal;
-        self.ypos += jy;
+        // `apply_jump` does the zeroing on the sign of the impulse -- the same
+        // test spelled out by hand before: the x impulse carries the sign of
+        // `wall_normal`, and the y impulse is always negative.
+        self.apply_jump(raw_x, raw_y);
         self.jump_buffer = -1;
         self.wall_buffer = -1;
         self.launch_pad_buffer = -1;
@@ -704,26 +761,33 @@ impl Ninja {
         }
         let in_lp_buffer = self.launch_pad_buffer > -1 && self.launch_pad_buffer < 4;
 
-        if self.jump_buffer > -1 && self.jump_buffer < 5 {
+        // The three thresholds are 5 unless the A/B harness overrides them; see
+        // `ab.rs` and `docs/NEXT_STEPS.md` §3.1.
+        let (buf_jump, buf_wall, buf_floor) = {
+            let ab = crate::ab::ab();
+            (ab.buf_jump, ab.buf_wall, ab.buf_floor)
+        };
+
+        if self.jump_buffer > -1 && self.jump_buffer < buf_jump {
             self.jump_buffer += 1;
         } else {
             self.jump_buffer = -1;
         }
-        let in_jump_buffer = self.jump_buffer > -1 && self.jump_buffer < 5;
+        let in_jump_buffer = self.jump_buffer > -1 && self.jump_buffer < buf_jump;
 
-        if self.wall_buffer > -1 && self.wall_buffer < 5 {
+        if self.wall_buffer > -1 && self.wall_buffer < buf_wall {
             self.wall_buffer += 1;
         } else {
             self.wall_buffer = -1;
         }
-        let in_wall_buffer = self.wall_buffer > -1 && self.wall_buffer < 5;
+        let in_wall_buffer = self.wall_buffer > -1 && self.wall_buffer < buf_wall;
 
-        if self.floor_buffer > -1 && self.floor_buffer < 5 {
+        if self.floor_buffer > -1 && self.floor_buffer < buf_floor {
             self.floor_buffer += 1;
         } else {
             self.floor_buffer = -1;
         }
-        let in_floor_buffer = self.floor_buffer > -1 && self.floor_buffer < 5;
+        let in_floor_buffer = self.floor_buffer > -1 && self.floor_buffer < buf_floor;
 
         // Initiate jump buffer
         let mut jump_buffer_just_activated = false;
@@ -919,6 +983,255 @@ impl Ninja {
     }
 
     /// Compute valid action mask.
+    /// Update the parameters that drive the ninja's limbs -- the port of
+    /// `Ninja.update_graphics` (`nclone/ninja.py:1240-1332`), itself the port of
+    /// `FUN_10516280` (`updateAnimation`, round-7 §3.3).
+    ///
+    /// Runs at the END of the frame, after `think`, which is where `nsim.py:527`
+    /// calls it. So a hitscan entity thinking on frame N tests against the pose
+    /// computed at the end of frame N-1, in both engines.
+    ///
+    /// The arithmetic is Python's operation for operation.
+    ///
+    /// The tilt decay and the quarter-turn constant were open against the binary
+    /// until round 9 §2.1/§2.3 read them out of `full/ninja_10516280.c`; both are
+    /// now spelled as the binary spells them. `anim_rate * 0.6` (round 7 has
+    /// `v / (5/3)`) is still open, and open *identically* in both engines.
+    pub fn update_graphics(&mut self) {
+        if !self.anim_enabled {
+            return;
+        }
+        let anim_state_old = self.anim_state;
+        if self.state == 5 {
+            self.anim_state = 4;
+            self.tilt = 0.0;
+            self.facing = -self.wall_normal;
+            self.anim_rate = self.yspeed;
+        } else if !self.airborn && self.state != 3 {
+            // `DAT_105866e0`, a STORED constant added to the atan2 result
+            // (`full/ninja_10516280.c:35`) -- not FRAC_PI_2, which differs by
+            // ~4.9e-12. Round 9 §2.3.
+            self.tilt = self
+                .floor_normalized_y
+                .atan2(self.floor_normalized_x)
+                + crate::constants::TILT_QUARTER_TURN;
+            if self.state == 0 {
+                self.anim_state = 0;
+            }
+            if self.state == 1 {
+                self.anim_state = 1;
+                self.anim_rate = (self.yspeed * self.floor_normalized_x
+                    - self.xspeed * self.floor_normalized_y)
+                    .abs();
+                if self.hor_input != 0 {
+                    self.facing = self.hor_input as f64;
+                }
+            }
+            if self.state == 2 {
+                self.anim_state = 2;
+                self.anim_rate = (self.yspeed * self.floor_normalized_x
+                    - self.xspeed * self.floor_normalized_y)
+                    .abs();
+            }
+            if self.state == 8 {
+                self.anim_state = 6;
+            }
+        } else {
+            self.anim_state = 3;
+            self.anim_rate = self.yspeed;
+            if self.state == 3 {
+                self.tilt = 0.0;
+            } else {
+                // `a - a*0.1`, NOT `a *= 0.9` -- different rounding, and there is
+                // no 0.9 constant in the binary's function. Round 9 §2.1.
+                self.tilt -= self.tilt * crate::constants::TILT_DECAY;
+            }
+        }
+        if self.state != 5 && self.xspeed.abs() > 0.01 {
+            self.facing = if self.xspeed > 0.0 { 1.0 } else { -1.0 };
+        }
+
+        if self.anim_state != anim_state_old {
+            match self.anim_state {
+                0 => {
+                    // `full/ninja_10516280.c:88-97` sets all four animation
+                    // fields to `min(c28, 0)` -- so 0 for any non-negative frame,
+                    // and the guard only preserves a NEGATIVE counter. The port
+                    // set 1, which the tick then advanced to 2, leaving the
+                    // landing clip one frame ahead for as long as the ninja stood
+                    // still. On `10137755` the bones are inert at ~2e-12 through
+                    // frame 7 and jump to 2.3e-02 on frame 8, the landing.
+                    self.anim_frame = self.anim_frame.min(0);
+                    self.run_cycle = 0;
+                }
+                1 => {
+                    // `full/ninja_10516280.c:98-121`. The incoming state picks
+                    // where in the 432-step run cycle the clip starts, and the
+                    // port had the table wrong: it sent **0 (immobile) and 4
+                    // (wall slide)** down the 12/0 default, where the binary
+                    // sends them to the same 39/162 as 2. `LAB_10516582` is
+                    // reached from `iVar2 == 0 || iVar2 == 4` and jumped to from
+                    // `iVar2 == 2`; only 3 and the genuine default are separate.
+                    match anim_state_old {
+                        0 | 2 | 4 => {
+                            self.anim_frame = 39;
+                            self.run_cycle = 162;
+                        }
+                        3 => {
+                            self.anim_frame = 18;
+                            self.run_cycle = 36;
+                        }
+                        _ => {
+                            self.anim_frame = 12;
+                            self.run_cycle = 0;
+                        }
+                    }
+                    self.frame_residual = 0.0;
+                }
+                2 => self.anim_frame = 0,
+                3 => self.anim_frame = 84,
+                4 => self.anim_frame = 103,
+                // The victory dance. Python picks it at random when
+                // `DANCE_RANDOM` is set; a random choice cannot be frame-exact
+                // across engines, and the dance only plays in state 8 after the
+                // level is already won, so this always takes the default.
+                6 => self.anim_frame = crate::anim::DANCE_DEFAULT.0,
+                _ => {}
+            }
+            // `:149` zeroes the blend on every state change, so a clip entered from
+            // another state starts un-crossfaded.
+            self.anim_blend = 0.0;
+            self.anim_frame_prev = self.anim_frame;
+        }
+
+        if self.anim_state == 0 && self.anim_frame < 11 {
+            self.anim_frame += 1;
+        }
+        if self.anim_state == 1 {
+            let new_cycle = self.anim_rate / 0.15 + self.frame_residual;
+            self.frame_residual = new_cycle - new_cycle.floor();
+            self.run_cycle = (self.run_cycle + new_cycle.floor() as i64).rem_euclid(432);
+            // clipB is the PREVIOUS clipA, latched only when clipA changes, and the
+            // blend weights IT -- the cycle cross-fades OUT of the outgoing clip.
+            // `full/ninja_10516280.c:158-178`, round 9 §2.2. The old target,
+            // `(anim_frame - 12) % 72 + 12`, is `anim_frame` itself for every frame
+            // the running state can produce, so the lerp was a no-op.
+            let prev_clip = self.anim_frame;
+            self.anim_frame = (self.run_cycle / 6 + 12) as usize;
+            if self.anim_frame != prev_clip {
+                self.anim_frame_prev = prev_clip;
+            }
+            // Stored as a FLOAT by the binary (`+0xC38`), then widened -- but the
+            // arithmetic runs in DOUBLE and is rounded to f32 exactly once, at
+            // the store. Doing the divide and subtract in f32 (as this did)
+            // rounds three times and lands one ULP away: for `run_cycle % 6 == 2`
+            // f32-throughout gives 0.66666662693023682 where round-once gives
+            // 0.66666668653488159, and for `== 5` it errs the other way.
+            //
+            // `anim_blend` cross-fades the skeleton between two clips, and the
+            // skeleton is read by every hitscan kill test -- so one ULP here
+            // moves all 13 bones and decides whether a beam threads between two
+            // limbs or clips one. On `3556541` a spinner laser killed on frame 75
+            // in native, on a demo the real game and the Python port both
+            // complete. Mirrors `nclone/ninja.py:1436`.
+            self.anim_blend = ((1.0 - (self.run_cycle % 6) as f64 / 6.0) as f32) as f64;
+        }
+        if self.anim_state == 3 {
+            let rate = if self.anim_rate >= 0.0 {
+                (self.anim_rate * 0.6).min(1.0).sqrt()
+            } else {
+                (self.anim_rate * 1.5).max(-1.0)
+            };
+            self.anim_frame = (93.0 + (9.0 * rate).floor()) as usize;
+        }
+        if self.anim_state == 6 && self.anim_frame < crate::anim::DANCE_DEFAULT.1 {
+            self.anim_frame += 1;
+        }
+
+        self.calc_ninja_position();
+    }
+
+    /// Place the 13 bones for the current animation frame: fetch the pose, blend
+    /// the run cycle, mirror by `facing`, rotate by `tilt`.
+    ///
+    /// Port of `Ninja.calc_ninja_position` (`nclone/ninja.py:1334-1370`) /
+    /// `FUN_105114B0`. Note the blend source: `(anim_frame - 12) % 72 + 12` is
+    /// `anim_frame` itself for every frame the running state can produce (12..83),
+    /// so the lerp is currently a no-op. That is Python's behaviour and it is
+    /// reproduced deliberately -- round 7 §3.3 says the binary blends toward the
+    /// *next* clip, which is a real discrepancy, but fixing it in one engine only
+    /// would break frame-exactness. Flagged in `docs/ENTITY_RE_ROUND9_REQUEST.md`.
+    pub fn calc_ninja_position(&mut self) {
+        let poses = crate::anim::poses();
+        let Some(pose) = poses.get(self.anim_frame) else {
+            return;
+        };
+        let mut new_bones = *pose;
+
+        if self.anim_state == 1 {
+            // `FUN_105114B0:86,127` -- gated on `blend > 0.0f`, then
+            // `a += (b - a) * blend` with `b` from clipB.
+            let interpolation = self.anim_blend;
+            if interpolation > 0.0 {
+                // Target `anim_frame_prev` -- clipB, the PREVIOUS clip -- not
+                // `(anim_frame - 12) % 72 + 12`, which is `anim_frame` itself for
+                // every frame the running state can produce and so made the whole
+                // cross-fade a no-op. The comment above `run_cycle` already said
+                // as much; only Python's code had been updated to match it.
+                //
+                // Native therefore posed the ninja on the raw clip while Python
+                // posed it on the blend, so the two skeletons differed on every
+                // running frame with a non-zero blend -- invisible everywhere
+                // except the 11-limb hitscan test, which is the only thing that
+                // reads bones. Mirrors `nclone/ninja.py:1467`.
+                let next_idx = self.anim_frame_prev;
+                if let Some(next) = poses.get(next_idx) {
+                    for i in 0..13 {
+                        new_bones[i][0] += interpolation * (next[i][0] - new_bones[i][0]);
+                        new_bones[i][1] += interpolation * (next[i][1] - new_bones[i][1]);
+                    }
+                }
+            }
+        }
+
+        let tcos = self.tilt.cos();
+        let tsin = self.tilt.sin();
+        for bone in new_bones.iter_mut() {
+            let x = bone[0] * self.facing;
+            let y = bone[1];
+            bone[0] = x * tcos - y * tsin;
+            bone[1] = x * tsin + y * tcos;
+        }
+        self.bones = new_bones;
+
+        // `NCLONE_DEBUG_ANIM=1`: the animation state is not in the ninja
+        // snapshot, but the skeleton it drives IS read by every hitscan kill
+        // test -- so a pose that drifts from Python's shows up only as a laser,
+        // turret or drone that kills when the real game's does not.
+        //
+        // Printed at the END of the function, so it reports the tick's FINAL
+        // state and lines up directly against Python's post-tick values. Placed
+        // before the advance it reported a mix of pre- and post-advance fields,
+        // which reads as a divergence on tick 1 on every demo.
+        if std::env::var("NCLONE_DEBUG_ANIM").as_deref() == Ok("1") {
+            eprintln!(
+                "[anim] state={} frame={} prev={} cycle={} rate={:.17e} residual={:.17e} \
+                 blend={:.17e} tilt={:.17e} facing={:.17e} bone0=({:.17e},{:.17e})",
+                self.anim_state,
+                self.anim_frame,
+                self.anim_frame_prev,
+                self.run_cycle,
+                self.anim_rate,
+                self.frame_residual,
+                self.anim_blend,
+                self.tilt,
+                self.facing,
+                self.bones[0][0],
+                self.bones[0][1]
+            );
+        }
+    }
+
     pub fn get_valid_action_mask(&self) -> [bool; 6] {
         let mut mask = [true; 6];
 
@@ -997,6 +1310,9 @@ impl Ninja {
         yspeed: f64,
         cause: Option<&str>,
     ) {
+        if crate::ab::ab().invulnerable {
+            return;
+        }
         if self.state < 6 {
             self.death_xpos = xpos;
             self.death_ypos = ypos;
@@ -1119,6 +1435,8 @@ impl Ninja {
         self.x_crush = 0.0;
         self.y_crush = 0.0;
         self.crush_len = 0.0;
+        self.contact_is_solid = false;
+        self.contact_is_moving = false;
         self.hor_input = 0;
         self.jump_input = 0;
         self.death_xpos = 0.0;
@@ -1139,6 +1457,20 @@ impl Ninja {
         self.xlp_boost_normalized = 0.0;
         self.ylp_boost_normalized = 0.0;
         self.cached_entity_indices.clear();
+        // Python builds a fresh `Ninja` on reset, so the skeleton goes back to
+        // the idle pose too. `anim_enabled` is a configuration flag, not state,
+        // and survives.
+        self.anim_state = 0;
+        self.anim_frame = 11;
+        self.anim_rate = 0.0;
+        self.tilt = 0.0;
+        self.facing = 1.0;
+        self.run_cycle = 0;
+        self.frame_residual = 0.0;
+        self.bones = [[0.0; 2]; 13];
+        if self.anim_enabled {
+            self.update_graphics();
+        }
     }
 
     /// Serialize ninja physics state to bytes for save/restore during transition enumeration.
@@ -1213,6 +1545,21 @@ impl Ninja {
         out.extend_from_slice(&self.consecutive_wall_frames.to_le_bytes());
         out.extend_from_slice(&self.xlp_boost_normalized.to_le_bytes());
         out.extend_from_slice(&self.ylp_boost_normalized.to_le_bytes());
+        // Animation scalars. `bones` is not serialized -- it is a pure function
+        // of these plus the pose table, and `from_bytes` recomputes it, so a
+        // restored ninja produces the same hitscan result as the one saved.
+        out.push(self.anim_enabled as u8);
+        out.extend_from_slice(&self.anim_state.to_le_bytes());
+        out.extend_from_slice(&(self.anim_frame as u32).to_le_bytes());
+        out.extend_from_slice(&self.anim_rate.to_le_bytes());
+        out.extend_from_slice(&self.tilt.to_le_bytes());
+        out.extend_from_slice(&self.facing.to_le_bytes());
+        out.extend_from_slice(&self.run_cycle.to_le_bytes());
+        out.extend_from_slice(&self.frame_residual.to_le_bytes());
+        // `addContact`'s two flags carry across frames, so a restored ninja that
+        // dropped them would resolve the next shove-thwump contact differently.
+        out.push(self.contact_is_solid as u8);
+        out.push(self.contact_is_moving as u8);
 
         out
     }
@@ -1308,8 +1655,43 @@ impl Ninja {
         let consecutive_wall_frames = read_u32(data, &mut off);
         let xlp_boost_normalized = read_f64(data, &mut off);
         let ylp_boost_normalized = read_f64(data, &mut off);
+        // Animation scalars, appended after the fields above. Guarded on the
+        // remaining length so a blob written before the skeleton landed still
+        // loads -- it restores with animation off, which is what it was saved
+        // with.
+        let has_anim = off < data.len();
+        let anim_enabled = has_anim && read_u8(data, &mut off) != 0;
+        let (anim_state, anim_frame, anim_rate, tilt, facing, run_cycle, frame_residual) =
+            if has_anim {
+                let anim_state = read_i32(data, &mut off);
+                let anim_frame = read_u32(data, &mut off) as usize;
+                let anim_rate = read_f64(data, &mut off);
+                let tilt = read_f64(data, &mut off);
+                let facing = read_f64(data, &mut off);
+                let run_cycle = {
+                    let b: [u8; 8] = data[off..off + 8].try_into().unwrap();
+                    off += 8;
+                    i64::from_le_bytes(b)
+                };
+                let frame_residual = read_f64(data, &mut off);
+                (
+                    anim_state,
+                    anim_frame,
+                    anim_rate,
+                    tilt,
+                    facing,
+                    run_cycle,
+                    frame_residual,
+                )
+            } else {
+                (0, 11, 0.0, 0.0, 1.0, 0, 0.0)
+            };
+        let contact_is_solid = off < data.len() && read_u8(data, &mut off) != 0;
+        let contact_is_moving = off < data.len() && read_u8(data, &mut off) != 0;
 
-        Ninja {
+        let mut ninja = Ninja {
+            anim_frame_prev: 11,
+            anim_blend: 0.0,
             xpos,
             ypos,
             xspeed,
@@ -1351,6 +1733,8 @@ impl Ninja {
             x_crush,
             y_crush,
             crush_len,
+            contact_is_solid,
+            contact_is_moving,
             hor_input,
             jump_input,
             death_xpos,
@@ -1371,7 +1755,20 @@ impl Ninja {
             xlp_boost_normalized,
             ylp_boost_normalized,
             cached_entity_indices: Vec::new(),
+            anim_enabled,
+            anim_state,
+            anim_frame,
+            anim_rate,
+            tilt,
+            facing,
+            run_cycle,
+            frame_residual,
+            bones: [[0.0; 2]; 13],
+        };
+        if anim_enabled {
+            ninja.calc_ninja_position();
         }
+        ninja
     }
 
     /// Inject position and velocity for transition enumeration.

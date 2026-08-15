@@ -44,6 +44,30 @@ class MapJumpPlatforms(Map):
     # hop (single-tile platforms demand pixel-precise landings).
     PLATFORM_WIDTH = 3
 
+    # OPT-IN. Mine the catch floor across the FULL map width instead of only the
+    # chamber span, closing the unmined margin at each end of the line.
+    #
+    # WHY THIS EXISTS. ``place_floor_mines`` lays mines from ``chamber_x1 + 1`` to
+    # ``chamber_x2 + 1`` on a 42-tile map, so a ninja that walks off the last
+    # platform toward the chamber edge lands just past the end of the line and
+    # SURVIVES. Measured on PLATFORMING/T2 level 131837852402414503: the line runs
+    # x = 264..936 px with no internal gap wider than 12.5 px (exactly as dense as
+    # advertised), but a ninja standing at (950, 470) is 17.2 px from the nearest
+    # mine against a 14 px kill threshold -- it survived 5,000 frames, immobile.
+    # That directly violates this class's own contract above ("a missed hop dies
+    # instantly (a clean terminal) instead of wandering to a timeout"), and it is
+    # the difference between a -3.5 death and a multi-thousand-frame stall.
+    #
+    # DEFAULT False, deliberately. Turning it on changes the levels, which
+    # invalidates ``mechanic_benchmark_v7_official``, the 781 planner demos, the
+    # 1,298 curricula, and every cross-run det-eval comparison in the run history.
+    # It must be a dataset regeneration decision, not a silent behaviour change.
+    #
+    # Mines placed over solid background outside the chamber are inert -- nothing
+    # can stand there -- so the only behavioural change is at the two ends of the
+    # existing line, which is precisely the gap being closed.
+    FULL_WIDTH_FLOOR_MINES = False
+
     def set_empty_rectangle(self, x1: int, y1: int, x2: int, y2: int):
         """Set a rectangular region of the map to empty space."""
         for y in range(y1, y2 + 1):
@@ -80,8 +104,15 @@ class MapJumpPlatforms(Map):
         if self.MINE_SPACING >= 50:
             return
         step = max(0.5, float(self.MINE_SPACING))
-        x = float(chamber_x1 + 1)
-        while x <= chamber_x2 + 1:
+        # See FULL_WIDTH_FLOOR_MINES: the chamber-only span leaves a survivable
+        # margin past each end of the line, which is where measured missed hops
+        # come to rest.
+        if getattr(self, "FULL_WIDTH_FLOOR_MINES", False):
+            x_start, x_end = 0.0, float(MAP_TILE_WIDTH)
+        else:
+            x_start, x_end = float(chamber_x1 + 1), float(chamber_x2 + 1)
+        x = x_start
+        while x <= x_end:
             self.add_entity(1, x, chamber_y2 + 2, 0, 1)  # Type 1 = toggle mine
             x += step
 

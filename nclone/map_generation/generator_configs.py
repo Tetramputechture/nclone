@@ -109,6 +109,12 @@ class JumpPlatformsConfig:
     mine_spacing: float = 0.5
     # Tiles per platform: a wider landing target = an easier hop.
     platform_width: int = 3
+    # Mine the catch floor across the full map width rather than only the chamber
+    # span, closing the survivable margin at each end of the mine line. See
+    # ``MapJumpPlatforms.FULL_WIDTH_FLOOR_MINES`` for the measurement and for why
+    # this defaults off (it invalidates the benchmark dataset, the planner demos
+    # and every cross-run det-eval comparison).
+    full_width_floor_mines: bool = False
 
 
 @dataclass
@@ -262,6 +268,72 @@ class MinePathConfig:
     spawn_buffer_tiles: int = 2
     # One-tile step-up for mixed tier 3+4
     add_step: bool = False
+
+
+@dataclass
+class MineOverlayConfig:
+    """Configuration for MINE_OVERLAY -- an official-like minefield laid over any
+    other generator's level.
+
+    Density is deliberately NOT ramped hard across tiers. Official mine crowding
+    measures flat across the game's own difficulty ordering (crowd p50 = 8 in
+    every quintile, easiest fifth to hardest), so density is a constant property
+    of authored levels rather than a difficulty axis. The tiers here ramp the BASE
+    level's morphology and widen the band only mildly; ramping density from
+    near-zero is what leaves the current MINE_NAVIGATION T4 easier than official's
+    T1.
+    """
+
+    base_specs: tuple = ()
+    lattice_px: float = 12.0
+    armed_fraction: float = 0.205
+    min_clusters: int = 3
+    max_clusters: int = 9
+    run_len_min: int = 3
+    run_len_max: int = 14
+    patch_radius_min_px: float = 12.0
+    patch_radius_max_px: float = 42.0
+    scatter_min: int = 0
+    scatter_max: int = 6
+    min_accept_mines: int = 8
+    max_base_retry: int = 12
+    route_max_expansions: int = 60000
+    require_route_certificate: bool = True
+
+
+@dataclass
+class HazardOverlayConfig:
+    """Configuration for the HAZARD overlay -- one or more hazard classes laid
+    over any other generator's level (`map_hazard_overlay.MapHazardOverlay`).
+
+    The tiers ramp the BASE level's MORPHOLOGY and the share of levels whose
+    naive route is lethal. They barely move the hazard COUNT, and that is
+    deliberate: `scripts/hazard_census.py` measures official hazard density as
+    flat across the game's own difficulty ordering for every class (patrol drone
+    median 14/12/14/14/14 across difficulty quintiles; rocket 1 in every one).
+    Ramping count from zero is what leaves a T4 easier than official's T1.
+
+    T1 is the documented exception. For a mechanic the agent has never
+    encountered, tier 1 is a SINGLE isolated instance in generous geometry with
+    no lethal levels at all -- the `shaft_t2_one_mine` precedent, and the
+    difference between a learnable on-ramp and a bucket that reads 0.000 forever.
+    """
+
+    hazard_classes: tuple = ("patrol_drone",)
+    classes_per_level: int = 1
+    #: Ceiling on hazards per 1000 reachable cells; see `_hazard_tiers`.
+    density_cap_per_1k: float = 4.0
+    base_specs: tuple = ()
+    count_scale: float = 1.0
+    single_instance: bool = False
+    #: Share of levels where the naive d* route DIES. These teach timing and ship
+    #: no demo, so a bucket made entirely of them cannot be BC-seeded.
+    target_lethal_fraction: float = 0.25
+    layout_retries: int = 6
+    min_accept: int = 1
+    max_base_retry: int = 12
+    route_max_expansions: int = 60000
+    require_route_certificate: bool = True
 
 
 @dataclass
@@ -1388,6 +1460,181 @@ GENERATOR_PRESETS = {
 # knobs are cleared. We add explicit per-tier presets here to keep the
 # bucket catalog declarative.
 # -------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# MINE_OVERLAY -- official-like minefields laid over the whole generator zoo.
+#
+# The base pools are deliberately WIDE. Hazard density is orthogonal to level
+# morphology, so every traversable base shape is fair game, and breadth here is
+# what stops the bucket from teaching one layout idiom. Each tier draws from the
+# matching tier of ~17 different generators.
+# ---------------------------------------------------------------------------
+_MINE_OVERLAY_BASES_T1 = (
+    "jump_platforms:platforms_t1", "single_chamber:flat_run_t1", "platform_stairs:stairs_t1",
+    "slopes:single_slope_t1", "multi_jump:two_gaps_t1", "drop_landing:drop_t1",
+    "open_field:open_t1", "round_corner:corner_t1", "loop_corridor:loop_t1",
+    "wall_jump:shaft_short_t1", "precision:two_ledges_t1",
+    "curves:single_curve_t1", "vertical_corridor:shaft_t1",
+    "basic_jump:single_gap_flat_t1", "composite:short_chain_t1",
+)
+_MINE_OVERLAY_BASES_T2 = (
+    "jump_platforms:platforms_t2", "single_chamber:flat_run_t2", "platform_stairs:stairs_t2",
+    "slopes:hill_symmetric_t2", "multi_jump:staircase_t2", "drop_landing:drop_t2",
+    "open_field:open_t2", "round_corner:corner_t2", "loop_corridor:loop_t2",
+    "wall_jump:shaft_medium_t2", "precision:ledges_t2", "curves:two_curves_t2",
+    "vertical_corridor:shaft_t2", "basic_jump:single_step_up_t2",
+    "composite:chain_t2",
+)
+_MINE_OVERLAY_BASES_T3 = (
+    "jump_platforms:platforms_t3", "single_chamber:flat_run_t3", "platform_stairs:stairs_t3",
+    "slopes:hill_asymmetric_t3", "multi_jump:mixed_jumps_t3",
+    "drop_landing:drop_t3", "open_field:open_t3", "round_corner:corner_t3",
+    "loop_corridor:loop_t3", "wall_jump:shaft_tall_t3", "precision:ledges_t3",
+    "curves:curves_t3", "vertical_corridor:shaft_t3", "long_jump:gap_t3",
+    "composite:chain_t3", "maze:small", "multi_chamber:medium_2",
+)
+_MINE_OVERLAY_BASES_T4 = (
+    "jump_platforms:platforms_t4", "single_chamber:flat_run_t4", "platform_stairs:stairs_t4",
+    "slopes:hill_multi_t4", "multi_jump:many_gaps_t4", "drop_landing:drop_t4",
+    "open_field:open_t4", "round_corner:corner_t4", "loop_corridor:loop_t4",
+    "wall_jump:shaft_tall_ledge_t4", "precision:narrow_ledges_t4",
+    "curves:undulation_t4", "vertical_corridor:shaft_t4", "long_jump:gap_t4",
+    "composite:long_chain_t4", "maze:large", "multi_chamber:complex",
+    "islands:complex", "hills:complex",
+)
+
+GENERATOR_PRESETS["mine_overlay"] = {
+    "overlay_t1": MineOverlayConfig(
+        base_specs=_MINE_OVERLAY_BASES_T1,
+        min_clusters=3, max_clusters=7, min_accept_mines=8,
+    ),
+    "overlay_t2": MineOverlayConfig(
+        base_specs=_MINE_OVERLAY_BASES_T2,
+        min_clusters=4, max_clusters=9, min_accept_mines=10,
+    ),
+    "overlay_t3": MineOverlayConfig(
+        base_specs=_MINE_OVERLAY_BASES_T3,
+        min_clusters=5, max_clusters=11, min_accept_mines=12,
+    ),
+    "overlay_t4": MineOverlayConfig(
+        base_specs=_MINE_OVERLAY_BASES_T4,
+        min_clusters=6, max_clusters=13, min_accept_mines=14,
+    ),
+}
+
+
+# --------------------------------------------------------------------------
+# Hazard overlay presets, one family per gamma-1 hazard bucket.
+#
+# The base-spec tiers are shared with the mine overlay on purpose: hazard
+# content is orthogonal to level shape, so the same morphology ladder serves
+# both and the two buckets stay comparable on everything except their hazards.
+#
+# `target_lethal_fraction` rises with tier and is the real difficulty ramp. It
+# is the share of levels whose naive d* route DIES, i.e. the levels that can
+# only be solved by TIMING rather than by geometry. T1 has none: an on-ramp the
+# agent cannot solve by walking the route teaches nothing about the mechanic,
+# it just reads 0.000.
+# --------------------------------------------------------------------------
+# Cavern bases for the hazard overlay, one entry per tier. The mine-free cavern
+# presets are used deliberately: the overlay is what owns hazard content, and
+# leaving the base's own mines in would make a "drone" bucket's difficulty partly
+# a mine bucket's.
+_CAVERN_HAZARD_BASES = (
+    ("cavern_chambers:cavern_t1",),
+    ("cavern_chambers:cavern_linear",),
+    ("cavern_chambers:cavern_linear", "cavern_chambers:cavern_nonlinear"),
+    ("cavern_chambers:cavern_nonlinear",),
+)
+
+
+def _hazard_tiers(classes, per_level=1, lethal=(0.0, 0.15, 0.30, 0.45),
+                  scales=(1.0, 0.6, 1.0, 1.0),
+                  density=(1.0, 2.0, 3.0, 4.5),
+                  bases=None):
+    """Per-tier hazard configs.
+
+    ``density`` is the ceiling in hazards per 1000 REACHABLE cells and is what
+    now makes the tiers a genuine difficulty ramp. Official measures 0.91/1k at
+    the median and 17.3 at p90, so T1 sits at official-typical and T4 reaches
+    roughly 5x it -- demanding, but nothing like the 4.5-7.7x MEDIAN (p90 117.9)
+    that DRONE tiers measured when the conditional count bands were applied with
+    no area term at all. See `MapHazardOverlay._target_count`.
+    """
+    bases = bases or (_MINE_OVERLAY_BASES_T1, _MINE_OVERLAY_BASES_T2,
+                      _MINE_OVERLAY_BASES_T3, _MINE_OVERLAY_BASES_T4)
+    return {
+        f"hazard_t{t}": HazardOverlayConfig(
+            hazard_classes=tuple(classes),
+            classes_per_level=per_level,
+            base_specs=bases[t - 1],
+            count_scale=scales[t - 1],
+            density_cap_per_1k=density[t - 1],
+            # T1 only: a single isolated instance, whatever the class median is.
+            single_instance=(t == 1),
+            target_lethal_fraction=lethal[t - 1],
+        )
+        for t in (1, 2, 3, 4)
+    }
+
+
+GENERATOR_PRESETS["hazard_overlay"] = {
+    # DRONE: patrol drones first. They are tier C -- exactly forecastable,
+    # ninja-independent -- which makes them the cleanest possible introduction to
+    # "a threat that moves", and the only class official crowds (crowd p90 = 18).
+    **{f"drone_{k}": v for k, v in _hazard_tiers(
+        ("patrol_drone",)).items()},
+    # Chasers JOIN the patrol drones at T3+ -- they are ninja-DEPENDENT, so no
+    # forecast channel can be certain about them, and mixing them into the
+    # on-ramp would teach that the certain tier is unreliable.
+    #
+    # `classes_per_level=2` is load-bearing and was wrong at 1: the default
+    # picks ONE class per level, which made a third of DRONE T3/T4 chaser-ONLY
+    # (measured: 6 of 48 levels carried no patrol drone at all). The point of
+    # this preset is the CONTRAST -- a forecastable threat and an unforecastable
+    # one in the same level, so the policy has to tell them apart. Either/or
+    # teaches neither, and it dilutes the class the bucket is named for.
+    **{f"drone_mixed_{k}": v for k, v in _hazard_tiers(
+        ("patrol_drone", "chaser_drone"), per_level=2).items()},
+    **{f"floor_guard_{k}": v for k, v in _hazard_tiers(
+        ("floor_guard",)).items()},
+    # BEAM: line of sight, no travel time.
+    **{f"beam_{k}": v for k, v in _hazard_tiers(
+        ("turret", "dual_laser")).items()},
+    # ROCKET: line of sight AND travel time, and it steers.
+    **{f"rocket_{k}": v for k, v in _hazard_tiers(
+        ("rocket",)).items()},
+    # DEATH_BALL: open-volume seekers. Eye bats ride along -- same placement
+    # rule, and they have zero official instances to calibrate separately.
+    **{f"death_ball_{k}": v for k, v in _hazard_tiers(
+        ("death_ball", "eye_bat")).items()},
+    # THWUMP: the only SOLID classes, so the only ones that re-route rather than
+    # replay, and the only source of a non-zero `solid_map` anywhere in gamma-1
+    # (every solid-body type is out of phase-1 ingest scope, so the official
+    # corpus cannot produce one).
+    **{f"thwump_{k}": v for k, v in _hazard_tiers(
+        ("thwump", "shove_thwump")).items()},
+    # HAZARD_FIELD: mixed classes at official density over arbitrary morphology.
+    # The single-class buckets exist to make failures ATTRIBUTABLE; this one
+    # exists because official levels do not serve one hazard at a time. Two
+    # classes per level, not all of them: only 16.0% of official phase-1 levels
+    # carry two or more, and 3.6% carry three.
+    **{f"mixed_{k}": v for k, v in _hazard_tiers(
+        ("patrol_drone", "floor_guard", "turret", "dual_laser", "rocket",
+         "death_ball"),
+        per_level=2, lethal=(0.0, 0.20, 0.35, 0.50)).items()},
+    # CAVERN: the same hazard classes over MULTI-AREA morphology. Every other
+    # base above is a single-area level (one corridor, one chamber, one shaft),
+    # so a hazard has only ever been met in the room the goal is in. These pin
+    # the base to `cavern_chambers`, where the ninja crosses several chambers and
+    # the connecting tunnels, and a hazard can sit in an area the route merely
+    # passes through. Kept as separate presets rather than folded into the shared
+    # base lists so the existing buckets' morphology mix is byte-unchanged.
+    **{f"cavern_{k}": v for k, v in _hazard_tiers(
+        ("patrol_drone", "floor_guard", "death_ball"),
+        per_level=2, bases=_CAVERN_HAZARD_BASES).items()},
+}
+
+
 GENERATOR_PRESETS["horizontal_corridor"].update(
     {
         "flat_run_t1": HorizontalCorridorConfig(
@@ -1524,6 +1771,47 @@ GENERATOR_PRESETS["vertical_corridor"].update(
             add_mid_mines=False,
             add_chaotic_walls=False,
             add_wall_mines=False,
+            add_boundary_mines=False,
+        ),
+        # THE MISSING RUNG. Measured on v36 @25M (det_eval_buckets, argmax,
+        # n=24/tier): VERTICAL_SHAFT T1 1.000, T2 1.000, T3 0.792, T4 0.417, and
+        # T4's failures are deaths (0.458), 9 of 11 by mine and 8 of 11 while
+        # ASCENDING. Structurally (scripts/analyze_level_layout.py, test split):
+        #
+        #   tier  mines  vertical span   nearest mine to route
+        #   t1     0.0      1.0 tiles          --
+        #   t2     0.0      5.0               --
+        #   t3     3.0     11.0            0.6 tiles
+        #   t4     8.5     17.5            0.5 tiles
+        #
+        # Success is very close to (per-mine survival)^(mine count) with per-mine
+        # survival roughly CONSTANT across tiers (0.925 at t3, 0.902 at t4);
+        # holding it fixed predicts t4=0.52 against an observed 0.417, whereas a
+        # per-TILE model predicts 0.69. So the tier cliff is mine ENCOUNTERS
+        # multiplying, not shaft length -- and the corpus never teaches the
+        # encounter in isolation: it goes 0 mines -> 3 mines simultaneously with
+        # a 5 -> 11 tile height jump.
+        #
+        # Compare MINE_NAVIGATION, whose OWN t1 is "flat_one_mine_t1" -- one mine,
+        # earliest tier. VERTICAL_SHAFT simply never got that rung.
+        #
+        # This preset is the t2 shaft the agent already solves at 1.000, plus ONE
+        # mine. Mine count is exact, not incidental: mine_spacing >= max_height
+        # means the placement loop in map_vertical_corridor._add_wall_mines emits
+        # exactly one mine per mined wall, and it mines 1-2 walls, so every level
+        # here has 1 or 2 mines and no more.
+        "shaft_t2_one_mine": VerticalCorridorConfig(
+            min_width=2,
+            max_width=3,
+            min_height=5,
+            max_height=8,
+            # >= max_height by construction; see above.
+            min_mine_spacing=8,
+            max_mine_spacing=10,
+            add_platforms=False,
+            add_mid_mines=False,
+            add_chaotic_walls=False,
+            add_wall_mines=True,
             add_boundary_mines=False,
         ),
         "shaft_t3": VerticalCorridorConfig(
@@ -1879,6 +2167,196 @@ GENERATOR_PRESETS["drop_landing"] = {
 
 
 @dataclass
+class CavernChambersConfig:
+    """Configuration for the cavern/chamber traversal generator.
+
+    See ``map_cavern_chambers`` for what each knob does geometrically. The three
+    that define a tier are ``max_chambers`` (how many areas the route crosses),
+    ``extra_edges`` (0 = tree = one route; >0 = cycles = several) and
+    ``nonlinear_prob`` (chance the switch sits past the door, forcing an
+    out-and-back rather than a single outbound run).
+    """
+
+    min_chambers: int = 3
+    max_chambers: int = 5
+    min_chamber_width: int = 7
+    max_chamber_width: int = 30
+    min_chamber_height: int = 4
+    max_chamber_height: int = 18
+    # Chamber size as a fraction of its BSP leaf: the solid-fraction knob.
+    fill_bias: float = 0.8
+    extra_edges: int = 1
+    # Relative weights for (box, terraced, pillared, cavern) interiors.
+    style_weights: Tuple[int, int, int, int] = (2, 3, 2, 3)
+    max_floor_step: int = 2
+    cavern_fill: float = 0.45
+    wall_roughness: float = 0.3
+    smoothing_rate: float = 0.85
+    flat_smoothing_rate: float = 0.12
+    nonlinear_prob: float = 0.5
+    layout_attempts: int = 12
+    # Toggle mines on floors / ceilings / wall faces. 0/0 = no mines.
+    # Reference density: the official corpus runs a median of 42 toggle mines
+    # per level (p25 22, p90 118), 74% type 1 / 26% type 21.
+    min_mines: int = 0
+    max_mines: int = 0
+    armed_mine_prob: float = 0.26
+    mine_surface_weights: Tuple[int, int, int] = (3, 1, 1)  # floor, ceiling, wall
+    mine_min_spacing: int = 3
+    mine_in_corridors: bool = False
+    mine_goal_clearance: int = 2
+    # Traversal furniture. These change WHERE THE NINJA CAN GO, not just what
+    # kills it, so enabling them is a training-scope decision -- see
+    # ``constants.entity_types``: ONE_WAY is phase 2 (the reachability graph
+    # already models it), while BOUNCE_BLOCK and LAUNCH_PAD are phase 3, the step
+    # that changes the cost-to-go field and can invalidate PBRS, the demo corpus
+    # and the reverse curriculum together. Off by default for that reason.
+    min_one_ways: int = 0
+    max_one_ways: int = 0
+    min_bounce_blocks: int = 0
+    max_bounce_blocks: int = 0
+    min_launch_pads: int = 0
+    max_launch_pads: int = 0
+    min_boost_pads: int = 0
+    max_boost_pads: int = 0
+    traversal_min_spacing: int = 3
+    # Shaped gold clusters. Official reference: every level has gold, 93% of it
+    # clustered, 24 gold in 5 clusters at the median (p90 51 in 11); the dominant
+    # intra-cluster spacing is 12px, i.e. the half-tile lattice.
+    min_gold_clusters: int = 0
+    max_gold_clusters: int = 0
+    min_gold_per_cluster: int = 3
+    max_gold_per_cluster: int = 12
+    #: Relative weights for (grid, triangle, ring, arc, blob).
+    gold_shape_weights: Tuple[int, int, int, int, int] = (3, 2, 2, 2, 2)
+    gold_half_pitch_prob: float = 0.75
+    # Patrol drones (zap 14 / mini 26) and emplacements (turret 19 / rocket 18).
+    # Pure hazards, so phase 1 scope: observation work only, the planner and the
+    # cost-to-go field are untouched. Placement lattices, orientations and modes
+    # are taken from `map_hazard_overlay.HAZARD_SPECS` rather than duplicated.
+    min_drones: int = 0
+    max_drones: int = 0
+    min_emplacements: int = 0
+    max_emplacements: int = 0
+    #: Relative weights for (turret, rocket) inside the emplacement budget.
+    emplacement_weights: Tuple[int, int] = (1, 1)
+    hazard_spawn_clearance: int = 4
+    hazard_min_sightline: int = 4
+
+
+GENERATOR_PRESETS["cavern_chambers"] = {
+    # Tier 1: two or three big, plain, open rooms in a chain. One route, always
+    # outbound (spawn -> switch -> door), no cycles, minimal rock clutter --
+    # the point of the tier is only "the goal is in a different room".
+    "cavern_t1": CavernChambersConfig(
+        min_chambers=2, max_chambers=3,
+        min_chamber_width=9, min_chamber_height=5,
+        fill_bias=0.95, extra_edges=0,
+        style_weights=(4, 2, 0, 0),
+        max_floor_step=1, wall_roughness=0.1,
+        smoothing_rate=0.6, flat_smoothing_rate=0.05,
+        nonlinear_prob=0.0,
+    ),
+    # Tier 2: three rooms, terraced and pillared interiors, the first
+    # out-and-back routes, and a sparse scatter of mines.
+    "cavern_t2": CavernChambersConfig(
+        min_chambers=3, max_chambers=3,
+        fill_bias=0.9, extra_edges=0,
+        style_weights=(2, 4, 2, 1),
+        max_floor_step=2, wall_roughness=0.2,
+        nonlinear_prob=0.3,
+        min_mines=2, max_mines=6,
+        min_gold_clusters=2, max_gold_clusters=4, max_gold_per_cluster=8,
+    ),
+    # Tier 3: four rooms, every interior style, and one cycle -- so the chamber
+    # graph stops being a tree and more than one route reaches the goal.
+    "cavern_t3": CavernChambersConfig(
+        min_chambers=3, max_chambers=4,
+        fill_bias=0.8, extra_edges=1,
+        style_weights=(1, 3, 2, 3),
+        wall_roughness=0.3,
+        nonlinear_prob=0.5,
+        min_mines=6, max_mines=14,
+        min_gold_clusters=3, max_gold_clusters=6,
+        min_drones=1, max_drones=3,
+    ),
+    # Tier 4: five or six tighter rooms, two cycles, heavy rock detail, a bias
+    # toward out-and-back routing, and mines at the tighter spacing.
+    "cavern_t4": CavernChambersConfig(
+        min_chambers=4, max_chambers=6,
+        fill_bias=0.6, extra_edges=2,
+        style_weights=(1, 3, 2, 4),
+        wall_roughness=0.4,
+        nonlinear_prob=0.65,
+        min_mines=12, max_mines=28, mine_min_spacing=2,
+        min_gold_clusters=4, max_gold_clusters=8,
+        min_drones=2, max_drones=5, min_emplacements=1, max_emplacements=3,
+    ),
+    # Explicit route-shape variants, for datasets that need to hold topology
+    # fixed while varying everything else. Mine-free on purpose: they are
+    # topology probes, and mines would confound what they measure.
+    "cavern_linear": CavernChambersConfig(nonlinear_prob=0.0, extra_edges=0),
+    "cavern_nonlinear": CavernChambersConfig(nonlinear_prob=1.0, extra_edges=2),
+    # Official-density mines on open geometry: closes the entity-count half of
+    # the procgen-vs-human gap rather than the layout half.
+    "cavern_dense_mines": CavernChambersConfig(
+        min_chambers=3, max_chambers=4,
+        fill_bias=1.0, extra_edges=1,
+        wall_roughness=0.25,
+        min_mines=24, max_mines=44, mine_min_spacing=2,
+        min_gold_clusters=5, max_gold_clusters=10,
+    ),
+    # ONE-WAY platforms only. Phase 2 scope: `entity_mask` already models them,
+    # so the reachability graph and cost-to-go field stay correct and this preset
+    # does NOT invalidate the demo corpus or PBRS. Safe to train on today.
+    "cavern_oneway": CavernChambersConfig(
+        min_chambers=3, max_chambers=4,
+        fill_bias=0.95, extra_edges=1,
+        min_one_ways=6, max_one_ways=16,
+        min_mines=4, max_mines=10,
+    ),
+    # The full traversal kit. PHASE 3 -- bounce blocks and launch pads change the
+    # cost-to-go field, so a run that turns this on needs its demo cache and PBRS
+    # assumptions revisited. Kept as its own preset so that decision is explicit
+    # rather than inherited by a tier.
+    "cavern_traversal": CavernChambersConfig(
+        min_chambers=3, max_chambers=4,
+        fill_bias=0.95, extra_edges=1,
+        min_one_ways=4, max_one_ways=10,
+        min_bounce_blocks=2, max_bounce_blocks=6,
+        min_launch_pads=1, max_launch_pads=3,
+        min_boost_pads=1, max_boost_pads=3,
+        min_mines=8, max_mines=18,
+        min_gold_clusters=3, max_gold_clusters=6,
+    ),
+    # Gold-forward: official cluster counts and sizes, light on everything else,
+    # for exercising the cluster-granularity collection planner and the
+    # orienteering potential rather than hazard avoidance.
+    "cavern_gold": CavernChambersConfig(
+        min_chambers=3, max_chambers=4,
+        fill_bias=1.0, extra_edges=1,
+        min_gold_clusters=5, max_gold_clusters=11,
+        min_gold_per_cluster=3, max_gold_per_cluster=12,
+        min_mines=2, max_mines=8,
+    ),
+    # Everything at once: multi-area geometry, official-band mines and gold, and
+    # the full mobile/ranged hazard set at the caps that match the corpus's own
+    # sparsity for emplacements. This is the closest the generator gets to an
+    # official level in one pass -- and it stays PHASE 1, because every hazard
+    # here is a pure hazard that leaves the planner and cost-to-go field alone.
+    "cavern_full": CavernChambersConfig(
+        min_chambers=3, max_chambers=5,
+        fill_bias=0.9, extra_edges=1,
+        nonlinear_prob=0.5,
+        min_mines=10, max_mines=22, mine_min_spacing=2,
+        min_gold_clusters=4, max_gold_clusters=9,
+        min_drones=3, max_drones=5,
+        min_emplacements=2, max_emplacements=3,
+    ),
+}
+
+
+@dataclass
 class CategoryConfig:
     """Configuration for a difficulty category."""
 
@@ -2137,10 +2615,31 @@ BUCKET_CATALOG: "dict[str, dict[int, List[BucketEntry]]]" = {
     # plus mine avoidance, so it is scheduled right after WALL_JUMP.
     "VERTICAL_SHAFT": {
         1: [("vertical_corridor", "shaft_t1", 1)],
-        2: [("vertical_corridor", "shaft_t2", 1)],
+        # t2 is HALF clean shafts, half one-mine drills. The clean half keeps the
+        # tier's original meaning (and its role as the wall-jump on-ramp); the
+        # drilled half is the first mine-in-a-shaft encounter, at a height the
+        # agent already masters, so the mine is the ONLY new variable.
+        #
+        # Placed at t2 rather than t3 deliberately. It is the tier where the
+        # encounter is missing, and the cost to the phase gates is bounded and
+        # small: P4 requires 0.64 on VERTICAL_SHAFT/T2, which currently reads
+        # 1.000. At the measured per-mine survival of ~0.90 a 1-2 mine drill
+        # scores ~0.81-0.90, so a half-and-half tier lands near 0.93 -- still far
+        # above the gate. Adding it at t3 instead would have changed the identity
+        # of a diagnostic cell that is not saturated.
+        2: [
+            ("vertical_corridor", "shaft_t2", 1),
+            ("vertical_corridor", "shaft_t2_one_mine", 1),
+        ],
         3: [("vertical_corridor", "shaft_t3", 1)],
         4: [("vertical_corridor", "shaft_t4", 1)],
     },
+    # Official-like mine DENSITY over the whole generator zoo. Distinct from
+    # MINE_NAVIGATION, which trains a median of ONE mine at crowd p50 = 1 while
+    # official levels carry a median of 36 live mines at crowd p50 = 8. Added as
+    # a NEW bucket rather than by retuning MINE_NAVIGATION so that
+    # mechanic_benchmark_v7_official, the planner demos, and every cross-run
+    # det-eval comparison stay byte-comparable.
     "MINE_NAVIGATION": {
         1: [("mine_path", "flat_one_mine_t1", 1)],
         2: [("mine_path", "flat_few_mines_t2", 1)],
@@ -2428,12 +2927,112 @@ BUCKET_CATALOG: "dict[str, dict[int, List[BucketEntry]]]" = {
             ("composite", "long_chain_t4", 1),
         ],
     },
-    # Out-of-scope buckets (empty until Layer 2+ generators exist).
+    # SWITCH_PUZZLE and LAUNCH_PAD stay empty until phase 2/3: both need
+    # traversal entities that change the reachability graph, and neither can be
+    # served by an overlay over an existing base.
     "SWITCH_PUZZLE": {},
     "LAUNCH_PAD": {},
-    "THWUMP": {},
-    "DRONE": {},
-    "DEATH_BALL": {},
+    # gamma-1 fills THWUMP / DRONE / DEATH_BALL **IN PLACE**. Their catalog
+    # positions already existed as empty placeholders, so populating them costs
+    # NO renumbering -- `generate_benchmark_dataset.py:64` derives every bucket's
+    # seed offset from its index here, and moving one silently regenerates every
+    # bucket after it from different seeds. Everything genuinely new appends
+    # after MINE_FIELD instead, for the same reason.
+    #
+    # THWUMP is the only bucket whose hazards are SOLID. Two consequences: its
+    # levels are re-routed rather than replayed against the clean base's tape
+    # (the bodies change geometry), and it is the ONLY source of a non-zero
+    # `solid_map` anywhere in gamma-1 -- every solid-body type is out of phase-1
+    # ingest scope, so the official corpus cannot produce one.
+    "THWUMP": {
+        1: [("hazard_overlay", "thwump_hazard_t1", 1)],
+        2: [("hazard_overlay", "thwump_hazard_t2", 1)],
+        3: [("hazard_overlay", "thwump_hazard_t3", 1)],
+        4: [("hazard_overlay", "thwump_hazard_t4", 1)],
+    },
+    # DRONE leads the hazard introduction: patrol drones are tier C (exactly
+    # forecastable, ninja-independent), which makes them the cleanest possible
+    # introduction to "a threat that moves". Chaser drones are ninja-DEPENDENT,
+    # so they join only at T3+ -- putting them in the on-ramp would teach that
+    # the certain forecast tier is unreliable.
+    "DRONE": {
+        1: [("hazard_overlay", "drone_hazard_t1", 1)],
+        2: [("hazard_overlay", "drone_hazard_t2", 1)],
+        3: [("hazard_overlay", "drone_hazard_t3", 2),
+            ("hazard_overlay", "drone_mixed_hazard_t3", 1)],
+        4: [("hazard_overlay", "drone_hazard_t4", 2),
+            ("hazard_overlay", "drone_mixed_hazard_t4", 1)],
+    },
+    "DEATH_BALL": {
+        1: [("hazard_overlay", "death_ball_hazard_t1", 1)],
+        2: [("hazard_overlay", "death_ball_hazard_t2", 1)],
+        3: [("hazard_overlay", "death_ball_hazard_t3", 1)],
+        4: [("hazard_overlay", "death_ball_hazard_t4", 1)],
+    },
+    # APPEND-ONLY, and it must stay last. generate_benchmark_dataset.py derives
+    # each bucket's seed offset from its POSITION here
+    # (``bucket_index * BUCKET_STRIDE``), so inserting a bucket mid-catalog
+    # renumbers every bucket after it and silently regenerates them from
+    # different seeds. Placing MINE_FIELD next to MINE_NAVIGATION, where it reads
+    # more naturally, would have shifted 18 of 23 buckets and broken
+    # comparability with every dataset already built -- including
+    # mechanic_benchmark_v7_official.
+    "MINE_FIELD": {
+        1: [("mine_overlay", "overlay_t1", 2),
+            ("mine_maze", "medium", 1)],
+        2: [("mine_overlay", "overlay_t2", 2),
+            ("mine_maze", "medium", 1)],
+        3: [("mine_overlay", "overlay_t3", 2),
+            ("mine_maze", "complex", 1)],
+        4: [("mine_overlay", "overlay_t4", 2),
+            ("mine_maze", "heavy", 1)],
+    },
+    # ---- gamma-1 hazard buckets. APPENDED, never inserted (see the note on
+    # MINE_FIELD above -- it stays "last" only until the first append).
+    #
+    # These four have no placeholder position to fill, unlike THWUMP / DRONE /
+    # DEATH_BALL, so they go at the end and every earlier bucket keeps its seed
+    # offset. Order matches CURRICULUM_SCHEDULE's introduction order.
+    #
+    # BEAM = turret + dual laser: line of sight, no travel time. Both are
+    # single-instance classes in official (count p50 = 1 and 2, crowd p50 = 1),
+    # so there is no density ladder here -- the tiers ramp morphology and the
+    # share of levels whose naive route is lethal.
+    "BEAM": {
+        1: [("hazard_overlay", "beam_hazard_t1", 1)],
+        2: [("hazard_overlay", "beam_hazard_t2", 1)],
+        3: [("hazard_overlay", "beam_hazard_t3", 1)],
+        4: [("hazard_overlay", "beam_hazard_t4", 1)],
+    },
+    # ROCKET: line of sight AND travel time, and it steers. The most common
+    # hazard after patrol drones by level count (19.1% of the phase-1 corpus)
+    # and the most reliably single-instance (count p50 = 1, crowd p50 = p90 = 1).
+    "ROCKET": {
+        1: [("hazard_overlay", "rocket_hazard_t1", 1)],
+        2: [("hazard_overlay", "rocket_hazard_t2", 1)],
+        3: [("hazard_overlay", "rocket_hazard_t3", 1)],
+        4: [("hazard_overlay", "rocket_hazard_t4", 1)],
+    },
+    # FLOOR_GUARD: ground-bound, one axis, and the class with by far the
+    # strongest mounting precondition -- 83% of official instances sit on a
+    # surface, because a floor guard needs a floor to charge along.
+    "FLOOR_GUARD": {
+        1: [("hazard_overlay", "floor_guard_hazard_t1", 1)],
+        2: [("hazard_overlay", "floor_guard_hazard_t2", 1)],
+        3: [("hazard_overlay", "floor_guard_hazard_t3", 1)],
+        4: [("hazard_overlay", "floor_guard_hazard_t4", 1)],
+    },
+    # HAZARD_FIELD: the hazard analogue of MINE_FIELD -- mixed classes at
+    # official density over arbitrary base morphology. The single-class buckets
+    # exist to make failures ATTRIBUTABLE; this one exists because official
+    # levels do not serve one hazard at a time, and a policy that handles each
+    # class in isolation has not been shown to handle them together.
+    "HAZARD_FIELD": {
+        1: [("hazard_overlay", "mixed_hazard_t1", 1)],
+        2: [("hazard_overlay", "mixed_hazard_t2", 1)],
+        3: [("hazard_overlay", "mixed_hazard_t3", 1)],
+        4: [("hazard_overlay", "mixed_hazard_t4", 1)],
+    },
 }
 
 
@@ -2472,15 +3071,40 @@ CURRICULUM_SCHEDULE: List[str] = [
     "CHAMBER_MAZE",
     "LOOP_CORRIDOR",
     "PRECISION",
+    # ---- gamma-1 hazard block. Introduced after PRECISION and before
+    # COMPOSITE: every one of these is a threat laid over morphology the agent
+    # has already learned, so the whole mechanic spine must be in place first.
+    #
+    # Within the block, the order is by how much of the threat is KNOWABLE:
+    #   DRONE        patrol drones are tier C -- exactly forecastable and
+    #                ninja-independent. The cleanest possible introduction to
+    #                "a threat that moves", and the only class official crowds.
+    #   FLOOR_GUARD  ground-bound, one axis, latches once and never re-acquires.
+    #   BEAM         line of sight, no travel time.
+    #   ROCKET       line of sight AND travel time, and it steers.
+    #   THWUMP       adds a SOLID body, so it is a surface as well as a threat.
+    #   DEATH_BALL   open-volume seekers.
+    #   HAZARD_FIELD the composite, last, because official levels do not serve
+    #                one hazard at a time.
+    "DRONE",
+    "FLOOR_GUARD",
+    "BEAM",
+    "ROCKET",
+    "THWUMP",
+    "DEATH_BALL",
+    "HAZARD_FIELD",
     "COMPOSITE",
 ]
 
 
-# Phase-1 (toggle-mines only) in-scope buckets, in canonical schedule order.
-# Derived from CURRICULUM_SCHEDULE so it can never drift: every scheduled bucket
-# is in-scope for Phase 1 (all use only Layer-1 toggle-mine entities). The
-# out-of-scope buckets (SWITCH_PUZZLE / LAUNCH_PAD / THWUMP / DRONE / DEATH_BALL)
-# are empty placeholders and are excluded by the non-empty filter.
+# In-scope buckets, in canonical schedule order. Derived from
+# CURRICULUM_SCHEDULE so it can never drift, and filtered on NON-EMPTINESS
+# rather than on an entity list -- which is what let the gamma-1 hazard buckets
+# join simply by acquiring catalog entries. SWITCH_PUZZLE and LAUNCH_PAD remain
+# empty placeholders (phase 2/3 traversal entities) and are excluded here.
+#
+# The name is historical: this is no longer "toggle-mines only". It now spans
+# the phase-1 hazard classes as well, which is the whole point of gamma-1.
 PHASE_1_BUCKETS: List[str] = [
     b for b in CURRICULUM_SCHEDULE if BUCKET_CATALOG.get(b)
 ]

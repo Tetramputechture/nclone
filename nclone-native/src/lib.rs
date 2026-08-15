@@ -4,10 +4,15 @@
 use crate::constants::{MAP_HEIGHT, MAP_WIDTH};
 use pyo3::types::PyDict;
 
+pub mod ab;
+pub mod anim;
 pub mod collision;
 pub mod constants;
 pub mod entities;
 pub mod enumerate;
+pub mod free_space;
+pub mod geometry;
+pub mod grid_edges;
 pub mod level_cache;
 pub mod mine_sdf;
 pub mod pathfinding;
@@ -15,6 +20,8 @@ pub mod map;
 pub mod ninja;
 pub mod segments;
 pub mod simulator;
+pub mod threat_field;
+pub mod threat_proximity;
 pub mod trajectory;
 pub mod types;
 pub mod vecenv;
@@ -27,6 +34,17 @@ use types::{EntitySnapshot, NinjaSnapshot, SimulatorState};
 #[pyclass(name = "Simulator")]
 pub struct PySimulator {
     inner: simulator::Simulator,
+    /// Threat-field scatter buffers, built lazily on first use and then reused
+    /// for the life of the sim. Held here rather than created per call because
+    /// the field is recomputed every tick: a fresh allocation each time would be
+    /// ~31k floats of pure churn per frame at the default horizon count.
+    threat: Option<threat_field::ThreatField>,
+    /// Solid-entity surface map buffers, built lazily and reused. Same reason as
+    /// `threat`: this is recomputed every step.
+    solid: Option<threat_field::SolidField>,
+    /// Telegraph block buffer. Tiny (one fixed-size vector), but held for the
+    /// same reason as the fields: it is refilled every step.
+    proximity: Option<threat_proximity::ThreatProximity>,
 }
 
 #[pymethods]
@@ -36,6 +54,9 @@ impl PySimulator {
     fn load(map_data: Vec<i32>) -> Self {
         PySimulator {
             inner: simulator::Simulator::load(&map_data),
+            threat: None,
+            solid: None,
+            proximity: None,
         }
     }
 
@@ -86,9 +107,149 @@ impl PySimulator {
         self.inner.get_state_dynamic()
     }
 
+    /// Exact future positions of the patrol drones (types 14 and 26).
+    ///
+    /// `horizons` is a list of frame offsets, sorted ascending; the result has
+    /// one `(zap_xy, mini_xy)` pair per offset, matching the shape of the
+    /// present-frame read in `_SimProxy.get_drone_positions`.
+    ///
+    /// Small enough to return as Python lists: a busy level has tens of drones,
+    /// not the 15k-cell grid that made `HazardSdf` return `PyBytes`.
+    fn predict_drone_positions(
+        &self,
+        horizons: Vec<u32>,
+    ) -> Vec<(Vec<(f64, f64)>, Vec<(f64, f64)>)> {
+        self.inner.forecast_drone_positions(&horizons)
+    }
+
+    /// Multi-tier, multi-horizon threat SDF as raw little-endian f32 bytes.
+    ///
+    /// Shape `(2 * (1 + len(horizons)), 84, 46)` row-major within each channel,
+    /// laid out `[tier][horizon][row][col]` with tier 0 = CERTAIN (exact
+    /// forecast) and tier 1 = REACTIVE (worst-case envelope). Emitted on the
+    /// 12 px grid the policy actually consumes -- see `threat_field` for why that
+    /// is exact rather than an approximation.
+    ///
+    /// Takes no position data and returns no per-entity objects, so its FFI cost
+    /// is O(1) in entity count. This is the whole point: the older
+    /// `predict_drone_positions` path costs 527 us of marshalling per tick on the
+    /// densest official map, before any SDF work at all.
+    ///
+    /// `np.frombuffer(...)` gives a copy-free read-only view; callers must not
+    /// write to it, and must copy before the next call since the buffer is
+    /// reused.
+    fn threat_field<'py>(
+        &mut self,
+        py: Python<'py>,
+        horizons: Vec<u32>,
+    ) -> pyo3::Bound<'py, pyo3::types::PyBytes> {
+        let engine = self
+            .threat
+            .get_or_insert_with(|| threat_field::ThreatField::new(horizons.len()));
+        let field = engine.compute(&self.inner, &horizons);
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                field.as_ptr() as *const u8,
+                std::mem::size_of_val(field),
+            )
+        };
+        pyo3::types::PyBytes::new_bound(py, bytes)
+    }
+
+    /// Time-to-lethal threat field: `[C_sdf, C_ttl, R_sdf, R_ttl]` as raw f32
+    /// bytes, shape `(4, 84, 46)` row-major within each channel.
+    ///
+    /// The TTL channels hold the normalised frame at which a cell first becomes
+    /// lethal -- `0.0` now, `1.0` not within `max_frames` -- so they answer the
+    /// timing question directly rather than through a stack of per-horizon
+    /// snapshots. Polarity matches the SDF channels (1.0 = safe), keeping `min`
+    /// the correct conservative pooling reduction across the whole stack.
+    ///
+    /// `stride` sets the tier-C sampling interval in sim frames; the reactive
+    /// tier is closed-form and ignores it.
+    #[pyo3(signature = (max_frames = 64, stride = 4))]
+    fn threat_ttl<'py>(
+        &mut self,
+        py: Python<'py>,
+        max_frames: u32,
+        stride: u32,
+    ) -> pyo3::Bound<'py, pyo3::types::PyBytes> {
+        let engine = self
+            .threat
+            .get_or_insert_with(|| threat_field::ThreatField::new(1));
+        let field = engine.compute_ttl(&self.inner, max_frames, stride);
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(field.as_ptr() as *const u8, std::mem::size_of_val(field))
+        };
+        pyo3::types::PyBytes::new_bound(py, bytes)
+    }
+
+    /// The threat TELEGRAPH block as raw f32 bytes, shape
+    /// `(THREAT_PROX_CLASSES * THREAT_PROX_FEATURES,)` = `(32,)`.
+    ///
+    /// Per super-class (contact / homing / beam / projectile), the nearest
+    /// in-range member as `[dx_hat, dy_hat, proximity, closing, imminence, vx,
+    /// vy, spin_up]`. See `threat_proximity` for why this is computed here
+    /// rather than in Python: the native `entity_dic` carries no threat types at
+    /// all, so the Python path returned an all-zero vector on the training
+    /// backend while passing every unit test.
+    fn threat_proximity<'py>(
+        &mut self,
+        py: Python<'py>,
+    ) -> pyo3::Bound<'py, pyo3::types::PyBytes> {
+        let engine = self
+            .proximity
+            .get_or_insert_with(threat_proximity::ThreatProximity::new);
+        let vec = engine.compute(&self.inner);
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(vec.as_ptr() as *const u8, std::mem::size_of_val(vec))
+        };
+        pyo3::types::PyBytes::new_bound(py, bytes)
+    }
+
+    /// Solid-entity surface map as raw f32 bytes, shape `(5, 84, 46)`.
+    ///
+    /// Channels: `[static, bounce, oneway, oneway_nx, oneway_ny]`. This is the
+    /// geometry the ninja can stand on, wall-jump off, or is blocked by --
+    /// thwumps, shove thwumps, bounce blocks, one-way platforms and CLOSED
+    /// locked/trap doors. None of it appears in `tile_grid`, which holds static
+    /// tiles only, so without this a wall-jumpable thwump face is
+    /// indistinguishable from empty air.
+    ///
+    /// Occupancy channels are 1.0 inside a body and 0.0 outside. The one-way
+    /// normal channels carry the blocking direction, which is the whole point of
+    /// a one-way: passable from one side, solid from the other.
+    fn solid_map<'py>(&mut self, py: Python<'py>) -> pyo3::Bound<'py, pyo3::types::PyBytes> {
+        let engine = self
+            .solid
+            .get_or_insert_with(threat_field::SolidField::new);
+        let field = engine.compute(&self.inner);
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(field.as_ptr() as *const u8, std::mem::size_of_val(field))
+        };
+        pyo3::types::PyBytes::new_bound(py, bytes)
+    }
+
     /// Get the flat tile grid (row-major, 1100 bytes).
     fn get_tile_grid(&self) -> Vec<u8> {
         self.inner.get_tile_grid_flat()
+    }
+
+    /// Half-cell grid-edge occupancy, flattened x-major, as
+    /// `(hor, ver, door_hor, door_ver)`.
+    ///
+    /// `hor`/`door_hor` are 88x51 and `ver`/`door_ver` are 89x50, so index
+    /// `(x, y)` lives at `x * height + y`. Exposed so the parity tests can
+    /// compare against the Python simulator's four `*_grid_edge_dic`
+    /// dictionaries directly; nothing in the hot path calls this.
+    fn get_grid_edges(&self) -> (Vec<u8>, Vec<u8>, Vec<i16>, Vec<i16>) {
+        let ge = &self.inner.grid_edges;
+        (
+            ge.hor.iter().flat_map(|c| c.iter().copied()).collect(),
+            ge.ver.iter().flat_map(|c| c.iter().copied()).collect(),
+            ge.door_hor.iter().flat_map(|c| c.iter().copied()).collect(),
+            ge.door_ver.iter().flat_map(|c| c.iter().copied()).collect(),
+        )
     }
 
     /// Get current frame number.
@@ -100,33 +261,7 @@ impl PySimulator {
     /// Set the position of an entity by index. Used by curriculum manager.
     fn set_entity_position(&mut self, entity_index: usize, x: f64, y: f64) {
         if entity_index < self.inner.entities.len() {
-            match &mut self.inner.entities[entity_index] {
-                entities::Entity::ToggleMine(e) => {
-                    e.xpos = x;
-                    e.ypos = y;
-                }
-                entities::Entity::Gold(e) => {
-                    e.xpos = x;
-                    e.ypos = y;
-                }
-                entities::Entity::ExitSwitch(e) => {
-                    e.xpos = x;
-                    e.ypos = y;
-                }
-                entities::Entity::ExitDoor(e) => {
-                    e.xpos = x;
-                    e.ypos = y;
-                }
-                entities::Entity::LockedDoor(e) => {
-                    // Position is the switch; the door barrier segment is static.
-                    e.xpos = x;
-                    e.ypos = y;
-                }
-                entities::Entity::OneWay(e) => {
-                    e.xpos = x;
-                    e.ypos = y;
-                }
-            }
+            self.inner.entities[entity_index].set_position(x, y);
             // Rebuild entity grid after position change
             self.inner.rebuild_entity_grid();
         }
@@ -650,10 +785,14 @@ fn nclone_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<vecenv::NativeVecEnv>()?;
     m.add_class::<level_cache::LevelCache>()?;
     m.add_class::<mine_sdf::MineThreatMap>()?;
+    m.add_class::<mine_sdf::HazardSdf>()?;
     m.add_class::<trajectory::TrajectoryProjector>()?;
     m.add_class::<ArcBatch>()?;
     m.add_function(wrap_pyfunction!(enumerate_arcs, m)?)?;
     m.add_function(wrap_pyfunction!(flood_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(free_space::free_space_flood, m)?)?;
+    m.add_function(wrap_pyfunction!(free_space::free_space_climb_fields, m)?)?;
+    m.add_function(wrap_pyfunction!(free_space::free_space_blocked_edges, m)?)?;
     register_constants_module(m)?;
     Ok(())
 }

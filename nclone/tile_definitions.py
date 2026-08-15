@@ -231,3 +231,139 @@ def get_tile_definitions():
         "TILE_SEGMENT_DIAG_MAP": TILE_SEGMENT_DIAG_MAP,
         "TILE_SEGMENT_CIRCULAR_MAP": TILE_SEGMENT_CIRCULAR_MAP,
     }
+
+
+# ---------------------------------------------------------------------------
+# The binary's own tile->segment tables (round 7, `docs/decomp/TILE_SEGMENT_TABLES.md`).
+#
+# These describe the SAME geometry as TILE_SEGMENT_ORTHO_MAP above, but in the
+# shape the game actually builds it, which differs in three ways that change the
+# candidate set `get_single_closest_point` sees:
+#
+#   * a side with both halves exposed emits ONE full-span 24px segment, where the
+#     ortho map emits two 12px halves;
+#   * every segment lands in the tile's OWN cell, where the ortho map assigns it
+#     to the neighbouring cell via the `-0.1 * state` nudge;
+#   * a cell holds at most FOUR segments; the fifth is silently dropped.
+#
+# Endpoints, winding and all eight arc centres were verified identical to the
+# port's tables before these were added, so this is a restructure, not a
+# regeometry.
+# ---------------------------------------------------------------------------
+
+#: `0x10585F40`, 8 bytes per tile: which half-edges of each side are solid.
+#: Slot order `left(0,1) | bottom(2,3) | right(4,5) | top(6,7)`, in the winding
+#: order of the templates below.
+TILE_EDGE_OCCUPANCY = {
+    0: (0, 0, 0, 0, 0, 0, 0, 0), 1: (1, 1, 1, 1, 1, 1, 1, 1),
+    2: (1, 0, 0, 0, 1, 0, 1, 1), 3: (0, 0, 0, 1, 1, 1, 0, 1),
+    4: (0, 1, 1, 1, 0, 1, 0, 0), 5: (1, 1, 1, 0, 0, 0, 1, 0),
+    6: (1, 1, 0, 0, 0, 0, 1, 1), 7: (0, 0, 0, 0, 1, 1, 1, 1),
+    8: (0, 0, 1, 1, 1, 1, 0, 0), 9: (1, 1, 1, 1, 0, 0, 0, 0),
+    10: (1, 1, 0, 0, 0, 0, 1, 1), 11: (0, 0, 0, 0, 1, 1, 1, 1),
+    12: (0, 0, 1, 1, 1, 1, 0, 0), 13: (1, 1, 1, 1, 0, 0, 0, 0),
+    14: (1, 1, 0, 0, 0, 0, 1, 1), 15: (0, 0, 0, 0, 1, 1, 1, 1),
+    16: (0, 0, 1, 1, 1, 1, 0, 0), 17: (1, 1, 1, 1, 0, 0, 0, 0),
+    18: (1, 0, 0, 0, 0, 0, 1, 1), 19: (0, 0, 0, 0, 1, 0, 1, 1),
+    20: (0, 0, 1, 1, 0, 1, 0, 0), 21: (0, 1, 1, 1, 0, 0, 0, 0),
+    22: (1, 1, 0, 0, 1, 0, 1, 1), 23: (1, 0, 0, 0, 1, 1, 1, 1),
+    24: (0, 1, 1, 1, 1, 1, 0, 0), 25: (1, 1, 1, 1, 0, 1, 0, 0),
+    26: (1, 1, 0, 0, 0, 0, 1, 0), 27: (0, 0, 0, 0, 1, 1, 0, 1),
+    28: (0, 0, 0, 1, 1, 1, 0, 0), 29: (1, 1, 1, 0, 0, 0, 0, 0),
+    30: (1, 1, 1, 0, 0, 0, 1, 1), 31: (0, 0, 0, 1, 1, 1, 1, 1),
+    32: (0, 0, 1, 1, 1, 1, 0, 1), 33: (1, 1, 1, 1, 0, 0, 1, 0),
+    # 34-37 are the map border, each emitting exactly one inward-facing side.
+    34: (0, 0, 0, 0, 0, 0, 1, 1), 35: (0, 0, 0, 0, 1, 1, 0, 0),
+    36: (0, 0, 1, 1, 0, 0, 0, 0), 37: (1, 1, 0, 0, 0, 0, 0, 0),
+    # 38-41 are the four border corners and emit nothing at all.
+    38: (0,) * 8, 39: (0,) * 8, 40: (0,) * 8, 41: (0,) * 8,
+}
+
+#: `0x107BAFA0`, tile-independent: per side, the (halfA, halfB, full) templates as
+#: pixel offsets from the cell's top-left corner. Winding runs left-down,
+#: bottom-right, right-up, top-left, so the outward normal of `d = p2 - p1` is
+#: `(-dy, dx)`.
+SIDE_SEGMENT_TEMPLATES = (
+    (((0, 0), (0, 12)), ((0, 12), (0, 24)), ((0, 0), (0, 24))),          # left
+    (((0, 24), (12, 24)), ((12, 24), (24, 24)), ((0, 24), (24, 24))),    # bottom
+    (((24, 12), (24, 0)), ((24, 24), (24, 12)), ((24, 24), (24, 0))),    # right
+    (((12, 0), (0, 0)), ((24, 0), (12, 0)), ((24, 0), (0, 0))),          # top
+)
+
+#: `0x107BB240`, the per-tile interior segment, for the tiles whose interior is a
+#: straight line. The diagonal families already live in `TILE_SEGMENT_DIAG_MAP`
+#: and were verified to match; only the four half-tiles were missing, because the
+#: port carried their flat face in the ortho map instead.
+TILE_INTERIOR_LINEAR_EXTRA = {
+    2: ((0, 12), (24, 12)),
+    3: ((12, 0), (12, 24)),
+    4: ((24, 12), (0, 12)),
+    5: ((12, 24), (12, 0)),
+}
+
+#: `FUN_1050D640` refuses a cell's fifth segment. Emission order is
+#: left, bottom, right, top, interior, so the interior is what gets dropped.
+MAX_SEGMENTS_PER_CELL = 4
+#: The binary's edge-grid tables, `0x10585890` (horizontal edges, writes
+#: array 2 at `sim+0x3248C0`) and `0x105854A0` (vertical edges, array 1 at
+#: `sim+0x320400`), verbatim from `docs/decomp/TILE_TABLES_2.txt` §C.
+#:
+#: **Ternary, and that is the point.** `0` no edge, `1` a PARTIAL face (a
+#: slope or a curve), `2` a full flat face. `TILE_GRID_EDGE_MAP` above
+#: collapses 1 and 2 into 1, which is fine for "is anything there" but
+#: destroys the only distinction the floor guard turns on: `FUN_1040B900`
+#: walks onto a cell only when its floor reads exactly `2`.
+#:
+#: Each row is the binary's 6 int32 consumed as
+#: `base + tile*0x18 + outer*4 + inner*0xC`, i.e. **`index = outer + 3*inner`**
+#: -- `outer` is the 3-valued axis (y for horizontal edges, x for vertical),
+#: `inner` the 2-valued one. `TILE_SEGMENT_TABLES.md` §8 lists this mapping as
+#: [U]; tile 1 settles it. A full solid block reads `2 0 2 2 0 2`, which under
+#: this indexing is "both outer faces solid, interior empty" on both axes --
+#: the only reading that describes a solid block.
+TILE_EDGE_GRID_TERNARY = {
+     0: ([0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]),
+     1: ([2, 0, 2, 2, 0, 2], [2, 0, 2, 2, 0, 2]),
+     2: ([2, 2, 0, 2, 2, 0], [2, 0, 2, 0, 0, 0]),
+     3: ([0, 0, 0, 2, 0, 2], [0, 2, 2, 0, 2, 2]),
+     4: ([0, 2, 2, 0, 2, 2], [0, 0, 0, 2, 0, 2]),
+     5: ([2, 0, 2, 0, 0, 0], [2, 2, 0, 2, 2, 0]),
+     6: ([2, 0, 1, 2, 1, 0], [2, 0, 1, 2, 1, 0]),
+     7: ([2, 1, 0, 2, 0, 1], [1, 0, 2, 0, 1, 2]),
+     8: ([0, 1, 2, 1, 0, 2], [0, 1, 2, 1, 0, 2]),
+     9: ([1, 0, 2, 0, 1, 2], [2, 1, 0, 2, 0, 1]),
+    10: ([2, 0, 1, 2, 0, 1], [2, 0, 1, 2, 0, 1]),
+    11: ([2, 0, 1, 2, 0, 1], [1, 0, 2, 1, 0, 2]),
+    12: ([1, 0, 2, 1, 0, 2], [1, 0, 2, 1, 0, 2]),
+    13: ([1, 0, 2, 1, 0, 2], [2, 0, 1, 2, 0, 1]),
+    14: ([2, 0, 1, 2, 1, 0], [2, 0, 1, 2, 1, 0]),
+    15: ([2, 1, 0, 2, 0, 1], [1, 0, 2, 0, 1, 2]),
+    16: ([0, 1, 2, 1, 0, 2], [0, 1, 2, 1, 0, 2]),
+    17: ([1, 0, 2, 0, 1, 2], [2, 1, 0, 2, 0, 1]),
+    18: ([2, 1, 0, 2, 1, 0], [2, 0, 1, 0, 0, 0]),
+    19: ([2, 1, 0, 2, 1, 0], [1, 0, 2, 0, 0, 0]),
+    20: ([0, 1, 2, 0, 1, 2], [0, 0, 0, 1, 0, 2]),
+    21: ([0, 1, 2, 0, 1, 2], [0, 0, 0, 2, 0, 1]),
+    22: ([2, 0, 1, 2, 0, 1], [2, 0, 2, 2, 0, 1]),
+    23: ([2, 0, 1, 2, 0, 1], [2, 0, 2, 1, 0, 2]),
+    24: ([1, 0, 2, 1, 0, 2], [1, 0, 2, 2, 0, 2]),
+    25: ([1, 0, 2, 1, 0, 2], [2, 0, 1, 2, 0, 2]),
+    26: ([2, 0, 1, 0, 0, 0], [2, 1, 0, 2, 1, 0]),
+    27: ([0, 0, 0, 2, 0, 1], [0, 1, 2, 0, 1, 2]),
+    28: ([0, 0, 0, 1, 0, 2], [0, 1, 2, 0, 1, 2]),
+    29: ([1, 0, 2, 0, 0, 0], [2, 1, 0, 2, 1, 0]),
+    30: ([2, 0, 2, 2, 0, 1], [2, 0, 1, 2, 0, 1]),
+    31: ([2, 0, 1, 2, 0, 2], [1, 0, 2, 1, 0, 2]),
+    32: ([1, 0, 2, 2, 0, 2], [1, 0, 2, 1, 0, 2]),
+    33: ([2, 0, 2, 1, 0, 2], [2, 0, 1, 2, 0, 1]),
+    34: ([2, 0, 0, 2, 0, 0], [0, 0, 0, 0, 0, 0]),
+    35: ([0, 0, 0, 0, 0, 0], [0, 0, 2, 0, 0, 2]),
+    36: ([0, 0, 2, 0, 0, 2], [0, 0, 0, 0, 0, 0]),
+    37: ([0, 0, 0, 0, 0, 0], [2, 0, 0, 2, 0, 0]),
+    38: ([0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]),
+    39: ([0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]),
+    40: ([0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]),
+    41: ([0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]),
+    42: ([0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]),
+    43: ([0, 0, 0, 0, 0, 0], [2, 0, 2, 2, 0, 2]),
+}

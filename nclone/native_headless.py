@@ -357,6 +357,41 @@ class NativePlayHeadless:
             self.sim.entity_dic.get(21, []),
         )
 
+    def get_drone_positions(self):
+        """Return ``(zap_xy, mini_xy)`` — live positions of the patrol drones.
+
+        Backend-uniform accessor mirrored by ``NPlayHeadless.get_drone_positions``.
+        Reads the live snapshot rather than ``entity_dic``, for two reasons:
+
+        * ``_build_entity_dic`` deliberately whitelists only the static entity
+          types, and widening that whitelist would change what every existing
+          ``entity_dic`` consumer sees (graph build, overlays, replay extractor)
+          as a side effect of adding drone observations.
+        * Drones MOVE every tick. ``entity_dic`` is rebuilt lazily and cached per
+          tick, so routing a per-frame position through it would pay a full
+          entity rebuild on every observation.
+
+        Returns positions, not entity proxies: on a 60-drone level this runs
+        every frame, and the SDF only needs coordinates.
+        """
+        return self.sim.get_drone_positions()
+
+    def get_predicted_drone_positions(self, horizons):
+        """Patrol-drone positions ``horizons`` frames from now, one entry per horizon.
+
+        Each entry has the same ``(zap_xy, mini_xy)`` shape as
+        :meth:`get_drone_positions`, so callers treat "now" and "later"
+        identically. ``horizons`` must be sorted ascending.
+
+        Goes straight to the native simulator rather than through the snapshot
+        proxy: the roll-out needs the drones' full patrol state (target, heading,
+        mode) and the half-cell grid edges, none of which the ``EntitySnapshot``
+        carries. Mirrored by ``NPlayHeadless.get_predicted_drone_positions``.
+        """
+        if self._native_sim is None:
+            return [([], []) for _ in horizons]
+        return self._native_sim.predict_drone_positions([int(h) for h in horizons])
+
     def get_gold_state(self):
         """Return ``[(x, y, active), ...]`` for every gold entity (type 2).
 
@@ -685,6 +720,25 @@ class _SimProxy:
             for e in self._snapshot.entities
             if e.entity_type in (1, 21)
         ]
+
+    def get_drone_positions(self):
+        """Return ``(zap_xy, mini_xy)`` from the live snapshot.
+
+        The Rust sim already simulates and snapshots drones
+        (``entities/mod.rs``: ``Entity::Drone => entity_type: kind.type_id()``);
+        they are simply absent from ``_build_entity_dic``'s static whitelist.
+        Split by class because the two have different kill radii (see
+        ``DRONE_KILL_RADIUS_PX`` / ``MINI_DRONE_KILL_RADIUS_PX``).
+        """
+        if self._snapshot is None:
+            return ([], [])
+        zap, mini = [], []
+        for e in self._snapshot.entities:
+            if e.entity_type == 14:
+                zap.append((e.x, e.y))
+            elif e.entity_type == 26:
+                mini.append((e.x, e.y))
+        return (zap, mini)
 
     def get_tile_grid(self):
         """Return the 966-element flat tile slice (map_data[184:1150]).

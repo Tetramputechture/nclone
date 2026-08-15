@@ -85,9 +85,18 @@ from ..gym_environment.constants import (
     GAME_STATE_WALL_ARC_IDX,
     LATTICE_NAV_DIM,
     MINE_PROXIMITY_FEATURES,
+    THREAT_PROX_FEATURES,
+    THREAT_PROX_IDX_DX,
+    THREAT_PROX_IDX_VX,
     NINJA_STATE_DIM,
     NUM_TILE_TYPES,
     PHYSICS_DERIVED_DIM,
+    SOLID_MAP_CH_LAUNCHPAD_BX,
+    SOLID_MAP_CH_LAUNCHPAD_BY,
+    SOLID_MAP_CH_ONEWAY_NX,
+    SOLID_MAP_CH_ONEWAY_NY,
+    SOLID_MAP_CHANNELS,
+    THREAT_TTL_CHANNELS,
     WAYPOINT_NAV_DIM,
 )
 from .transforms import _TILE_MIRROR
@@ -485,6 +494,43 @@ SPATIAL_MIRROR_SPEC: Dict[str, SpatialMirrorRule] = {
     # Scalar density / SDF / cost fields: a plain x flip.
     "entity_overlays": SpatialMirrorRule(flip_x=True),
     "hazard_map": SpatialMirrorRule(flip_x=True),
+    # Drone SDF is a scalar distance field like hazard_map, so the RULE is a
+    # plain x flip -- correct given a level mirror that mirrors drone motion.
+    #
+    # CAVEAT (measured 2026-08-03, pre-existing, NOT fixed here): the level
+    # mirror does not currently reflect drone trajectories. Spawn positions
+    # mirror exactly, but the paths diverge from frame 1 -- up to 312 px over
+    # 200 frames on `official/R/173 variational mechanics`. Root cause found so
+    # far is `transforms._ORIENT_FLIP`, which is provably wrong for the four
+    # AXIS-ALIGNED orientations: checked against the sim's own
+    # `map_orientation_to_vector`, a horizontal mirror must map 0<->4 (right /
+    # left) and leave 2 and 6 (down / up) alone, but the table leaves 0 and 4
+    # untouched and swaps 2<->6. The four diagonals are right. Its comment shows
+    # the misconception -- it calls 0 "up" and 4 "down", but the sim says 0 is
+    # (+1, 0) and 4 is (-1, 0). This affects every type in `_ORIENT_TYPES`
+    # (5, 6, 8, 10, 11, 14, 15, 20, 23, 26), not just drones; it went unnoticed
+    # because mines carry no orientation byte, so a mines-only corpus cannot
+    # exercise it. Correcting the orientation shrinks the drone mismatch (312 ->
+    # 240 px, and 252 -> 36 px on `R/034 oh, they'll swarm ya`) but does NOT
+    # zero it, so at least one further defect remains.
+    #
+    # Consequence: SYNTHESISING a mirrored observation (the equivariance /
+    # aux-loss tiers) will place drones where the mirrored level does not have
+    # them. Mirroring at the LEVEL level is unaffected in kind -- it still yields
+    # a valid level, just not the true reflection of the original.
+    "drone_hazard_map": SpatialMirrorRule(flip_x=True),
+    # Phase 1. `threat_ttl` is four scalar fields (SDF + TTL per tier), so a
+    # plain x flip -- and it inherits the drone caveat above in full, plus more
+    # of it: the field covers thwumps, rockets, death balls and eye bats too, and
+    # `_ORIENT_FLIP` is wrong for every type in `_ORIENT_TYPES`. Synthesised
+    # mirrors of this key are therefore NOT trustworthy on entity-bearing maps.
+    "threat_ttl": SpatialMirrorRule(flip_x=True),
+    # `solid_map` -- occupancy masks plus TWO vector fields: the one-way normal
+    # (ch 3/4) and the launch-pad boost (ch 8/9). Both x components must be
+    # negated, or every mirrored one-way faces the wrong way and every mirrored
+    # launch pad fires the wrong way -- while still reading as geometrically
+    # valid, which is what makes the error invisible.
+    "solid_map": SpatialMirrorRule(flip_x=True, negate_channels=(3, 8)),
     "fall_lethality_map": SpatialMirrorRule(flip_x=True),
     "cost_to_go_map": SpatialMirrorRule(flip_x=True),
     "visitation_map": SpatialMirrorRule(flip_x=True),
@@ -507,6 +553,19 @@ SPATIAL_MIRROR_SPEC: Dict[str, SpatialMirrorRule] = {
     "lattice_nav": SpatialMirrorRule(negate_last_axis=(0,)),
 }
 assert WAYPOINT_NAV_DIM == 9, "waypoint_nav layout changed; recheck its mirror rule"
+# The solid_map rule negates channel 3 by index. Pin the layout so a channel
+# reorder fails here instead of silently mirroring the wrong component -- an
+# unnegated normal is geometrically valid and therefore invisible.
+assert (
+    SOLID_MAP_CHANNELS,
+    SOLID_MAP_CH_ONEWAY_NX,
+    SOLID_MAP_CH_ONEWAY_NY,
+    SOLID_MAP_CH_LAUNCHPAD_BX,
+    SOLID_MAP_CH_LAUNCHPAD_BY,
+) == (
+    11, 3, 4, 8, 9,
+), "solid_map layout changed; recheck which channels carry a vector's x"
+assert THREAT_TTL_CHANNELS == 4, "threat_ttl layout changed; recheck its mirror rule"
 assert LATTICE_NAV_DIM == 4, "lattice_nav layout changed; recheck its mirror rule"
 
 #: ``ego_crop_coarse`` with the optional route channels appended.
@@ -595,6 +654,18 @@ class ObservationMirror:
                 # x component is signed. Slots are ordered nearest-first and
                 # distance is reflection-invariant, so the order is preserved.
                 shaped[..., 0] = -shaped[..., 0]
+                out[key] = shaped.reshape(arr.shape)
+                continue
+            if key == "threat_proximity":
+                arr = np.asarray(value)
+                shaped = arr.reshape(*arr.shape[:-1], -1, THREAT_PROX_FEATURES)
+                shaped = np.array(shaped, copy=True)
+                # [dx_hat, dy_hat, proximity, closing, imminence, vx, vy, spin].
+                # TWO signed x components, not one: the bearing AND the threat's
+                # own velocity. `closing` is a scalar projection of two vectors
+                # that both reflect, so it is invariant; `spin` is a magnitude.
+                shaped[..., THREAT_PROX_IDX_DX] = -shaped[..., THREAT_PROX_IDX_DX]
+                shaped[..., THREAT_PROX_IDX_VX] = -shaped[..., THREAT_PROX_IDX_VX]
                 out[key] = shaped.reshape(arr.shape)
                 continue
             if key in _PASSTHROUGH_KEYS or key.startswith("_"):

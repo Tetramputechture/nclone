@@ -264,9 +264,38 @@ def _instantiated_entity_types(map_data: List[int]) -> set:
     return found
 
 
+def _is_hazard_entry(gen_type: str) -> bool:
+    """gamma-1 hazard buckets are exactly the `hazard_overlay` entries."""
+    return gen_type == "hazard_overlay"
+
+
+#: Buckets that deliberately introduce entities OUTSIDE the phase-1 profile,
+#: with the types they may add. The profile gates official-corpus INGEST; procgen
+#: is not gated by it, so a procedural bucket CAN reach past it -- and this
+#: allowlist is what keeps that a decision rather than an accident.
+#:
+#: THWUMP: thwump (20) and shove thwump (28) are `phase4` types. Including them
+#: at gamma-1 is defensible on three specific grounds, all checked:
+#:   * the reachability graph BLOCKS solid entity bodies
+#:     (`graph/reachability/entity_mask.py`), so routes and the cost-to-go field
+#:     are correct on these levels rather than routing straight through;
+#:   * `threat_ttl` covers thwumps, so they are perceivable even with
+#:     `--enable-solid-map` off (measured: 1991 threatened cells on a T2 level);
+#:   * `map_hazard_overlay` re-routes the DRESSED level for solid classes instead
+#:     of replaying the clean base's tape, so solvability is certified after the
+#:     bodies are placed.
+#: They are also the only source of a non-zero `solid_map` anywhere in gamma-1,
+#: since the official corpus at phase 1 cannot produce one.
+_OUT_OF_PHASE_BY_DESIGN = {
+    "THWUMP": {20, 28},
+}
+
+
 @pytest.mark.parametrize("seed", [0, 1, 7, 42, 123])
-def test_phase1_levels_only_contain_subset_entities(phase1_entries, seed):
-    """Every Phase-1 catalog level stays within the RL entity subset.
+def test_the_mechanic_spine_stays_within_the_legacy_entity_subset(
+    phase1_entries, seed
+):
+    """Every NON-hazard Phase-1 level stays within the RL entity subset.
 
     Contract: the simulator may only instantiate toggle mines (1/21), gold (2),
     and exactly one exit door (3) + exit switch (4) -- no locked/trap doors,
@@ -274,11 +303,20 @@ def test_phase1_levels_only_contain_subset_entities(phase1_entries, seed):
     This guards the regression where ``horizontal_corridor`` leaked incidental
     locked doors and ``add_random_entities_outside_playspace`` could emit
     hazards, and mirrors the production ``subset_ok`` gate.
+
+    NARROWED FOR gamma-1, deliberately and no further. `PHASE_1_BUCKETS` used to
+    mean "toggle mines only", and the gamma-1 hazard buckets are in it BY
+    DESIGN -- a DRONE bucket that contained no drone would be the bug. So the
+    contract still applies in full to the mechanic spine, where it has caught
+    real leaks, and the hazard buckets get their own, stricter check below:
+    they must contain their declared classes and nothing else.
     """
     from nclone.levelgen.labeling import subset_ok
 
     checked = 0
     for bucket, tier, gen_type, preset in phase1_entries:
+        if _is_hazard_entry(gen_type):
+            continue
         md = _build(gen_type, preset, seed=seed).map_data()
         disallowed = _instantiated_entity_types(md) - _ALLOWED_INSTANTIATED_TYPES
         assert not disallowed, (
@@ -290,7 +328,68 @@ def test_phase1_levels_only_contain_subset_entities(phase1_entries, seed):
             f"(entity classes or door/switch count outside contract)"
         )
         checked += 1
-    assert checked > 0, "no Phase-1 entries exercised"
+    assert checked > 0, "no Phase-1 spine entries exercised"
+
+
+@pytest.mark.parametrize("tier", [1, 4])
+def test_hazard_buckets_emit_their_declared_classes_and_nothing_else(
+    phase1_entries, tier
+):
+    """A hazard bucket exists to make failures ATTRIBUTABLE.
+
+    That only works if the bucket contains what its name says: a DRONE level
+    carrying a stray turret makes "the agent fails on drones" unfalsifiable, and
+    it fails silently because the level is perfectly valid. Two directions are
+    checked, and the second is the one that bites:
+
+    * nothing outside `PHASE1_HAZARD_SCOPE` (would put the level outside the
+      corpus the run is defined against), and
+    * nothing outside the preset's OWN `hazard_classes` (plus the legacy
+      mines/gold/exit set, which every base generator may emit).
+
+    Scoped to T1 and T4, one seed each. Building a hazard level costs ~13 s (the
+    d* certificate dominates), so the full 7 buckets x 4 tiers x several seeds is
+    a ~15-minute test — too slow to keep in the default suite, and it buys little:
+    T1 is the on-ramp and T4 is the ceiling, and the presets in between are the
+    same code with different constants.
+    """
+    from nclone.constants.entity_types import ENTITY_PROFILES
+    from nclone.map_generation.map_hazard_overlay import HAZARD_SPECS
+
+    seed = 0
+    phase1_scope = {int(t) for t in ENTITY_PROFILES["phase1"]}
+    checked = 0
+    for bucket, entry_tier, gen_type, preset in phase1_entries:
+        if not _is_hazard_entry(gen_type) or entry_tier != tier:
+            continue
+        cfg = GENERATOR_PRESETS[gen_type][preset]
+        declared = {
+            etype
+            for cname in cfg.hazard_classes
+            for etype, *_rest in HAZARD_SPECS[cname].types
+        }
+        md = _build(gen_type, preset, seed=seed).map_data()
+        got = _instantiated_entity_types(md)
+
+        allowed_scope = phase1_scope | _OUT_OF_PHASE_BY_DESIGN.get(bucket, set())
+        out_of_phase = got - allowed_scope
+        assert not out_of_phase, (
+            f"{bucket}/{preset} (seed={seed}) emits {sorted(out_of_phase)}, "
+            "which is outside the phase-1 entity scope the run is defined "
+            "against. If that is intended, add it to "
+            "_OUT_OF_PHASE_BY_DESIGN with the reason -- an out-of-scope entity "
+            "that nobody decided on is how a bucket ends up training a mechanic "
+            "the planner cannot route."
+        )
+        undeclared = got - declared - _ALLOWED_INSTANTIATED_TYPES
+        assert not undeclared, (
+            f"{bucket}/{preset} (seed={seed}) emits {sorted(undeclared)}, which "
+            f"this preset does not declare (declared: {sorted(declared)}). A "
+            "bucket that contains hazards it is not named for cannot attribute "
+            "a failure to anything."
+        )
+        checked += 1
+    assert checked > 0, "no hazard-bucket entries exercised"
 
 
 @pytest.mark.parametrize("seed", [0, 1, 42])

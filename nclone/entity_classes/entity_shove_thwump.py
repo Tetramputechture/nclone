@@ -124,6 +124,25 @@ class EntityShoveThwump(Entity):
         elif self.state == 2:
             self.move_if_possible(-self.xdir, -self.ydir, 4)
 
+    #: `DAT_10572340`. `EntityShoveThwomp::moveIfPossible`
+    #: (`docs/decomp/full/entity_104135D0.c`) walks half-cells toward the target
+    #: and gives up the moment the walked index passes 100 in absolute value:
+    #:
+    #:     if (DAT_10572340 < |iVar2|) return 0;
+    #:
+    #: Nothing else bounds the launch. Every edge lookup outside the 88x51 grid
+    #: reads empty -- `clamp_half_cell` caps y at 49 and so never even reaches
+    #: the solid border row 50 -- so without this a launched shove thwump leaves
+    #: the level and never comes back. It is the only thing that turns one
+    #: around, and a shove thwump that does not come back is not there to be
+    #: landed on later.
+    #:
+    #: Confirmed against two captures on two different tile layouts
+    #: (`out14/10138350`, `out15/10138974`): four launches, every one of them
+    #: blocked walking into half-cell 101, resting at y=1208 after exactly 236
+    #: frames at 4 px, then retreating home at 1 px/frame.
+    CELL_WALK_LIMIT = 100
+
     def move_if_possible(self, xdir, ydir, speed):
         """Move the shwump depending of state and orientation.
         Not called in Simulator.tick like other entity move functions.
@@ -135,7 +154,10 @@ class EntityShoveThwump(Entity):
             if cell_x != cell_x_new:
                 cell_y1 = math.floor((self.ypos - 8) / 12)
                 cell_y2 = math.floor((self.ypos + 8) / 12)
-                if not is_empty_column(self.sim, cell_x, cell_y1, cell_y2, xdir):
+                if (
+                    not is_empty_column(self.sim, cell_x, cell_y1, cell_y2, xdir)
+                    or abs(cell_x_new) > self.CELL_WALK_LIMIT
+                ):
                     self.set_state(3)
                     return
             self.xpos = xpos_new
@@ -146,7 +168,10 @@ class EntityShoveThwump(Entity):
             if cell_y != cell_y_new:
                 cell_x1 = math.floor((self.xpos - 8) / 12)
                 cell_x2 = math.floor((self.xpos + 8) / 12)
-                if not is_empty_row(self.sim, cell_x1, cell_x2, cell_y, ydir):
+                if (
+                    not is_empty_row(self.sim, cell_x1, cell_x2, cell_y, ydir)
+                    or abs(cell_y_new) > self.CELL_WALK_LIMIT
+                ):
                     self.set_state(3)
                     return
             self.ypos = ypos_new
@@ -199,4 +224,4 @@ class EntityShoveThwump(Entity):
         if overlap_circle_vs_circle(
             ninja.xpos, ninja.ypos, NINJA_RADIUS, self.xpos, self.ypos, self.RADIUS
         ):
-            ninja.kill(0, 0, 0, 0, 0)
+            ninja.kill(0, 0, 0, 0, 0, cause="shove_thwump")

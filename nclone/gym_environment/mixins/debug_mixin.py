@@ -135,11 +135,25 @@ class DebugMixin:
         # Mine SDF (Signed Distance Field) debug visualization state
         self._mine_sdf_debug_enabled: bool = False
 
+        # Threat time-to-lethal field state. Native-backend only: the field is
+        # computed inside the Rust simulator (see `threat_field.rs`) precisely so
+        # no per-entity data crosses FFI, and the pure-Python sim has no
+        # equivalent. The overlay reports that rather than silently drawing
+        # nothing.
+        self._threat_ttl_debug_enabled: bool = False
+        self._threat_ttl_max_frames: int = 64
+        self._threat_ttl_stride: int = 4
+
         # Jump-aware cost-to-go (physics-faithful) heatmap state. The source build
         # is SLOW (6-11s/level), so it is built OFF-THREAD (see the module-level
         # _JUMP_BUILD_* caches) and keyed by a map_data hash; the main loop never
         # blocks on it. While building, the overlay just shows a "computing" label.
         self._jump_cost_to_go_debug_enabled: bool = False
+        self._physics_cost_to_go_debug_enabled: bool = False
+        # Overlay-only toggle: draw the GEOMETRIC free-space field instead of the
+        # anisotropic physics one, so the two can be A/B'd on the same level
+        # without restarting. Does not touch what training reads.
+        self._physics_cost_to_go_geometric: bool = False
 
         # Combined graph + mine SDF + path mine proximity (single toggle, test_environment H)
         self._hazard_debug_combo_enabled: bool = False
@@ -284,11 +298,23 @@ class DebugMixin:
             if mine_sdf_data:
                 info["mine_sdf"] = mine_sdf_data
 
+        # Add threat time-to-lethal payload if enabled
+        if self._threat_ttl_debug_enabled:
+            ttl_data = self._get_threat_ttl_data()
+            if ttl_data:
+                info["threat_ttl"] = ttl_data
+
         # Add jump-aware cost-to-go heatmap payload if enabled
         if self._jump_cost_to_go_debug_enabled:
             jump_data = self._get_jump_cost_to_go_data()
             if jump_data:
                 info["jump_cost_to_go"] = jump_data
+
+        # Add physics free-space cost-to-go field + descent route if enabled
+        if self._physics_cost_to_go_debug_enabled:
+            phys_data = self._get_physics_cost_to_go_data()
+            if phys_data:
+                info["physics_cost_to_go"] = phys_data
 
         # Add demo checkpoint visualization payload if enabled
         if self._demo_checkpoints_debug_enabled and self._demo_checkpoints_data:
@@ -689,6 +715,64 @@ class DebugMixin:
         """
         self._mine_sdf_debug_enabled = bool(enabled)
 
+    def set_threat_ttl_debug_enabled(self, enabled: bool):
+        """Enable/disable the threat time-to-lethal overlay.
+
+        Draws, per 12 px cell, WHEN that cell next becomes lethal rather than how
+        far it is from a threat -- red = lethal now, through orange/yellow for
+        "lethal within a few frames", to unshaded for "safe for the whole
+        window". Cyan hatching marks cells reachable only by a REACTIVE threat
+        (chaser drone, death ball, eye bat), whose timing is a worst-case
+        envelope rather than an exact forecast.
+
+        This is the field itself, read straight out of the simulator -- not a
+        re-derivation -- so what the overlay shows is exactly what the policy
+        would receive.
+        """
+        self._threat_ttl_debug_enabled = bool(enabled)
+
+    def _get_threat_ttl_data(self) -> Optional[Dict[str, Any]]:
+        """Threat TTL payload for the debug renderer, or None if unavailable.
+
+        Returns the raw `(4, H, W)` field plus the window it was computed over,
+        so the overlay can label absolute frame counts instead of normalised
+        fractions -- "lethal in 12 frames" is actionable, "0.1875" is not.
+        """
+        try:
+            import numpy as np
+
+            max_frames = self._threat_ttl_max_frames
+            stride = self._threat_ttl_stride
+
+            native = getattr(self.nplay_headless, "_native_sim", None)
+            if native is not None and hasattr(native, "threat_ttl"):
+                raw = native.threat_ttl(max_frames, stride)
+                field = np.frombuffer(raw, dtype=np.float32).reshape(4, 46, 84).copy()
+            else:
+                # The dev tool runs the PYTHON backend -- the native sim has no
+                # renderer at all -- so the overlay would otherwise never be
+                # visible where it is most useful. `threat_ttl_reference` computes
+                # the identical field from the Python sim's own drones, and
+                # `test_threat_ttl_parity.py` pins it against the Rust engine so
+                # the two cannot drift.
+                from ..threat_ttl_reference import compute_threat_ttl_reference
+
+                field = compute_threat_ttl_reference(
+                    self.nplay_headless, max_frames=max_frames, stride=stride
+                )
+            return {
+                "field": field,
+                "max_frames": max_frames,
+                "stride": stride,
+                "cell_size": 12,
+                # World px of the field's (0, 0) corner. The grid covers the
+                # PLAYABLE area, which begins one 24px border tile in, so the
+                # renderer must not assume it starts at the window origin.
+                "origin": 24.0,
+            }
+        except Exception:
+            return None
+
     def set_jump_cost_to_go_debug_enabled(self, enabled: bool):
         """Enable/disable the jump-aware cost-to-go heatmap visualization.
 
@@ -701,6 +785,25 @@ class DebugMixin:
         is cached per-level (keyed by map_data hash) because its build is slow.
         """
         self._jump_cost_to_go_debug_enabled = bool(enabled)
+
+    def set_physics_cost_to_go_debug_enabled(self, enabled: bool):
+        """Enable/disable the free-space PHYSICS cost-to-go overlay.
+
+        Draws the anisotropic frame-cost field toward the current objective plus
+        the steepest-descent route through it, with each route segment coloured
+        by the move class the cost model charged for (run / air / fall / jump /
+        wall). Unlike the jump cost-to-go overlay this needs no background build
+        -- the native flood is ~10ms -- so it repaints on the spot.
+
+        Use ``set_physics_cost_to_go_geometric(True)`` to draw the legacy
+        isotropic field instead; toggling between them on one level is the
+        quickest way to see what the physics weights bought.
+        """
+        self._physics_cost_to_go_debug_enabled = bool(enabled)
+
+    def set_physics_cost_to_go_geometric(self, geometric: bool):
+        """Draw the geometric (isotropic) field instead of the physics one."""
+        self._physics_cost_to_go_geometric = bool(geometric)
 
     def set_hazard_debug_combo_enabled(self, enabled: bool):
         """Enable combined hazard overlay: adjacency graph, mine SDF, and path mine cost multipliers on nodes."""
@@ -1134,6 +1237,78 @@ class DebugMixin:
             "phase": phase,
             "map_hash": key,
             "ninja_position": self.nplay_headless.ninja_position(),
+            "cell_px": 6,
+        }
+
+    def _get_physics_cost_to_go_data(self) -> Optional[Dict[str, Any]]:
+        """Build the free-space cost-to-go field + descent-route overlay payload.
+
+        Synchronous, unlike ``_get_jump_cost_to_go_data``: the native flood costs
+        ~10ms, so there is no reason for the subprocess machinery. Sources are
+        memoized per (map hash, cost model) since the field is a pure function of
+        the level -- only the route is recomputed per frame, and that is ~1ms.
+        """
+        import hashlib
+
+        import numpy as np
+
+        map_data = getattr(self.nplay_headless, "current_map_data", None)
+        if not map_data:
+            return None
+        try:
+            key = hashlib.md5(
+                np.asarray([int(v) for v in map_data], dtype=np.int64).tobytes()
+            ).hexdigest()
+        except Exception:
+            return None
+
+        geometric = bool(getattr(self, "_physics_cost_to_go_geometric", False))
+        cache = getattr(self, "_physics_ctg_cache", None)
+        if cache is None:
+            cache = self._physics_ctg_cache = {}
+        cache_key = (key, geometric)
+        src = cache.get(cache_key)
+        if src is None:
+            try:
+                from ...value_function.free_space_distance import (
+                    FreeSpaceDistanceSource,
+                )
+
+                src = FreeSpaceDistanceSource(
+                    list(map_data), physics_cost=not geometric
+                )
+            except Exception:
+                return None
+            if len(cache) > 8:
+                cache.clear()
+            cache[cache_key] = src
+        if not getattr(src, "available", False):
+            return None
+
+        switch_activated = self.nplay_headless.exit_switch_activated()
+        field = src._d_exit if switch_activated else src._d_switch
+        if field is None:
+            return None
+
+        nx, ny = self.nplay_headless.ninja_position()
+        try:
+            route = src.descent_path(float(nx), float(ny), bool(switch_activated))
+        except Exception:
+            route = None
+
+        return {
+            "field": field,
+            "route": route,
+            "phase": "exit" if switch_activated else "switch",
+            "model": "geometric" if geometric else "physics",
+            "map_hash": key,
+            "ninja_position": (nx, ny),
+            "goal": src.exit if switch_activated else src.switch,
+            # Coverage is the headline diagnostic: a field that only reaches a
+            # sliver of free space is a dead PBRS signal on that level.
+            "coverage": (
+                float(np.isfinite(field).sum()) / float(max(int(src._free.sum()), 1))
+            ),
             "cell_px": 6,
         }
 

@@ -211,6 +211,14 @@ def plan_gold_chase(map_path: str, *, macro: int = 6, vel_bin: float = 0.25,
         _PRS(map_path).map_data, w_risk=w_risk, jump_tax=jump_tax,
         momentum_model=momentum_model, use_cache=True,
         name=os.path.basename(map_path.rstrip("/")),
+        # airborne_field=False: this source is the PLANNER's search heuristic,
+        # and the planner is the correctness oracle the airborne work is
+        # validated against (SPEC_airborne_lattice §6/§7 — "it is the oracle, not
+        # the target").  The airborne extension makes cost_to_go finite across
+        # open space, which would change the heuristic, the expansion order and
+        # potentially which levels solve.  The oracle stays byte-identical; the
+        # extension is for the reward/observation path.
+        airborne_field=False,
     )
     sp = GoldChaseSpike(
         map_path, macro=macro, vel_bin=vel_bin, h_weight=h_weight,
@@ -614,6 +622,14 @@ def plan_dstar_guided(map_path: str, *, macro: int = 6, vel_bin: float = 0.25,
         PhysicsRouteSpike(map_path).map_data, w_risk=w_risk, jump_tax=jump_tax,
         momentum_model=momentum_model, use_cache=True,
         name=os.path.basename(map_path.rstrip("/")),
+        # airborne_field=False: this source is the PLANNER's search heuristic,
+        # and the planner is the correctness oracle the airborne work is
+        # validated against (SPEC_airborne_lattice §6/§7 — "it is the oracle, not
+        # the target").  The airborne extension makes cost_to_go finite across
+        # open space, which would change the heuristic, the expansion order and
+        # potentially which levels solve.  The oracle stays byte-identical; the
+        # extension is for the reward/observation path.
+        airborne_field=False,
     )
     sp = DStarGuidedSpike(
         map_path, macro=macro, vel_bin=vel_bin, h_weight=h_weight,

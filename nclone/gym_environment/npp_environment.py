@@ -78,6 +78,11 @@ from .constants import (
     EGO_CROP_FALL_FINE_CHANNELS,
     EGO_CROP_FALL_FINE_SIZE,
     MINE_PROXIMITY_DIM,
+    THREAT_CLASS_OF_TYPE,
+    THREAT_PROXIMITY_DIM,
+    THREAT_PROXIMITY_RANGE_PX,
+    THREAT_PROXIMITY_SPEED_NORM_PX,
+    THREAT_PROX_FEATURES,
     MINE_PROXIMITY_K,
     MINE_PROXIMITY_FEATURES,
     MINE_PROXIMITY_KILL_RADIUS_PX,
@@ -90,8 +95,14 @@ from .constants import (
     HAZARD_MAP_CHANNELS,
     HAZARD_MAP_HEIGHT,
     HAZARD_MAP_WIDTH,
+    DRONE_HAZARD_MAP_CHANNELS,
+    DRONE_HAZARD_HORIZONS,
+    DRONE_KILL_RADIUS_PX,
+    MINI_DRONE_KILL_RADIUS_PX,
     HAZARD_MAP_OBS_DOWNSAMPLE,
     HAZARD_MAP_OBS_WIDTH,
+    THREAT_TTL_CHANNELS,
+    SOLID_MAP_CHANNELS,
     HAZARD_MAP_OBS_HEIGHT,
     COST_TO_GO_MAP_DOWNSAMPLE,
     COST_TO_GO_MAP_WIDTH,
@@ -139,7 +150,7 @@ _UNSET_MAP_NAME = object()
 from .mixins import GraphMixin, ReachabilityMixin, DebugMixin
 from .config import EnvironmentConfig
 from .precomputed_door_features import PrecomputedDoorFeatureCache
-from nclone_native import MineThreatMap
+from nclone_native import HazardSdf, MineThreatMap
 
 try:  # Ghost-arc projector (Audit II P0-1); absent on pre-rebuild native wheels.
     from nclone_native import TrajectoryProjector
@@ -276,6 +287,54 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # per-step prep (classify + build the (x,y) lists over ~1.7k mines + the
         # Rust change-detect) and return the cached SDF directly.
         self._hazard_sig = None
+
+        # Rust SDF engines for the optional `drone_hazard_map` key. One per drone
+        # class because the contact-death radius differs (zap 17.5 px, mini 14 px);
+        # the two fields are combined by an element-wise min, which is the correct
+        # worst-case merge for a signed distance where lower means nearer death.
+        # Built only when the flag is on: each is a stateless ~15k-cell engine, but
+        # the per-frame compute is the expensive part and must not run unrequested.
+        self._drone_hazard_enabled = bool(
+            getattr(
+                getattr(self.config, "reachability", None),
+                "enable_drone_hazard",
+                False,
+            )
+        )
+        if self._drone_hazard_enabled:
+            self._drone_sdf_zap_rs = HazardSdf(DRONE_KILL_RADIUS_PX)
+            self._drone_sdf_mini_rs = HazardSdf(MINI_DRONE_KILL_RADIUS_PX)
+        else:
+            self._drone_sdf_zap_rs = None
+            self._drone_sdf_mini_rs = None
+        # Phase 1 keys. Both come straight from the native simulator; on the
+        # pure-Python backend they are simply unavailable and the env declines to
+        # declare them rather than emitting a zero field that would read as "no
+        # threats anywhere" / "no surfaces anywhere".
+        _reach = getattr(self.config, "reachability", None)
+        self._threat_ttl_enabled = bool(getattr(_reach, "enable_threat_ttl", False))
+        self._threat_ttl_max_frames = int(getattr(_reach, "threat_ttl_max_frames", 64))
+        self._threat_ttl_stride = int(getattr(_reach, "threat_ttl_stride", 4))
+        self._solid_map_enabled = bool(getattr(_reach, "enable_solid_map", False))
+        if self._solid_map_enabled and getattr(self, "sim_backend", None) != "native":
+            # Refuse rather than emit zeros. A zeroed occupancy map is not a
+            # degraded observation, it is a WRONG one: it says "there are no
+            # surfaces here" on a level full of thwumps. If training runs native
+            # and an eval runs Python, the policy silently receives a different
+            # observation than it was trained on, and the eval score drops for a
+            # reason nothing reports. `threat_ttl` has a pinned numpy reference
+            # so it can fall back honestly; `solid_map` has none yet.
+            raise ValueError(
+                "enable_solid_map requires sim_backend='native' (got "
+                f"{getattr(self, 'sim_backend', None)!r}): there is no Python "
+                "reference implementation, and emitting zeros would misreport "
+                "every solid entity as absent."
+            )
+
+        self._drone_hazard_cache = np.ones(
+            (DRONE_HAZARD_MAP_CHANNELS, HAZARD_MAP_WIDTH, HAZARD_MAP_HEIGHT),
+            dtype=np.float32,
+        )
 
         # Deadly-mine position array (Nx2) + its mine signature, for the scalar
         # nearest-deadly-mine game_state feature. Recomputed only when the deadly
@@ -485,6 +544,43 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             dtype=np.float32,
         )
 
+        # Optional patrol-drone SDF, same grid/units as `hazard_map`. Off by
+        # default so the strict Layer 1 contract and existing checkpoints are
+        # unaffected; enabled via EnvConfig.enable_drone_hazard.
+        if self._threat_ttl_enabled:
+            obs_spaces["threat_ttl"] = box.Box(
+                low=-1.0,
+                high=1.0,
+                shape=(
+                    THREAT_TTL_CHANNELS,
+                    HAZARD_MAP_OBS_WIDTH,
+                    HAZARD_MAP_OBS_HEIGHT,
+                ),
+                dtype=np.float32,
+            )
+        if self._solid_map_enabled:
+            obs_spaces["solid_map"] = box.Box(
+                low=-1.0,
+                high=1.0,
+                shape=(
+                    SOLID_MAP_CHANNELS,
+                    HAZARD_MAP_OBS_WIDTH,
+                    HAZARD_MAP_OBS_HEIGHT,
+                ),
+                dtype=np.float32,
+            )
+        if self._drone_hazard_enabled:
+            obs_spaces["drone_hazard_map"] = box.Box(
+                low=-1.0,
+                high=1.0,
+                shape=(
+                    DRONE_HAZARD_MAP_CHANNELS,
+                    HAZARD_MAP_OBS_WIDTH,
+                    HAZARD_MAP_OBS_HEIGHT,
+                ),
+                dtype=np.float32,
+            )
+
         # Optional physics-aware navigation hint from the lattice d* plan
         # (``[dx_hop, dy_hop, cost_to_go_norm, phase]``).  Off by default so the
         # strict Layer-1 contract / existing checkpoints are unaffected; enabled
@@ -637,6 +733,16 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             obs_spaces["mine_proximity"] = box.Box(
                 low=-1.0, high=1.0,
                 shape=(MINE_PROXIMITY_DIM,),
+                dtype=np.float32,
+            )
+
+        # Shooter telegraph: per-super-class bearing + wind-up countdown. Gated
+        # on the same flag as the threat field, because it is the half of that
+        # signal a field cannot carry (see constants.THREAT_PROXIMITY_DIM).
+        if self._threat_ttl_enabled:
+            obs_spaces["threat_proximity"] = box.Box(
+                low=-1.0, high=1.0,
+                shape=(THREAT_PROXIMITY_DIM,),
                 dtype=np.float32,
             )
 
@@ -1447,6 +1553,11 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # Computed once per level via the shared module-level surface-area cache.
         surface_area = self._compute_level_surface_area()
         if surface_area is not None:
+            # The 0 is ``reachable_mine_count``, and it is deliberate rather than a
+            # missing plumb: ``truncation_calculator.TIME_PER_MINE`` is 0.0 and the
+            # mine term is retired. Reviving it would add ~39,750 frames to a
+            # PLATFORMING episode, the opposite of the measured need. See that
+            # module's docstring before "fixing" this.
             truncation_limit = self.truncation_checker.set_level_truncation_limit(
                 surface_area, 0, cost_to_completion=self._spawn_cost_to_completion()
             )
@@ -2153,6 +2264,26 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             HAZARD_MAP_OBS_DOWNSAMPLE,
             ("min", "min"),
         )
+        # Same convention: the drone SDF is lower nearer a drone, so min-pooling
+        # keeps the nearest threat in each block rather than averaging it away.
+        # Phase 1 keys. Already emitted on the 12px observation grid by the
+        # native engine, so there is no pooling pass -- the scatter writes
+        # straight into it, which is exactly equal to pooling the 6px field.
+        if self._threat_ttl_enabled:
+            obs["threat_ttl"] = self._read_native_field(
+                "threat_ttl", THREAT_TTL_CHANNELS,
+                self._threat_ttl_max_frames, self._threat_ttl_stride,
+            )
+        if self._solid_map_enabled:
+            obs["solid_map"] = self._read_native_field(
+                "solid_map", SOLID_MAP_CHANNELS
+            )
+        if self._drone_hazard_enabled:
+            obs["drone_hazard_map"] = pool_channels(
+                self._compute_drone_hazard_map(),
+                HAZARD_MAP_OBS_DOWNSAMPLE,
+                ("min",) * DRONE_HAZARD_MAP_CHANNELS,
+            )
         self._profile_end("obs_npp_hazard", t_haz)
 
         # Optional physics-aware nav hint (lattice d*).  ``_cached_lattice_nav``
@@ -2253,6 +2384,10 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         if getattr(getattr(self.config, "reachability", None),
                    "expose_mine_proximity", False):
             obs["mine_proximity"] = self._compute_mine_proximity(nx, ny)
+
+        # Shooter telegraph — the wind-up the hitscan field cannot show in time.
+        if self._threat_ttl_enabled:
+            obs["threat_proximity"] = self._compute_threat_proximity(nx, ny)
 
         # Coarse far ego crop (Audit II P1-6): +-21-tile Chebyshev window at
         # 2-tile pooling — see _compute_ego_crop_coarse.
@@ -4192,6 +4327,54 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         self._fall_lethality_map_name = current_map_name
         return field
 
+    def _threat_imminence(self, e, type_id: int) -> float:
+        """Normalised telegraph countdown in [0, 1] for one shooter.
+
+        Delegates to `threat_proximity_reference.threat_imminence`, which is the
+        single Python source of truth for the mapping (the Rust engine is the
+        production one, pinned against it by the parity test). Kept as a method
+        because `test_threat_proximity.py` pins all 30 state-machine cases
+        through it.
+        """
+        from .threat_proximity_reference import threat_imminence
+
+        return threat_imminence(e, type_id)
+
+    def _compute_threat_proximity(self, nx: float, ny: float) -> np.ndarray:
+        """(THREAT_PROXIMITY_DIM,) per-super-class bearing, motion and telegraph.
+
+        See constants.py for the layout and why this exists: the threat field
+        cannot represent a hitscan beam early enough to be learnable, so the
+        wind-up is exposed directly, and it cannot carry a moving hazard's
+        velocity at all, so that is exposed here too.
+
+        Within a class the NEAREST in-range member is selected and all eight dims
+        describe that one entity. Selecting instead by highest imminence was
+        considered and rejected: it makes the geometry and the countdown describe
+        different entities on different frames, which is a signal that flickers
+        between objects.
+
+        **Computed in Rust when the native backend is present.** It must be: the
+        native `_build_entity_dic` whitelists {1,2,3,4,6,7,11,21} and carries no
+        threat type at all, so the pure-Python path — which reads `entity_dic` —
+        returned an all-zero vector on the backend training actually uses. The
+        Python twin below is the dev-tool/Python-backend path and is pinned
+        against the Rust one by `test_threat_proximity_parity.py`.
+        """
+        native = getattr(self.nplay_headless, "_native_sim", None)
+        if native is not None and hasattr(native, "threat_proximity"):
+            raw = native.threat_proximity()
+            # The engine reuses its buffer across calls, so this must be a copy:
+            # handing the rollout buffer a view of memory the next tick
+            # overwrites corrupts observations in a way that cannot be
+            # attributed later.
+            return np.array(
+                np.frombuffer(raw, dtype=np.float32), dtype=np.float32, copy=True
+            )
+        from .threat_proximity_reference import compute_threat_proximity_reference
+
+        return compute_threat_proximity_reference(self.nplay_headless, nx, ny)
+
     def _compute_mine_proximity(self, nx: float, ny: float) -> np.ndarray:
         """v25: (MINE_PROXIMITY_DIM,) bearing + closing-speed vector for the K
         nearest deadly mines.
@@ -4445,6 +4628,121 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         )
         return self._hazard_map_cache
 
+    def _drone_sdf_field(self, zap, mini) -> Optional[np.ndarray]:
+        """Merged (W, H) drone SDF for one set of positions, or None if empty.
+
+        `sdf = clip((d - kill_radius) / 24, -1, 1)` where `d` is the distance
+        from each 6px cell center to the nearest lethal drone — the same sign
+        convention and normalization as `hazard_map`, so the two co-register and
+        an encoder reads both in the same units.
+
+        Zap (type 14) and mini (type 26) drones are evaluated by SEPARATE engines
+        because their contact-death radii differ (17.5 vs 14 px), then merged by
+        element-wise minimum: for a signed distance where lower means nearer
+        death, `min` keeps the worst case and can never average a threat away.
+        The same reasoning drives the min-pooling on the way to the policy.
+        """
+        field = None
+        for positions, engine in (
+            (zap, self._drone_sdf_zap_rs),
+            (mini, self._drone_sdf_mini_rs),
+        ):
+            if not positions:
+                continue
+            # Rust emits row-major (H, W) as raw f32 bytes (a Python list would
+            # cost ~20x the SDF itself); transpose to (W, H) so the channel
+            # co-registers with tile_grid / entity_overlays / hazard_map.
+            # frombuffer gives a read-only view — fine, it is only ever read or
+            # copied into the writable cache below.
+            chan = (
+                np.frombuffer(engine.compute(positions), dtype=np.float32)
+                .reshape(HAZARD_MAP_HEIGHT, HAZARD_MAP_WIDTH)
+                .T
+            )
+            field = chan if field is None else np.minimum(field, chan)
+        return field
+
+    def _read_native_field(self, name: str, channels: int, *args) -> np.ndarray:
+        """Read a native `(C, H, W)` f32 field and return it as `(C, W, H)`.
+
+        The Rust engines emit row-major `(row, col)` per channel; every spatial
+        observation in this env is `(W, H)` so they co-register with `tile_grid`
+        and `entity_overlays` without a transpose at the encoder.
+
+        The buffer is REUSED by the engine across calls, so the transpose result
+        is copied -- handing the rollout buffer a view of memory the next tick
+        overwrites would corrupt observations in a way that is nearly impossible
+        to attribute later.
+
+        On the pure-Python backend `threat_ttl` falls back to the numpy reference
+        (`threat_ttl_reference`), which the parity test pins against the Rust
+        engine; `solid_map` has no reference and returns zeros, which is the
+        correct neutral value for an OCCUPANCY channel (no bodies) unlike the
+        threat field's 1.0 (no danger).
+        """
+        native = getattr(self.nplay_headless, "_native_sim", None)
+        if native is not None and hasattr(native, name):
+            raw = getattr(native, name)(*args)
+            flat = np.frombuffer(raw, dtype=np.float32)
+            return np.ascontiguousarray(
+                flat.reshape(channels, HAZARD_MAP_OBS_HEIGHT, HAZARD_MAP_OBS_WIDTH)
+                .transpose(0, 2, 1)
+            )
+        if name == "threat_ttl":
+            from .threat_ttl_reference import compute_threat_ttl_reference
+
+            field = compute_threat_ttl_reference(self.nplay_headless, *args)
+            return np.ascontiguousarray(field.transpose(0, 2, 1))
+        # Unreachable: `solid_map` is rejected at construction on a non-native
+        # backend precisely so this never silently returns an all-clear field.
+        raise RuntimeError(
+            f"no fallback for native field {name!r} on this backend"
+        )
+
+    def _compute_drone_hazard_map(self) -> np.ndarray:
+        """Patrol-drone SDF now and at each forecast horizon (``drone_hazard_map``).
+
+        Shape (1 + len(DRONE_HAZARD_HORIZONS), W, H): channel 0 is the present
+        frame, channel `i+1` is the same field as it will be
+        `DRONE_HAZARD_HORIZONS[i]` sim frames from now. Encoding is identical
+        across channels — see :meth:`_drone_sdf_field`.
+
+        The forecast channels are EXACT, not estimated. Zap and mini drones
+        patrol a fixed grid with no ninja dependence, so their future positions
+        are a lookup rather than a prediction (the roll-out shares the
+        simulator's own motion code; see ``Drone::forecast``). This is what a
+        present-frame-only hazard map cannot express: whether the drone in the
+        corridor ahead is walking towards the ninja or away from it, which is the
+        difference between "go now" and "wait", from an identical frame.
+
+        Unlike the mine map there is NO change-gate. Mines only enter or leave
+        the deadly set when a `state` toggles, so their SDF is near-static;
+        drones move every frame, so a gate would miss every time and only cost a
+        position compare. An engine is skipped entirely when its class is absent
+        from the level, which is the common case (most maps carry one or neither).
+        """
+        zap, mini = self.nplay_headless.get_drone_positions()
+
+        # No drones at all: the all-1.0 initial cache is already correct
+        # ("no hazard anywhere") for every channel, and matches the mine map's
+        # saturation value. Also skips the forecast entirely, which is the
+        # common case — most levels carry no patrol drones.
+        if not zap and not mini:
+            self._drone_hazard_cache.fill(1.0)
+            return self._drone_hazard_cache
+
+        self._drone_hazard_cache[0] = self._drone_sdf_field(zap, mini)
+
+        forecast = self.nplay_headless.get_predicted_drone_positions(
+            DRONE_HAZARD_HORIZONS
+        )
+        for i, (fzap, fmini) in enumerate(forecast):
+            field = self._drone_sdf_field(fzap, fmini)
+            # A drone can only vanish from the forecast by deactivating, in which
+            # case "no hazard" (1.0) is the right answer for that horizon.
+            self._drone_hazard_cache[i + 1] = 1.0 if field is None else field
+        return self._drone_hazard_cache
+
     # Normalizer for the scalar nearest-deadly-mine feature: 7 tiles. Near-mine
     # resolution is fine; threats beyond this saturate to 1.0 (effectively "safe").
     _NEAREST_MINE_NORM_PX = 168.0
@@ -4681,6 +4979,8 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         self._layer3_masked_by_impact_total += layer3_result.masked_by_impact
         if layer3_result.all_masked_event:
             self._layer3_all_masked_events += 1
+            if layer3_result.fallback_fatal:
+                self._layer3_fallback_fatal_events += 1
 
         return layer3_result.action_mask, layer3_result.duration_mask
 

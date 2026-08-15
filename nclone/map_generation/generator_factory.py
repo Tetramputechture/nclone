@@ -34,6 +34,9 @@ from .map_simple_corridor import MapSimpleCorridor
 from .map_platform_stairs import MapPlatformStairs
 from .map_long_jump import MapLongJump
 from .map_drop_landing import MapDropLanding
+from .map_cavern_chambers import MapCavernChambers
+from .map_mine_overlay import MapMineOverlay
+from .map_hazard_overlay import MapHazardOverlay
 from .generator_configs import GENERATOR_PRESETS
 
 
@@ -64,6 +67,9 @@ GENERATOR_REGISTRY: Dict[str, Type[Map]] = {
     "platform_stairs": MapPlatformStairs,
     "long_jump": MapLongJump,
     "drop_landing": MapDropLanding,
+    "cavern_chambers": MapCavernChambers,
+    "mine_overlay": MapMineOverlay,
+    "hazard_overlay": MapHazardOverlay,
 }
 
 

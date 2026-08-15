@@ -6,6 +6,8 @@ entity classes and creating entity instances with the appropriate parameters.
 """
 
 # Import entity classes
+import os
+
 from ..entity_classes.entity_toggle_mine import EntityToggleMine
 from ..entity_classes.entity_gold import EntityGold
 from ..entity_classes.entity_exit import EntityExit
@@ -22,7 +24,41 @@ from ..entity_classes.entity_boost_pad import EntityBoostPad
 from ..entity_classes.entity_death_ball import EntityDeathBall
 from ..entity_classes.entity_mini_drone import EntityMiniDrone
 from ..entity_classes.entity_shove_thwump import EntityShoveThwump
+from ..entity_classes.entity_drone_chaingun import EntityDroneChaingun
+from ..entity_classes.entity_drone_laser import EntityDroneLaser
+from ..entity_classes.entity_drone_chaser import EntityDroneChaser
+from ..entity_classes.entity_floor_guard import EntityFloorGuard
+from ..entity_classes.entity_rocket import EntityRocket
+from ..entity_classes.entity_turret import EntityTurret
+from ..entity_classes.entity_evil_ninja import EntityEvilNinja
+from ..entity_classes.entity_dual_laser import EntityDualLaser
+from ..entity_classes.entity_eye_bat import EntityEyeBat
 from ..constants.entity_types import EntityType
+
+
+def _disabled_entity_types():
+    """Entity type ids to skip at load, from ``NCLONE_DISABLE_ENTITY_TYPES``.
+
+    A comma-separated list, e.g. ``NCLONE_DISABLE_ENTITY_TYPES=19,23``. Maps load
+    as if those types were absent.
+
+    This exists because of how the attract-demo corpus validates hazards. None of
+    the reverse-engineered types has a physical collision (spec §6.6), so they
+    cannot bend the ninja's trajectory -- an over-lethal one shows up ONLY as a
+    drop in the win rate, and since several hazards usually share a map, a single
+    bad entity drags down every type it co-occurs with. Bisecting that needs the
+    ability to enable exactly one at a time. It is off unless the variable is set.
+    """
+    raw = os.environ.get("NCLONE_DISABLE_ENTITY_TYPES", "")
+    out = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if part:
+            try:
+                out.add(int(part))
+            except ValueError:
+                pass
+    return out
 
 
 def get_entity_class_for_type(entity_type, sim_config=None):
@@ -37,6 +73,9 @@ def get_entity_class_for_type(entity_type, sim_config=None):
         type: The entity class that should be instantiated for this type,
               or None if the entity type is not supported or should be skipped
     """
+    if entity_type in _disabled_entity_types():
+        return None
+
     # Handle entities that require basic_sim check
     if sim_config and entity_type in [
         EntityType.DRONE_ZAP,
@@ -64,6 +103,24 @@ def get_entity_class_for_type(entity_type, sim_config=None):
         EntityType.DEATH_BALL: EntityDeathBall,
         EntityType.MINI_DRONE: EntityMiniDrone,
         EntityType.SHWUMP: EntityShoveThwump,
+        # Reverse-engineered from npp.dll; see docs/ENTITY_INTEGRATION_SPEC.md.
+        EntityType.DRONE_CHAINGUN: EntityDroneChaingun,
+        EntityType.DRONE_LASER: EntityDroneLaser,
+        EntityType.DRONE_CHASER: EntityDroneChaser,
+        EntityType.FLOOR_GUARD: EntityFloorGuard,
+        EntityType.ROCKET: EntityRocket,
+        EntityType.TURRET: EntityTurret,
+        EntityType.EVIL_NINJA: EntityEvilNinja,
+        EntityType.DUAL_LASER: EntityDualLaser,
+        EntityType.EYE_BAT: EntityEyeBat,
+        # Types 7 and 9 are deliberately absent: they are not entities, they are
+        # the switch halves of the locked and trap doors, and the door entity owns
+        # both positions. The real game hard-errors if asked to build one.
+        #
+        # Type 29 (PlayerControlledRocket) is also absent: it is spawned at
+        # runtime, not map-placed. Confirmed empirically -- it appears zero times
+        # in the entity streams of 8000 decoded attract maps. The class exists in
+        # entity_pc_rocket.py for completeness.
     }
 
     return entity_class_map.get(entity_type)
@@ -214,17 +271,31 @@ def create_entity_instance(
         entity = entity_class(
             entity_type, sim, xcoord, ycoord, orientation, switch_xcoord, switch_ycoord
         )
-    elif entity_type in [EntityType.LAUNCH_PAD, EntityType.ONE_WAY, EntityType.THWUMP]:
+    elif entity_type in [
+        EntityType.LAUNCH_PAD,
+        EntityType.ONE_WAY,
+        EntityType.THWUMP,
+        EntityType.TURRET,
+    ]:
         entity = entity_class(entity_type, sim, xcoord, ycoord, orientation)
-    elif entity_type == EntityType.DRONE_ZAP:
-        entity = entity_class(entity_type, sim, xcoord, ycoord, orientation, mode)
-    elif entity_type == EntityType.MINI_DRONE:
+    elif entity_type in [
+        EntityType.DRONE_ZAP,
+        EntityType.MINI_DRONE,
+        EntityType.DRONE_CHAINGUN,
+        EntityType.DRONE_LASER,
+        EntityType.DRONE_CHASER,
+        EntityType.DUAL_LASER,
+    ]:
         entity = entity_class(entity_type, sim, xcoord, ycoord, orientation, mode)
     elif entity_type in [
         EntityType.BOUNCE_BLOCK,
         EntityType.BOOST_PAD,
         EntityType.DEATH_BALL,
         EntityType.SHWUMP,
+        EntityType.FLOOR_GUARD,
+        EntityType.EYE_BAT,
+        EntityType.ROCKET,
+        EntityType.EVIL_NINJA,
     ]:
         entity = entity_class(entity_type, sim, xcoord, ycoord)
     elif entity_type == EntityType.TOGGLE_MINE_TOGGLED:

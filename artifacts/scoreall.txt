@@ -1,0 +1,20 @@
+=== pool 19 (type 21) ===
+pool 19 (type 21): 184 entities over 25 captures
+TOTAL bit-exact frames: 240219 / 240219 = 100.00%
+exact for the whole demo: 184 / 184
+=== pool 10 (type 12) ===
+pool 10 (type 12): 54 entities over 21 captures
+TOTAL bit-exact frames: 84097 / 84097 = 100.00%
+exact for the whole demo: 54 / 54
+=== pool 11 (type 13) ===
+pool 11 (type 13): 4 entities over 3 captures
+TOTAL bit-exact frames: 7666 / 7666 = 100.00%
+exact for the whole demo: 4 / 4
+=== pool 17 (type 19) ===
+pool 17 (type 19): 21 entities over 13 captures
+TOTAL bit-exact frames: 35976 / 35976 = 100.00%
+exact for the whole demo: 21 / 21
+=== pool 16 (type 18) ===
+pool 16 (type 18): 32 entities over 20 captures
+TOTAL bit-exact frames: 52547 / 52547 = 100.00%
+exact for the whole demo: 32 / 32

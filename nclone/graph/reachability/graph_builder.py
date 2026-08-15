@@ -57,6 +57,38 @@ _SLOPE_TILES = frozenset(
 _DIAGONAL_DIRECTIONS = frozenset({"NE", "SE", "SW", "NW"})
 _CARDINAL_DIRECTIONS = frozenset({"N", "S", "E", "W"})
 
+# (name, dx, dy, is_diagonal) in the order neighbours are appended. The order is
+# load-bearing: adjacency lists are compared elementwise in tests and consumed
+# in order by tie-breaking pathfinders.
+_DIRECTION_TABLE = (
+    ("N", 0, -SUB_NODE_SIZE, False),
+    ("E", SUB_NODE_SIZE, 0, False),
+    ("S", 0, SUB_NODE_SIZE, False),
+    ("W", -SUB_NODE_SIZE, 0, False),
+    ("NE", SUB_NODE_SIZE, -SUB_NODE_SIZE, True),
+    ("SE", SUB_NODE_SIZE, SUB_NODE_SIZE, True),
+    ("SW", -SUB_NODE_SIZE, SUB_NODE_SIZE, True),
+    ("NW", -SUB_NODE_SIZE, -SUB_NODE_SIZE, True),
+)
+
+#: Memo for ``_is_sub_node_traversable``, shared by every builder in the process.
+#:
+#: The predicate reads no level state — only tile types, sub-node indices and
+#: direction, all of which resolve against module-level geometry tables. So a
+#: key that answers True on one level answers True on every level, and the table
+#: warms across resets instead of per level. Key shapes (distinct lengths, so
+#: they cannot collide):
+#:
+#:   5-tuple  (tile, ssx, ssy, dsx, dsy)                    within-tile
+#:   7-tuple  (src, dst, dir, ssx, ssy, dsx, dsy)           cardinal cross-tile
+#:   9-tuple  ... + (side_tile, vert_tile)                  diagonal cross-tile
+#:
+#: In practice a level contributes a few thousand distinct keys and the table
+#: plateaus at the set of geometrically adjacent tile-type pairs. The cap is a
+#: runaway backstop, not an eviction policy — hence clear-all rather than LRU.
+_EDGE_MEMO: Dict[Tuple, bool] = {}
+_EDGE_MEMO_MAX = 1 << 20
+
 
 # ---------------------------------------------------------------------------
 # Diagonal tile normal cache  (computed once from TILE_SEGMENT_DIAG_MAP)
@@ -1360,6 +1392,89 @@ class GraphBuilder:
         return sub_nodes
 
     def _build_full_adjacency(
+        self,
+        tiles: np.ndarray,
+        all_sub_nodes: Dict[Tuple[int, int], Tuple[int, int, int, int]],
+    ) -> Dict[Tuple[int, int], List[Tuple[Tuple[int, int], float]]]:
+        """Build the full adjacency graph, memoizing the traversability predicate.
+
+        Same result as :meth:`_build_full_adjacency_reference`, which stays the
+        readable definition (and runs verbatim under ``debug`` so the decision
+        counters still add up). This variant exists because the predicate is
+        ~82% of a cold ``build_graph`` at 190k calls per level, and every one of
+        those calls is a pure function of a small key -- see ``_EDGE_MEMO``.
+        """
+        if self.debug:
+            return self._build_full_adjacency_reference(tiles, all_sub_nodes)
+
+        memo = _EDGE_MEMO
+        # Nested lists beat numpy scalar indexing in this loop and yield real
+        # ints, which hash faster as part of the memo key.
+        tile_rows = tiles.tolist()
+        get_node = all_sub_nodes.get
+        adjacency = {}
+
+        for current_pos, (tile_x, tile_y, sub_x, sub_y) in all_sub_nodes.items():
+            current_x, current_y = current_pos
+            tile_type = tile_rows[tile_y][tile_x]
+            neighbors = []
+
+            for dir_name, dx, dy, is_diagonal in _DIRECTION_TABLE:
+                neighbor_pos = (current_x + dx, current_y + dy)
+                neighbor = get_node(neighbor_pos)
+                if neighbor is None:
+                    continue
+
+                n_tile_x, n_tile_y, n_sub_x, n_sub_y = neighbor
+                neighbor_tile_type = tile_rows[n_tile_y][n_tile_x]
+
+                if n_tile_x == tile_x and n_tile_y == tile_y:
+                    # Within-tile: only the tile's own connectivity matters.
+                    key = (tile_type, sub_x, sub_y, n_sub_x, n_sub_y)
+                elif is_diagonal:
+                    # Corner-cut check also reads the two tiles flanking the
+                    # move: side = (n_tile_x, tile_y), vert = (tile_x, n_tile_y).
+                    key = (
+                        tile_type, neighbor_tile_type, dir_name,
+                        sub_x, sub_y, n_sub_x, n_sub_y,
+                        tile_rows[tile_y][n_tile_x], tile_rows[n_tile_y][tile_x],
+                    )
+                else:
+                    key = (
+                        tile_type, neighbor_tile_type, dir_name,
+                        sub_x, sub_y, n_sub_x, n_sub_y,
+                    )
+
+                traversable = memo.get(key)
+                if traversable is None:
+                    traversable = self._is_sub_node_traversable(
+                        tile_type,
+                        neighbor_tile_type,
+                        tile_x,
+                        tile_y,
+                        n_tile_x,
+                        n_tile_y,
+                        dir_name,
+                        tiles,
+                        current_x,
+                        current_y,
+                        neighbor_pos[0],
+                        neighbor_pos[1],
+                    )
+                    if len(memo) >= _EDGE_MEMO_MAX:
+                        memo.clear()
+                    memo[key] = traversable
+
+                if traversable:
+                    # Uniform cost here; physics-aware costs are applied during
+                    # pathfinding.
+                    neighbors.append((neighbor_pos, 1.0))
+
+            adjacency[current_pos] = neighbors
+
+        return adjacency
+
+    def _build_full_adjacency_reference(
         self,
         tiles: np.ndarray,
         all_sub_nodes: Dict[Tuple[int, int], Tuple[int, int, int, int]],

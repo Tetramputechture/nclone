@@ -45,7 +45,12 @@ from typing import Dict, Any, Optional, List, Tuple
 from .reward_config import RewardConfig
 from .hwm_shaping import EpisodeRewardState
 from .reward_constants import GLOBAL_REWARD_SCALE, BACKTRACK_PENALTY
-from ..constants import GAME_STATE_NEAREST_MINE_IDX, NINJA_STATE_DIM
+from ..constants import (
+    GAME_STATE_NEAREST_MINE_IDX,
+    NINJA_STATE_DIM,
+    VISITATION_CELL_PX,
+    VISITATION_ORIGIN_PX,
+)
 
 from ...constants.physics_constants import (
     EXIT_SWITCH_RADIUS,
@@ -172,6 +177,11 @@ class RewardCalculator:
         # to normalize it. Phi(s) = -clamp(completion_cost / D0, 0, 1).
         self._prev_potential: Optional[float] = None
         self._pbrs_d0: Optional[float] = None
+        # Severance diagnostics -- see `_potential`. `_pbrs_steps` counts
+        # potential evaluations so "severed on the first one" is detectable.
+        self._pbrs_steps: int = 0
+        self._pbrs_severed_steps: int = 0
+        self._pbrs_severed_from_spawn: bool = False
         # Geometric-fallback continuity (per episode). When PBRS is enabled but
         # the env's potential substitution did NOT commit (obs
         # "_potential_substituted" is False), the raw per-phase A* distances
@@ -239,6 +249,10 @@ class RewardCalculator:
         self._stall_phase: Optional[bool] = None
         self._stall_no_improve_frames: int = 0
         self._stall_anchor_pos: Optional[tuple] = None
+        # Frames the hazard exemption has absorbed this episode. Bounded by
+        # config.stall_hazard_exempt_max_frames so parking next to a drone
+        # is not a way to buy permanent immunity from the dither penalty.
+        self._stall_hazard_exempt_frames: int = 0
         self.episode_stall_penalty_total: float = 0.0
         # Per-episode route-length normalizer for the frontier/landing HWM bonuses
         # (spawn cost-to-completion). SEPARATE from the PBRS _pbrs_d0, which may be a
@@ -271,6 +285,57 @@ class RewardCalculator:
         # a monotonic non-decreasing count provided by the env's door-dependency
         # plan; we reward its positive delta.
         self._prev_necessary_doors_open: Optional[int] = None
+
+    def _hazard_blocked(self, obs: Dict[str, Any], pos) -> bool:
+        """Is a live threat near enough that holding position is correct?
+
+        Reads ``threat_ttl``'s time-to-lethal channels (1 = certain tier,
+        3 = reactive tier) on their native 12 px observation grid. Polarity is
+        1.0 = safe, so anything below 1.0 is "lethal within the forecast
+        window". Returns False whenever the key is absent (no threat obs -> no
+        exemption -> the penalty behaves exactly as it did before), or once the
+        per-episode exemption budget is spent.
+
+        The CERTAIN tier is what carries this: patrol drones are forecastable
+        from frame 0 and do not need the ninja to move. The reactive tier is
+        included for completeness but a stationary ninja often will not have
+        triggered acquisition -- see the turret finding in the gamma-1 audit
+        (§9.3), which is why this must never be the only thing keeping a level
+        winnable.
+        """
+        if not getattr(self.config, "stall_hazard_exempt", False):
+            return False
+        budget = int(getattr(self.config, "stall_hazard_exempt_max_frames", 900))
+        if self._stall_hazard_exempt_frames >= budget:
+            return False
+        ttl = obs.get("threat_ttl")
+        if ttl is None:
+            return False
+        try:
+            import numpy as _np
+
+            arr = _np.asarray(ttl)
+            if arr.ndim != 3 or arr.shape[0] < 4:
+                return False
+            _c, h, w = arr.shape
+            # threat_ttl is emitted co-registered with cost_to_go/visitation:
+            # 12 px cells on the BORDER-STRIPPED playable frame, so the origin
+            # offset is not optional -- dropping it shifts the lookup two cells
+            # and silently exempts the wrong place.
+            cell = float(VISITATION_CELL_PX)
+            r = max(1, int(round(
+                float(getattr(self.config, "stall_hazard_exempt_radius_px", 48.0))
+                / cell)))
+            cx = int((pos[0] - VISITATION_ORIGIN_PX) / cell)
+            cy = int((pos[1] - VISITATION_ORIGIN_PX) / cell)
+            x0, x1 = max(0, cx - r), min(w, cx + r + 1)
+            y0, y1 = max(0, cy - r), min(h, cy + r + 1)
+            if x0 >= x1 or y0 >= y1:
+                return False
+            window = arr[(1, 3), y0:y1, x0:x1]
+            return bool(window.min() < 1.0)
+        except Exception:  # noqa: BLE001 - shaping never takes the run down
+            return False
 
     def calculate_reward(
         self,
@@ -453,6 +518,7 @@ class RewardCalculator:
             self._stall_best_cost = None
             self._stall_anchor_pos = None
             self._stall_no_improve_frames = 0
+            self._stall_hazard_exempt_frames = 0
 
         # Goal-distance reverse curriculum: the episode SUCCEEDS once the agent has
         # covered a curriculum-controlled fraction of the path to the true goal,
@@ -714,6 +780,14 @@ class RewardCalculator:
         # per-frame signal that REPLACES the HWM ratchet + backtrack penalty when
         # enabled (hwm_alpha is forced to 0 in the config and the backtrack penalty
         # below is skipped). Telescopes to w*(Phi_T - Phi_0) over the episode.
+        # The RAW cost-to-completion is a plain readout of this step's state, not a
+        # property of the lattice-PBRS branch. It used to be assigned only INSIDE
+        # that branch, so on every configuration that takes the free-space/jump
+        # potential path instead (which is all of them -- see the hoist note below)
+        # it stayed at its `inf` initial value forever, and `_momentum_shaping`
+        # read `inf` on every step. Assign it unconditionally.
+        self._last_cost_to_go_raw = float(current_goal_dist)
+
         pbrs_reward = 0.0
         if self.config.enable_lattice_pbrs and not self._pbrs_hwm_fallback:
             phi_curr = self._potential(current_goal_dist)
@@ -724,7 +798,6 @@ class RewardCalculator:
                 if current_goal_dist < float("inf")
                 else -1.0
             )
-            self._last_cost_to_go_raw = float(current_goal_dist)
             prev_phi = (
                 self._prev_potential if self._prev_potential is not None else phi_curr
             )
@@ -754,9 +827,6 @@ class RewardCalculator:
             self._prev_potential = phi_curr
             reward += pbrs_reward
             self.episode_pbrs_rewards.append(pbrs_reward)
-
-            if current_goal_dist < float("inf"):
-                self._prev_goal_dist = current_goal_dist
         elif self._pbrs_hwm_fallback:
             # Degraded episode: no PBRS potential -> mask the aux-task target.
             self._last_cost_to_go_norm = -1.0
@@ -1123,7 +1193,16 @@ class RewardCalculator:
                 adx = current_pos[0] - anchor[0]
                 ady = current_pos[1] - anchor[1]
                 within = (adx * adx + ady * ady) ** 0.5 <= self.config.stall_radius_px
-                if within:
+                # Hazard exemption. Holding position until a patrol clears is
+                # the CORRECT play, and the test above cannot tell it from
+                # dithering: cost-to-go does not improve and the ninja does not
+                # move. Three-way rather than two, because the distinction
+                # matters -- FREEZE while pinned (do not reset), so a genuine
+                # ditherer parked beside a hazard resumes accruing the instant
+                # the threat clears rather than being handed a clean slate.
+                if within and self._hazard_blocked(obs, current_pos):
+                    self._stall_hazard_exempt_frames += frames_executed
+                elif within:
                     self._stall_no_improve_frames += frames_executed
                     over = self._stall_no_improve_frames - self.config.stall_patience_frames
                     if over > 0:
@@ -1199,8 +1278,30 @@ class RewardCalculator:
         unreachable) clamps to the worst potential (-1) so transitions in and out
         of severance are bounded rather than infinite.
         """
+        # Counts evaluations, not env steps: the potential is read for both s and
+        # s' on a transition. The RATIO is what is reported, so the factor is
+        # immaterial, and it makes "severed on the very first evaluation" -- i.e.
+        # at the spawn -- exactly detectable.
+        self._pbrs_steps += 1
         d0 = self._pbrs_d0
         if d0 is None or not (completion_cost < float("inf")):
+            # SEVERANCE. The clamp is bounded on purpose, but -1.0 is also
+            # Phi(spawn), so a route the graph cannot cost produces a potential
+            # that is FLAT at the worst value for as long as it stays severed --
+            # zero dense gradient, and indistinguishable from standing on the
+            # spawn. That is the failure mode an unmodelled traversal entity
+            # (bounce block, thwump, launch pad) produces today: not a dropped
+            # level, which would at least be visible in a level count, but a
+            # silently dead shaping signal on exactly the levels that need it.
+            #
+            # Counted so it is observable. `severed_from_spawn` separates the two
+            # causes that matter: severed on the FIRST step means the route was
+            # never costable -- an unmodelled entity or a genuinely unsolvable
+            # level -- whereas severance appearing later means the agent walked
+            # off the costed region, which is normal and self-correcting.
+            self._pbrs_severed_steps += 1
+            if self._pbrs_steps == 1:
+                self._pbrs_severed_from_spawn = True
             return -1.0
         return -min(max(completion_cost / d0, 0.0), 1.0)
 
@@ -1455,8 +1556,12 @@ class RewardCalculator:
             self.config.pbrs_gamma * phi_mom - prev
         )
         self._prev_momentum_potential = phi_mom
-        if cur < float("inf"):
-            self._prev_goal_dist = cur
+        # `_prev_goal_dist` is owned by `calculate_reward`, which advances it ONCE
+        # at the end of the step. Advancing it here too made this method's own
+        # `closing` read zero on the next call and, worse, blinded every LATER
+        # consumer in the same step (the hazard-PBRS progress gate, the landing
+        # bonus's `moving_toward_goal`, and the backtrack counter) to the actual
+        # previous step. Read-only here.
         return r
 
     def _pace_shaping(self, obs, current_goal_dist) -> float:
@@ -1532,6 +1637,9 @@ class RewardCalculator:
         self._prev_goal_dist = None
         self._prev_potential = None
         self._pbrs_d0 = None
+        self._pbrs_steps = 0
+        self._pbrs_severed_steps = 0
+        self._pbrs_severed_from_spawn = False
         self._shaping_d0 = None
         self._pbrs_exit_leg = None
         self._pbrs_hwm_fallback = False
@@ -1549,6 +1657,7 @@ class RewardCalculator:
         self._stall_phase = None
         self._stall_no_improve_frames = 0
         self._stall_anchor_pos = None
+        self._stall_hazard_exempt_frames = 0
         self.episode_stall_penalty_total = 0.0
         self._prev_hazard_potential = None
         self.episode_hazard_pbrs_reward = 0.0
@@ -1582,6 +1691,17 @@ class RewardCalculator:
     def get_episode_reward_metrics(self) -> Dict[str, Any]:
         """Return aggregate metrics for TensorBoard logging."""
         import numpy as np
+
+        # PBRS severance (see `_potential`). `pbrs_severed_fraction` is the share
+        # of the episode with NO dense gradient at all; `pbrs_severed_from_spawn`
+        # flags the case where the route was never costable in the first place,
+        # which on a level carrying a traversal entity the graph does not model
+        # is the signature of that gap rather than of agent behaviour.
+        severed_fraction = (
+            self._pbrs_severed_steps / self._pbrs_steps
+            if self._pbrs_steps
+            else 0.0
+        )
 
         hwm_total = (
             sum(self.episode_hwm_rewards) if self.episode_hwm_rewards else 0.0
@@ -1643,6 +1763,14 @@ class RewardCalculator:
             + self.episode_stall_penalty_total
             + self.episode_speed_bonus_reward
             + self.episode_waypoint_reach_reward
+            # These three were returned in `reward`/`terminal_reward` but omitted
+            # here, so `reconciliation_residual` was non-zero -- by exactly the
+            # omitted amount -- whenever any of them was enabled. That silently
+            # invalidated the residual as a completeness proof, which is the one
+            # thing it exists to be.
+            + self.episode_momentum_pbrs_reward
+            + self.episode_pace_pbrs_reward
+            + self.episode_new_record_reward
         ) * GLOBAL_REWARD_SCALE
         # residual ~ 0 proves the decomposition is complete (no unaccounted reward).
         reconciliation_residual = components_sum - self.episode_total_scaled
@@ -1653,6 +1781,8 @@ class RewardCalculator:
             "hwm_std": hwm_std,
             "pbrs_total": pbrs_total,
             "pbrs_mean": pbrs_mean,
+            "pbrs_severed_fraction": severed_fraction,
+            "pbrs_severed_from_spawn": float(self._pbrs_severed_from_spawn),
             "time_penalty_total": time_penalty_total,
             "sparse_total": sparse_total,
             "truncation_penalty_total": self.episode_truncation_penalty,
@@ -1660,6 +1790,7 @@ class RewardCalculator:
             "frontier_bonus_total": self.episode_frontier_bonus_total,
             "landing_bonus_total": self.episode_landing_bonus_total,
             "stall_penalty_total": self.episode_stall_penalty_total,
+            "stall_hazard_exempt_frames": self._stall_hazard_exempt_frames,
             "speed_bonus_total": self.episode_speed_bonus_reward,
             "momentum_pbrs_total": self.episode_momentum_pbrs_reward,
             "new_record_bonus": self.episode_new_record_reward,

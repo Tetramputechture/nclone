@@ -58,6 +58,28 @@ class MapLoader:
         self.sim.spatial_segment_index = self.sim.collision_data.segment_index
         self.sim.level_hash = level_hash
 
+    #: Entity types whose `think` can fire a hitscan beam: the two shooter drones,
+    #: the turret and the dual laser. They all go through the one shared
+    #: `beam_hits_ninja`, which tests the beam against the ninja's 11 limbs.
+    HITSCAN_TYPES = frozenset({12, 13, 19, 23})
+
+    def _map_has_hitscan(self) -> bool:
+        """Does this map carry anything that can fire a beam?
+
+        The animation skeleton is only ever READ by the beam test, so maintaining
+        it on a map with no beam is pure cost -- and the skeleton is not cheap in
+        Python. Scanning the entity section (from 1230, stride 5) is, and it
+        happens once per map load. `nclone-native` makes the same decision in
+        `Simulator::load` against the same four types, so the two engines run the
+        same test on the same maps.
+        """
+        data = self.sim.map_data
+        if not data:
+            return False
+        return any(
+            data[i] in self.HITSCAN_TYPES for i in range(1230, len(data) - 4, 5)
+        )
+
     def load_map_entities(self):
         """Load the map entities into the simulation. These should change during the simulation,
         and are reset when a new map is loaded."""
@@ -66,7 +88,8 @@ class MapLoader:
         self.sim.ninja = Ninja(
             self.sim,
             ninja_anim_mode=(
-                self.sim.sim_config.enable_anim and not self.sim.sim_config.basic_sim
+                (self.sim.sim_config.enable_anim or self._map_has_hitscan())
+                and not self.sim.sim_config.basic_sim
             ),
         )
 

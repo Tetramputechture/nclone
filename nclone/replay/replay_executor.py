@@ -17,7 +17,20 @@ from ..gym_environment.npp_environment import NppEnvironment
 def map_input_to_action(input_byte: int) -> int:
     """Map N++ input byte (0-7) to the 6-way discrete action space.
 
-    Inverse of `map_action_to_input` from `gameplay_recorder.py`.
+    Inverse of `map_action_to_input` from `gameplay_recorder.py` on bytes 0-5, and
+    agrees with `decode_input_to_controls` (below) on ALL eight.
+
+    Bytes 6 and 7 set both direction bits. They are NOT invalid: `Ninja::think`
+    resolves them to LEFT, which is what `decode_input_to_controls` has always
+    done. This mapper used to send both to NOOP, so `ReplayExecutor` -- which
+    drives BC/DAPG observation and action regeneration -- silently substituted
+    "do nothing" for "hold left" on exactly those frames.
+
+    Measured cost of that disagreement (scripts/measure_replay_input_byte_census.py
+    over 7,318 local tapes / 5.09M frames): 531/4,505 harvested tapes (11.8%) and
+    15/22 first-party attract demos (68.2%) contain at least one such frame. The
+    planner-generated corpora are unaffected -- they are ENCODED from this same
+    6-way action space, so bytes 6/7 are unreachable there by construction.
     """
     input_to_action_map = {
         0: 0,  # 000: NOOP
@@ -26,8 +39,8 @@ def map_input_to_action(input_byte: int) -> int:
         3: 5,  # 011: RIGHT+JUMP
         4: 1,  # 100: LEFT
         5: 4,  # 101: LEFT+JUMP
-        6: 0,  # 110: invalid -> NOOP
-        7: 0,  # 111: invalid -> NOOP
+        6: 1,  # 110: left+right -> LEFT wins
+        7: 4,  # 111: left+right+jump -> LEFT+JUMP
     }
     return input_to_action_map.get(input_byte, 0)
 
@@ -38,17 +51,18 @@ def decode_input_to_controls(input_byte: int) -> tuple:
     Retained for callers that still drive `nplay_headless.tick()` directly.
     """
     jump = 1 if (input_byte & 0x01) else 0
-    right = 1 if (input_byte & 0x02) else 0
-    left = 1 if (input_byte & 0x04) else 0
 
-    if left and right:
-        horizontal = 0
-    elif left:
-        horizontal = -1
-    elif right:
-        horizontal = 1
-    else:
-        horizontal = 0
+    # LEFT WINS OUTRIGHT when both direction bits are set. `Ninja::think`
+    # (`docs/decomp/full/ninja_10515300.c:191-197`) is:
+    #
+    #     if ((input & 4) == 0)  hor = (input >> 1) & 1;   // the right bit
+    #     else                   hor = -1;                 // left, unconditionally
+    #
+    # This port used to map left+right to neutral. The byte 6 occurs exactly once
+    # in the 645-frame tape of 10131738, at frame 437, and getting it wrong put
+    # a whole AIR_ACCEL step into xspeed and lost the demo -- see
+    # `docs/ENTITY_RE_ROUND8_FINDINGS.md` §3.
+    horizontal = -1 if (input_byte & 0x04) else ((input_byte >> 1) & 1)
 
     return horizontal, jump
 
@@ -110,6 +124,30 @@ class ReplayExecutor:
         # distribution in three streams. It also changes the cache tag, so a
         # stale cache re-simulates rather than being silently reused.
         "mirror_equivariant_obs",
+        # Hazard obs KEYS. Same class as the fall maps above: a missing one
+        # degrades silently rather than crashing, because the extractor
+        # substitutes a neutral prior -- so every demo would teach those streams
+        # a constant. drone_hazard_map / mine_proximity were already hashed into
+        # the demo-cache tag by the trainer but never APPLIED here, so demos
+        # under those flags re-simulated without the key they were tagged for.
+        "expose_ego_crop_mines_fine",
+        "enable_drone_hazard",
+        "expose_mine_proximity",
+        # Changes the frontier channel's VALUES at the same shape (binary mask
+        # -> density-weighted), so it is the cost_map_norm case: a demo
+        # re-simulated without it teaches the frontier stream a different
+        # distribution than the live policy sees, and no shape error catches it.
+        "frontier_map_weighted",
+        # Phase 1 (gamma-1): the time-to-lethal threat field and the solid-entity
+        # surface map. threat_ttl is the whole reason the phase-1 corpus is
+        # perceivable; a demo re-simulated without it teaches the threat encoder
+        # "everywhere is safe, always", which is worse than no demo. solid_map
+        # additionally forces the NATIVE backend (see below) -- the python
+        # backend cannot produce it and raises.
+        "enable_threat_ttl",
+        "threat_ttl_max_frames",
+        "threat_ttl_stride",
+        "enable_solid_map",
     )
     # Non-boolean exposure fields whose value is applied verbatim (NOT bool-coerced)
     # so a demo re-simulates the ego-crop at the SAME size as the live policy space
@@ -119,6 +157,10 @@ class ReplayExecutor:
     # (the trainer's "default fixed_k" sentinel) is skipped, keeping the default.
     _OBS_EXPOSURE_NONBOOL = (
         "ego_crop_size", "cost_map_norm", "time_phase_norm_frames",
+        # Phase 1: the TTL look-ahead window and tier-C stride set the channel
+        # VALUES; bool-coercing them would re-simulate demos with a 1-frame
+        # horizon and saturate the field.
+        "threat_ttl_max_frames", "threat_ttl_stride",
     )
 
     def __init__(
@@ -155,6 +197,15 @@ class ReplayExecutor:
             render_kwargs["render"] = RenderConfig(render_mode=render_mode)
 
         cfg = EnvironmentConfig.for_training(**render_kwargs)
+        # solid_map is produced only by the native simulator, and the env raises
+        # rather than emitting zeros. EnvironmentConfig defaults to the python
+        # backend, so a caller asking for solid_map here would get a ValueError
+        # naming a backend it never chose. Switch instead: a run that exposes
+        # solid_map is native by construction, so native replay is also the
+        # FAITHFUL one -- python replay would re-simulate demos on a different
+        # engine than the policy trains on.
+        if obs_exposure and obs_exposure.get("enable_solid_map"):
+            cfg.sim_backend = "native"
         # Apply obs-exposure flags onto the reachability config BEFORE the env is
         # built so the produced obs dict carries the same extra keys the policy
         # was trained against (cost_to_go_map / waypoint_nav), and the jump/free-

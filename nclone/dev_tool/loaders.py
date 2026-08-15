@@ -15,7 +15,7 @@ from typing import List, Optional
 
 from ..evaluation.mechanic_benchmark_loader import MechanicBenchmarkLoader
 from ..map_augmentation.transforms import mirror_map_data
-from .generators import GeneratorBrowser
+from .generators import BucketBrowser, GeneratorBrowser
 
 # Suffix appended to (and stripped from) the level name of a mirrored map, so
 # name-keyed caches never serve the un-mirrored level's data for it.
@@ -50,6 +50,54 @@ def load_map_data_into_env(env, map_data, map_name: Optional[str] = None):
     env.nplay_headless.load_map_from_map_data(list(map_data))
     manual_reset(env, map_name=map_name)
     return refresh_observation(env)
+
+
+def guarded_load(env, browser, get_map_data, what: str, tag: str) -> bool:
+    """Generate + load one level, containing and reporting any failure.
+
+    Returns True when a level actually reached the env.
+
+    WHY THIS EXISTS. Browsing generators is a search for the ones that are
+    BROKEN, so the tool has to outlive them. Two independent things can raise
+    and both used to close the window:
+
+    * the generator itself -- `hazard_overlay` and `mine_overlay` raise
+      `RuntimeError` when they cannot certify a level inside their retry budget,
+      which is a normal outcome for a seed rather than a defect;
+    * the LOAD -- `load_map_data_into_env` resets the env, which rebuilds the
+      graph, reachability and observation caches against a level nothing has
+      ever seen. This is the more dangerous half and the easier one to forget.
+
+    On failure the previously loaded level stays in the env, so the tool remains
+    usable, and the reason is printed with a full traceback (to stdout, so the
+    message and the traceback cannot be separated by a redirect).
+    """
+    import sys
+    import traceback
+
+    try:
+        browser.generate()
+    except Exception as exc:  # noqa: BLE001 - containment is the point
+        print(f"\n[{tag}] {what}: GENERATE failed: {type(exc).__name__}: {exc}")
+        traceback.print_exc(file=sys.stdout)
+        print(f"[{tag}] previous level kept; press next to continue.\n")
+        return False
+
+    map_data = get_map_data()
+    if map_data is None:
+        return False
+    try:
+        load_map_data_into_env(env, map_data)
+    except Exception as exc:  # noqa: BLE001
+        # Record it on the browser too, so the panel shows it next to the combo
+        # that produced it rather than only in the terminal.
+        browser.status = getattr(browser, "ERROR", "ERROR")
+        browser.last_error = f"load: {type(exc).__name__}: {exc}"
+        print(f"\n[{tag}] {what}: LOAD failed: {type(exc).__name__}: {exc}")
+        traceback.print_exc(file=sys.stdout)
+        print(f"[{tag}] the generated map is bad, not the tool; continuing.\n")
+        return False
+    return True
 
 
 def load_map_file_into_env(env, path: str):
@@ -252,9 +300,18 @@ class GeneratorSource(MapSource):
         self.browser = browser
 
     def _load_current(self, env) -> None:
-        self.browser.generate()
-        if self.browser.current_map is not None:
-            load_map_data_into_env(env, self.browser.current_map.map_data())
+        # The GENERATE and the LOAD are both guarded, and the load is the more
+        # dangerous half: `load_map_data_into_env` resets the env, which rebuilds
+        # the graph, reachability and observation caches against a level nothing
+        # has ever seen before. Guarding only the generator would leave the
+        # window closing on exactly the maps most worth looking at.
+        guarded_load(
+            env, self.browser,
+            lambda: self.browser.current_map.map_data()
+            if self.browser.current_map is not None else None,
+            f"{self.browser.gen_type}:{self.browser.preset}",
+            "generators",
+        )
 
     def advance(self, env) -> None:
         self.browser.next()
@@ -275,6 +332,67 @@ class GeneratorSource(MapSource):
 
     def status_lines(self) -> List[str]:
         return ["source: generators"] + self.browser.info_lines()
+
+
+class BucketSource(MapSource):
+    """Browse ``BUCKET_CATALOG`` cells, generating each level on the spot.
+
+    Distinct from :class:`BenchmarkSource`, which browses a dataset that has
+    already been built to disk. This generates live, so a bucket can be
+    validated the moment its catalog entry exists -- which for the hazard
+    buckets is the difference between a few seconds and a multi-hour dataset
+    build (~13 s per level, and the planner certificate dominates).
+    """
+
+    title = "buckets"
+
+    def __init__(self, browser: BucketBrowser):
+        self.browser = browser
+
+    def _load_current(self, env) -> None:
+        guarded_load(
+            env, self.browser,
+            lambda: self.browser.current_map.map_data()
+            if self.browser.current_map is not None else None,
+            f"{self.browser.bucket}/T{self.browser.tier} "
+            f"({self.browser.entry[0]}:{self.browser.entry[1]})",
+            "buckets",
+        )
+
+    def advance(self, env) -> None:
+        self.browser.next()
+        self.load_current(env)
+
+    def retreat(self, env) -> None:
+        self.browser.prev()
+        self.load_current(env)
+
+    def regenerate(self, env) -> None:
+        self.browser.bump_seed()
+        self.load_current(env)
+
+    def next_bucket(self, env) -> None:
+        self.browser.next_bucket()
+        self.load_current(env)
+
+    def prev_bucket(self, env) -> None:
+        self.browser.prev_bucket()
+        self.load_current(env)
+
+    def next_tier(self, env) -> None:
+        self.browser.next_tier()
+        self.load_current(env)
+
+    def prev_tier(self, env) -> None:
+        self.browser.prev_tier()
+        self.load_current(env)
+
+    def on_episode_end(self, env, won: bool, auto_advance: bool) -> bool:
+        self.regenerate(env)
+        return True
+
+    def status_lines(self) -> List[str]:
+        return ["source: buckets"] + self.browser.info_lines()
 
 
 class OfficialMapSource(MapSource):
