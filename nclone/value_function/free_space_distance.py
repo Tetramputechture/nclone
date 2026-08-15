@@ -1892,13 +1892,13 @@ class FreeSpaceDistanceSource:
         if 0 <= ix < _W - 1 and 0 <= iy < _H - 1:
             v00 = float(d[ix, iy]); v10 = float(d[ix + 1, iy])
             v01 = float(d[ix, iy + 1]); v11 = float(d[ix + 1, iy + 1])
-            if (np.isfinite(v00) and np.isfinite(v10)
-                    and np.isfinite(v01) and np.isfinite(v11)):
+            if (math.isfinite(v00) and math.isfinite(v10)
+                    and math.isfinite(v01) and math.isfinite(v11)):
                 fx, fy = gx - ix, gy - iy
                 return (v00 * (1 - fx) * (1 - fy) + v10 * fx * (1 - fy)
                         + v01 * (1 - fx) * fy + v11 * fx * fy)
         v = float(d[ix, iy])
-        if np.isfinite(v):
+        if math.isfinite(v):
             return v
         # Nearest finite cell within a small window (the ninja may be momentarily
         # inside a mine band / tile sliver); keeps the signal continuous.
@@ -1908,7 +1908,7 @@ class FreeSpaceDistanceSource:
                 jx, jy = ix + dx, iy + dy
                 if 0 <= jx < _W and 0 <= jy < _H:
                     w = float(d[jx, jy])
-                    if np.isfinite(w) and w < best:
+                    if math.isfinite(w) and w < best:
                         best = w
         return best
 
@@ -1923,7 +1923,7 @@ class FreeSpaceDistanceSource:
             return float("inf")
         d, dmax = self._arrays(switch_activated)
         c = self._field_at(d, x, y)
-        if not np.isfinite(c):
+        if not math.isfinite(c):
             return float(dmax)
         return c
 
@@ -1993,12 +1993,12 @@ class FreeSpaceDistanceSource:
             return np.zeros(4, dtype=np.float32)
         d, dmax = self._arrays(switch_activated)
         c0 = self._field_at(d, x, y)
-        if not np.isfinite(c0):
+        if not math.isfinite(c0):
             return np.zeros(4, dtype=np.float32)
         best_c, best_dir = c0, (0.0, 0.0)
         for ux, uy in self._NAV_DIRS:
             c = self._field_at(d, x + ux * step_px, y + uy * step_px)
-            if np.isfinite(c) and c < best_c:
+            if math.isfinite(c) and c < best_c:
                 best_c, best_dir = c, (ux, uy)
         return np.array([best_dir[0], best_dir[1],
                          min(c0 / max(dmax, 1.0), 1.0),

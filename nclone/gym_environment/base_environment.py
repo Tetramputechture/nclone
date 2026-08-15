@@ -3520,7 +3520,12 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         physics sim still simulates every mine, so death correctness is unchanged.
         """
         map_name = getattr(self.map_loader, "current_map_name", None)
-        if self._relevant_mine_keys_computed and self._relevant_mine_keys_map == map_name:
+        # A non-None key set also counts as computed, so a caller that installs
+        # one directly (tests, tooling) keeps the original cache semantics.
+        if (
+            self._relevant_mine_keys_computed
+            or self._relevant_mine_keys is not None
+        ) and self._relevant_mine_keys_map == map_name:
             return self._relevant_mine_keys
 
         try:
