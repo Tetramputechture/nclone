@@ -341,6 +341,11 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # set changes (a toggle); otherwise the per-step cost is a vectorized min.
         self._deadly_mine_xy: Optional[np.ndarray] = None
         self._deadly_xy_sig = None
+        # Per-frame memo for _mine_lists_and_signature: several observation
+        # features key their own caches on the same (n_toggle, n_toggled,
+        # n_deadly) triple, and each was re-counting every mine.
+        self._mine_sig_frame = -1
+        self._mine_sig_cache = None
 
         # Cached tile grid for the current level (computed once per level load, reused each step)
         self._cached_tile_grid: Optional[np.ndarray] = None
@@ -2690,30 +2695,37 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         ntx = _cell_x(ninja.xpos, TILE_PIXEL_SIZE, self._mirror_odd_dir) - 1
         nty = int(ninja.ypos / TILE_PIXEL_SIZE) - 1
         mx = self._SCANDOT_MAX_TILES
+        mx_i = int(mx)
+        values = [1.0] * GAME_STATE_SCANDOTS_DIM
         for i, off in enumerate(self._SCANDOT_COL_OFFSETS):
             cx = ntx + facing * off
             if not (0 <= cx < MAP_TILE_WIDTH):
-                out[2 * i] = 0.0  # off-map column reads as adjacent wall
-                out[2 * i + 1] = 0.0
+                values[2 * i] = 0.0  # off-map column reads as adjacent wall
+                values[2 * i + 1] = 0.0
                 continue
+            # One numpy->list conversion per column, then a pure-Python walk: the
+            # ray can take up to 2*mx steps per column and an element-wise
+            # `grid[cx, ty]` builds a numpy scalar on every one of them.
+            col = grid[cx].tolist()
             # distance DOWN to floor
             d = 0
             ty = nty
-            while d < int(mx):
+            while d < mx_i:
                 ty += 1
                 d += 1
-                if not (0 <= ty < MAP_TILE_HEIGHT) or grid[cx, ty] != 0:
+                if not (0 <= ty < MAP_TILE_HEIGHT) or col[ty] != 0:
                     break
-            out[2 * i] = min(d / mx, 1.0)
+            values[2 * i] = d / mx if d < mx_i else 1.0
             # distance UP to ceiling
             u = 0
             ty = nty
-            while u < int(mx):
+            while u < mx_i:
                 ty -= 1
                 u += 1
-                if not (0 <= ty < MAP_TILE_HEIGHT) or grid[cx, ty] != 0:
+                if not (0 <= ty < MAP_TILE_HEIGHT) or col[ty] != 0:
                     break
-            out[2 * i + 1] = min(u / mx, 1.0)
+            values[2 * i + 1] = u / mx if u < mx_i else 1.0
+        out[:] = values
         return out
 
     def _impact_risk(self, ln_x: float, ln_y: float, ln_dist: float, vx: float, vy: float) -> float:
@@ -2774,11 +2786,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         proj = getattr(self, "_ghost_arc_projector", None)
         if proj is None:
             return None
-        toggle_mines, toggled_mines = self.nplay_headless.get_mine_entities()
-        n_deadly = len(toggled_mines) + sum(
-            1 for m in toggle_mines if getattr(m, "state", 1) == 0
-        )
-        sig = (len(toggle_mines), len(toggled_mines), n_deadly)
+        toggle_mines, toggled_mines, sig = self._mine_lists_and_signature()
         if sig != getattr(self, "_ghost_arc_mine_sig", None):
             deadly, _safe = classify_mines_by_state(
                 (*toggle_mines, *toggled_mines)
@@ -4747,16 +4755,40 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
     # resolution is fine; threats beyond this saturate to 1.0 (effectively "safe").
     _NEAREST_MINE_NORM_PX = 168.0
 
+    def _mine_lists_and_signature(self):
+        """``(toggle_mines, toggled_mines, sig)`` for the current sim frame.
+
+        ``sig`` is ``(n_toggle, n_toggled, n_deadly)`` — the cache key several
+        observation features use to decide whether the deadly set has changed.
+        Counting the deadly type-1 mines is O(mines) and three call sites wanted
+        the same number every step, so it is computed once per frame here.
+
+        Memoized on the sim frame counter, which advances on every tick, so a
+        toggle can never be missed: a new frame recomputes.
+        """
+        frame = getattr(self.nplay_headless.sim, "frame", None)
+        cached = self._mine_sig_cache
+        if cached is not None and frame is not None and frame == self._mine_sig_frame:
+            return cached
+        toggle_mines, toggled_mines = self.nplay_headless.get_mine_entities()
+        n_deadly = len(toggled_mines) + sum(
+            1 for m in toggle_mines if getattr(m, "state", 1) == 0
+        )
+        result = (
+            toggle_mines,
+            toggled_mines,
+            (len(toggle_mines), len(toggled_mines), n_deadly),
+        )
+        self._mine_sig_frame = frame
+        self._mine_sig_cache = result
+        return result
+
     def _get_deadly_mine_xy(self) -> np.ndarray:
         """(N, 2) array of deadly-mine pixel centers, cached by mine signature.
 
         Recomputed only when the deadly set changes (a toggle / level change);
         otherwise the per-step nearest-mine read is just a vectorized min."""
-        toggle_mines, toggled_mines = self.nplay_headless.get_mine_entities()
-        n_deadly = len(toggled_mines) + sum(
-            1 for m in toggle_mines if getattr(m, "state", 1) == 0
-        )
-        sig = (len(toggle_mines), len(toggled_mines), n_deadly)
+        toggle_mines, toggled_mines, sig = self._mine_lists_and_signature()
         if sig == self._deadly_xy_sig and self._deadly_mine_xy is not None:
             return self._deadly_mine_xy
         self._deadly_xy_sig = sig

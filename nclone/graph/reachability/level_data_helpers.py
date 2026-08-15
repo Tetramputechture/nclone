@@ -112,9 +112,22 @@ def get_mine_state_signature(level_data: LevelData) -> Tuple:
     if n == 0:
         return (0, b"")
 
-    states = np.fromiter(
-        (_extract_mine_state(mine) for mine in toggle_mines),
-        dtype=np.int8,
-        count=n,
-    )
+    # Fast path: on the native backend every mine carries a live ``entity_ref``
+    # whose ``state`` is authoritative, which is the first branch
+    # ``_extract_mine_state`` takes. Reading it directly skips a Python call, a
+    # dict lookup and a hasattr per mine on a per-step path. Any mine missing the
+    # ref (python backend, serialized level data) raises and falls back to the
+    # general resolver, so the result is unchanged either way.
+    try:
+        states = np.fromiter(
+            (mine["entity_ref"].state for mine in toggle_mines),
+            dtype=np.int8,
+            count=n,
+        )
+    except (KeyError, AttributeError, TypeError):
+        states = np.fromiter(
+            (_extract_mine_state(mine) for mine in toggle_mines),
+            dtype=np.int8,
+            count=n,
+        )
     return (n, states.tobytes())

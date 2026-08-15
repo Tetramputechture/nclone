@@ -5,8 +5,14 @@ Provides efficient spatial queries for finding closest nodes to positions,
 replacing O(N) linear search with O(1) grid-based lookup.
 """
 
+from operator import itemgetter
 from typing import Dict, List, Tuple, Optional, Set
 import math
+
+# Module-level sort keys: `operator.itemgetter` runs in C, where the equivalent
+# lambda costs a Python frame per element on a per-step hot path.
+_first = itemgetter(0)
+_second = itemgetter(1)
 
 
 class SpatialHash:
@@ -112,9 +118,82 @@ class SpatialHash:
     def query(
         self, query_x: float, query_y: float, radius: float
     ) -> List[Tuple[int, int]]:
-        """Return node positions within radius. Alias for find_all_within_radius positions."""
-        results = self.find_all_within_radius(query_x, query_y, radius)
-        return [pos for pos, _ in results]
+        """Return node positions within radius, closest first.
+
+        Same result as ``[pos for pos, _ in find_all_within_radius(...)]`` but it
+        never takes a square root: ordering by squared distance is the same
+        ordering (sqrt is strictly increasing) and both sorts are stable, so ties
+        resolve identically. This is the per-step raycast path
+        (``find_platform_in_direction`` calls it once per 6px step), so the sqrt
+        and the (pos, distance) tuples it built were pure waste.
+        """
+        grid = self.grid
+        if not grid:
+            return []
+
+        cell_size = self.cell_size
+        cell_x = int(math.floor(query_x / cell_size))
+        cell_y = int(math.floor(query_y / cell_size))
+        # `ceil(radius / cell_size)` rings is EXACT, not an approximation: two
+        # points at most `radius` apart differ by at most that many cells on each
+        # axis, so a further ring can hold nothing the radius test would keep.
+        # The old `+ 1` scanned 25 cells where 9 suffice, and this is the inner
+        # loop of the 500px/6px platform raycast.
+        cells_to_check = int(math.ceil(radius / cell_size))
+        radius_sq = radius * radius
+
+        found = []
+        append = found.append
+        get = grid.get
+        for cx in range(cell_x - cells_to_check, cell_x + cells_to_check + 1):
+            for cy in range(cell_y - cells_to_check, cell_y + cells_to_check + 1):
+                for node_pos in get((cx, cy), ()):
+                    ddx = node_pos[0] - query_x
+                    ddy = node_pos[1] - query_y
+                    dist_sq = ddx * ddx + ddy * ddy
+                    if dist_sq <= radius_sq:
+                        append((dist_sq, node_pos))
+
+        found.sort(key=_first)
+        return [pos for _, pos in found]
+
+    def nearest_member_within(
+        self, query_x: float, query_y: float, radius: float, membership
+    ) -> Optional[Tuple[int, int]]:
+        """Nearest node STRICTLY within ``radius`` that is also in ``membership``.
+
+        Equivalent to scanning ``query(...)`` and keeping the first candidate that
+        is in ``membership`` and strictly closer than ``radius``, which is what
+        the platform raycast does -- but without materialising or sorting the
+        candidate list. The results match exactly: ``query``'s sort is stable over
+        this same cell walk, so among equal distances the first element of the
+        sorted list is the first one this walk sees.
+
+        ``membership`` is anything supporting ``in`` (the caller passes the graph
+        adjacency dict).
+        """
+        grid = self.grid
+        if not grid:
+            return None
+
+        cell_size = self.cell_size
+        cell_x = int(math.floor(query_x / cell_size))
+        cell_y = int(math.floor(query_y / cell_size))
+        cells_to_check = int(math.ceil(radius / cell_size))
+
+        best = None
+        best_dist_sq = radius * radius
+        get = grid.get
+        for cx in range(cell_x - cells_to_check, cell_x + cells_to_check + 1):
+            for cy in range(cell_y - cells_to_check, cell_y + cells_to_check + 1):
+                for node_pos in get((cx, cy), ()):
+                    ddx = node_pos[0] - query_x
+                    ddy = node_pos[1] - query_y
+                    dist_sq = ddx * ddx + ddy * ddy
+                    if dist_sq < best_dist_sq and node_pos in membership:
+                        best_dist_sq = dist_sq
+                        best = node_pos
+        return best
 
     def find_all_within_radius(
         self, query_x: float, query_y: float, radius: float
@@ -139,27 +218,26 @@ class SpatialHash:
         cell_x, cell_y = query_cell
 
         # Determine how many cells to check based on radius
-        cells_to_check = int(math.ceil(radius / self.cell_size)) + 1
+        cells_to_check = int(math.ceil(radius / self.cell_size))  # exact; see query()
 
         nodes_within_radius = []
+        append = nodes_within_radius.append
         radius_sq = radius * radius
+        get = self.grid.get
+        sqrt = math.sqrt
 
         for dx in range(-cells_to_check, cells_to_check + 1):
             for dy in range(-cells_to_check, cells_to_check + 1):
-                check_cell = (cell_x + dx, cell_y + dy)
-                nodes_in_cell = self.grid.get(check_cell, [])
-
-                for node_pos in nodes_in_cell:
-                    dist_sq = (node_pos[0] - query_x) ** 2 + (
-                        node_pos[1] - query_y
-                    ) ** 2
+                for node_pos in get((cell_x + dx, cell_y + dy), ()):
+                    ddx = node_pos[0] - query_x
+                    ddy = node_pos[1] - query_y
+                    dist_sq = ddx * ddx + ddy * ddy
 
                     if dist_sq <= radius_sq:
-                        distance = math.sqrt(dist_sq)
-                        nodes_within_radius.append((node_pos, distance))
+                        append((node_pos, sqrt(dist_sq)))
 
         # Sort by distance (closest first)
-        nodes_within_radius.sort(key=lambda x: x[1])
+        nodes_within_radius.sort(key=_second)
         return nodes_within_radius
 
     def clear(self):

@@ -367,6 +367,14 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # recomputation always sees every mine. Cached by map name.
         self._relevant_mine_keys: Optional[set] = None
         self._relevant_mine_keys_map: Optional[str] = None
+        # Whether the cull above has been COMPUTED for _relevant_mine_keys_map.
+        # ``None`` keys is a legitimate result ("nothing worth filtering"), so it
+        # cannot double as "not computed yet" -- doing that made the guard below
+        # miss on every call for every level under the 256-mine threshold, which
+        # is most of them. Each miss re-scanned the full mine set AND re-pushed
+        # the cull to the sim proxy, invalidating its entity_dic: three full
+        # entity_dic rebuilds per env step instead of one.
+        self._relevant_mine_keys_computed = False
         # One-shot guards so a mine-cull outcome is logged ONCE per env instance
         # instead of once per reset. A regression here previously wrote ~18M
         # identical warning lines (a 2.9GB log) and starved throughput; the
@@ -3512,7 +3520,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         physics sim still simulates every mine, so death correctness is unchanged.
         """
         map_name = getattr(self.map_loader, "current_map_name", None)
-        if self._relevant_mine_keys is not None and self._relevant_mine_keys_map == map_name:
+        if self._relevant_mine_keys_computed and self._relevant_mine_keys_map == map_name:
             return self._relevant_mine_keys
 
         try:
@@ -3568,6 +3576,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             if n_mines < 256:
                 self._relevant_mine_keys = None
                 self._relevant_mine_keys_map = map_name
+                self._relevant_mine_keys_computed = True
                 # ALWAYS push (including None) so a cull installed for a
                 # previous level can never survive on the sim proxy.
                 if hasattr(nplay, "set_relevant_mine_keys"):
@@ -3580,6 +3589,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
             )
             self._relevant_mine_keys = keys
             self._relevant_mine_keys_map = map_name
+            self._relevant_mine_keys_computed = True
             # Push the cull to the entity_dic SOURCE so the per-tick proxy build,
             # mine-state scan, and every downstream view skip culled mines too.
             if hasattr(nplay, "set_relevant_mine_keys"):
@@ -3608,6 +3618,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 self._mine_cull_failed_logged = True
             self._relevant_mine_keys = None
             self._relevant_mine_keys_map = map_name
+            self._relevant_mine_keys_computed = True
             # Push the cleared cull to the proxy too (best-effort): the
             # exception path must not leave a previous level's cull installed.
             try:

@@ -422,11 +422,16 @@ class GraphMixin:
             # Toggle mines (entity_dic key 1)
             if 1 in entity_dic:
                 toggle_mines = entity_dic[1]
-                for i, mine in enumerate(toggle_mines):
-                    if hasattr(mine, "state"):
-                        # Use entity memory address as stable ID
-                        mine_id = f"mine_{id(mine)}"
-                        mine_states[mine_id] = int(mine.state)
+                # Key on the raw entity id rather than an f-string wrapping it:
+                # the dict exists only to be compared with the previous one, and
+                # `id(m) -> f"mine_{id(m)}"` is a bijection, so every equality
+                # test has the same outcome. On a 110-mine level this ran twice
+                # per step and the formatting alone was a measurable slice of it.
+                mine_states = {
+                    id(mine): int(mine.state)
+                    for mine in toggle_mines
+                    if hasattr(mine, "state")
+                }
 
         return mine_states
 

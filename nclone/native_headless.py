@@ -704,7 +704,14 @@ class _SimProxy:
 
     def set_relevant_mine_keys(self, keys):
         """Install (or clear, with ``None``) the relevant-mine key set and force a
-        rebuild so the next entity_dic reflects the cull."""
+        rebuild so the next entity_dic reflects the cull.
+
+        Re-pushing the SAME cull is a no-op: the env pushes on every call to
+        ``_get_relevant_mine_keys``, and invalidating unconditionally threw away
+        an entity_dic that was built from exactly these keys.
+        """
+        if keys is self._relevant_mine_keys:
+            return
         self._relevant_mine_keys = keys
         self._entity_build_plan = None  # recompute the index plan against new keys
         self._entity_dic_valid = False

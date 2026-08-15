@@ -3033,6 +3033,77 @@ BUCKET_CATALOG: "dict[str, dict[int, List[BucketEntry]]]" = {
         3: [("hazard_overlay", "mixed_hazard_t3", 1)],
         4: [("hazard_overlay", "mixed_hazard_t4", 1)],
     },
+    # ---- gamma-4 layout bucket. APPENDED (see MINE_FIELD's note): every bucket
+    # above keeps its seed offset.
+    #
+    # CHAMBER_CAVERNS closes the LAYOUT half of the procgen-vs-official gap, the
+    # way MINE_FIELD/HAZARD_FIELD close the entity-count half. Every other
+    # procedural bucket here emits a SINGLE-AREA level -- one corridor, one
+    # chamber, one shaft -- while official N++ levels are typically several
+    # distinct areas the ninja traverses between on the way to switch and door.
+    # `map_cavern_chambers` produces that macro-structure directly: BSP-partitioned
+    # chambers joined by 2-wide wall-jumpable rock tunnels, with a tile-variety
+    # pass that only ever removes material (so it can never sever a route).
+    #
+    # MEASURED against the human-corpus manifold by generate_benchmark_dataset:
+    #
+    #     CHAMBER_CAVERNS   69% on-manifold      COMPOSITE      18%
+    #     LOOP_CORRIDOR     50%                  CHAMBER_MAZE    4%
+    #     PLATFORMING       46%
+    #
+    # i.e. the most official-like layout source in this catalog by a wide margin.
+    # The tiers also land at tile-histogram entropy ~1.1-1.2 bits (official 1.34)
+    # and a shaped-tile share of ~2.5% (official 4.1%), using 30 of the 34 usable
+    # tile types -- versus the pure 0/1 palette every older chamber generator
+    # emits.
+    #
+    # Tiers ramp the three axes the generator actually controls: chamber COUNT,
+    # route TOPOLOGY (tree -> cycles, outbound -> out-and-back), and rock detail.
+    # The route-shape probes (`cavern_linear` / `cavern_nonlinear`) ride along at
+    # low weight so each tier holds a topology-controlled minority.
+    #
+    # PHASE SCOPE: every preset here is phase-1 EXCEPT `cavern_oneway`, which is
+    # phase 2 (ONE_WAY is already modelled by `graph/reachability/entity_mask.py`,
+    # so the cost-to-go field stays correct). Both are in scope for a run on the
+    # phase-2 corpus. `cavern_traversal` is deliberately NOT here -- see
+    # CHAMBER_CAVERNS_TRAVERSAL below.
+    "CHAMBER_CAVERNS": {
+        1: [("cavern_chambers", "cavern_t1", 3),
+            ("cavern_chambers", "cavern_linear", 1)],
+        2: [("cavern_chambers", "cavern_t2", 3),
+            ("cavern_chambers", "cavern_nonlinear", 1)],
+        3: [("cavern_chambers", "cavern_t3", 3),
+            ("cavern_chambers", "cavern_gold", 1),
+            ("cavern_chambers", "cavern_oneway", 1)],
+        4: [("cavern_chambers", "cavern_t4", 3),
+            ("cavern_chambers", "cavern_full", 2),
+            ("cavern_chambers", "cavern_dense_mines", 1)],
+    },
+    # `cavern_traversal` gets its OWN bucket rather than a tier of the one above,
+    # because it is the only cavern preset that moves the ENTITY SCOPE rather than
+    # the layout: bounce blocks and launch pads are PHASE 3, "the only phase that
+    # changes the cost-to-go field, and therefore the only one that can invalidate
+    # PBRS, the demo corpus and the reverse curriculum at once"
+    # (constants/entity_types.py).
+    #
+    # Folding it into CHAMBER_CAVERNS/T4 would mean any phase admitting T4 -- the
+    # gamma-4 pre-official block included -- silently trains on levels whose
+    # cost-to-go field is wrong, confounding the layout question this bucket
+    # exists to ask with an entity-scope jump. The generator's own docstring asks
+    # for exactly this separation: "kept as its own preset so that decision is
+    # explicit rather than inherited by a tier".
+    #
+    # Deliberately absent from CURRICULUM_SCHEDULE, so it stays out of
+    # PHASE_1_BUCKETS and no phase-1/2 run picks it up by default. Generate it
+    # explicitly (`--buckets CHAMBER_CAVERNS_TRAVERSAL`) when a phase-3 run is
+    # actually being prepared. The tiers ramp chamber count and traversal density
+    # via the shared per-tier geometry, not via separate presets.
+    "CHAMBER_CAVERNS_TRAVERSAL": {
+        1: [("cavern_chambers", "cavern_traversal", 1)],
+        2: [("cavern_chambers", "cavern_traversal", 1)],
+        3: [("cavern_chambers", "cavern_traversal", 1)],
+        4: [("cavern_chambers", "cavern_traversal", 1)],
+    },
 }
 
 
@@ -3094,6 +3165,17 @@ CURRICULUM_SCHEDULE: List[str] = [
     "DEATH_BALL",
     "HAZARD_FIELD",
     "COMPOSITE",
+    # ---- gamma-4. LAST, and deliberately so: this is the closest procedural
+    # approximation to an official layout in the catalog (multi-area chamber
+    # graphs with rock tunnels between them), so it belongs immediately before
+    # the official ramp rather than among the single-mechanic buckets. It also
+    # presupposes the whole spine -- crossing a chamber graph is walking,
+    # wall-jumping, shaft climbing and mine avoidance in sequence -- which is the
+    # same reason COMPOSITE sits at the end.
+    #
+    # CHAMBER_CAVERNS_TRAVERSAL is intentionally NOT listed: it is phase-3 entity
+    # scope, and membership here is what puts a bucket into PHASE_1_BUCKETS.
+    "CHAMBER_CAVERNS",
 ]
 
 

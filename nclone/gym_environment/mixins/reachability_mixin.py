@@ -102,6 +102,9 @@ class ReachabilityMixin:
         # that rounds obstacles. Rebuilt only on map identity change.
         self._free_space_nav_source = None
         self._free_space_nav_map_name = None
+        # (map_data, source_cls_name, use_hard, source) memo -- see
+        # _get_free_space_nav_source.
+        self._free_space_nav_memo = None
         self._cached_free_space_nav = np.zeros(4, dtype=np.float32)
 
         # Lattice-backed waypoint subgoals (long-horizon distance fix). A
@@ -140,6 +143,7 @@ class ReachabilityMixin:
         # source object itself is LRU-cached, only the map-identity check resets).
         self._free_space_nav_map_name = None
         self._free_space_nav_source = None
+        self._free_space_nav_memo = None
         self._cached_free_space_nav = np.zeros(4, dtype=np.float32)
         self._necessary_doors_open = 0
         # Force a per-episode tracker rebuild (picks up newly injected waypoints /
@@ -742,6 +746,22 @@ class ReachabilityMixin:
         mine_hard = bool(getattr(getattr(self, "config", None),
                                  "mine_faithful_obs", False))
         use_hard = mine_hard and cls.__name__ == "FreeSpaceDistanceSource"
+        # Per-env memo in front of the process-wide LRU, keyed on the IDENTITY of
+        # the map_data list. Every observation calls this (the ghost-arc bundle
+        # needs the cost field), and building the LRU key hashes all ~1900 map
+        # bytes through a Python generator -- on OFFICIAL levels that one line was
+        # the single most-executed thing in the step. ``current_map_data`` is only
+        # ever REPLACED on load, never mutated in place, so identity implies same
+        # level; the class/mine_hard pair is memoized alongside it because both are
+        # config-derived and must not alias.
+        memo = getattr(self, "_free_space_nav_memo", None)
+        if (
+            memo is not None
+            and memo[0] is md
+            and memo[1] == cls.__name__
+            and memo[2] == bool(use_hard)
+        ):
+            return memo[3]
         # Key on the source CLASS + mine_hard so variants never alias in the LRU.
         key = (cls.__name__, bool(use_hard), hash(tuple(int(v) for v in md)))
         src = _FREE_SPACE_NAV_CACHE.get(key)
@@ -757,6 +777,7 @@ class ReachabilityMixin:
             if len(_FREE_SPACE_NAV_CACHE) >= _FREE_SPACE_NAV_CACHE_CAP:
                 _FREE_SPACE_NAV_CACHE.clear()
             _FREE_SPACE_NAV_CACHE[key] = src
+        self._free_space_nav_memo = (md, cls.__name__, bool(use_hard), src)
         return src
 
     def _compute_reachability(self, ninja_pos: Tuple[int, int]) -> np.ndarray:

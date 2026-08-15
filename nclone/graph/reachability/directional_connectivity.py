@@ -74,19 +74,14 @@ def find_platform_in_direction(
         # Find nearest graph node to ray position
         nearest_node = None
         if spatial_hash is not None:
-            # Fast O(1) spatial hash lookup
+            # Fast O(1) spatial hash lookup. `nearest_member_within` fuses the
+            # radius query with this nearest-in-adjacency scan, which is exactly
+            # what the sorted candidate list was used for; see its docstring for
+            # why the chosen node is identical.
             try:
-                candidates = spatial_hash.query(ray_x, ray_y, radius=step_size * 2)
-                min_dist_sq = (step_size * 2) ** 2
-
-                for candidate in candidates:
-                    if candidate in adjacency:
-                        cdist_sq = (candidate[0] - ray_x) ** 2 + (
-                            candidate[1] - ray_y
-                        ) ** 2
-                        if cdist_sq < min_dist_sq:
-                            min_dist_sq = cdist_sq
-                            nearest_node = candidate
+                nearest_node = spatial_hash.nearest_member_within(
+                    ray_x, ray_y, step_size * 2, adjacency
+                )
             except Exception:
                 # Fallback to grid snapping if spatial hash fails
                 pass

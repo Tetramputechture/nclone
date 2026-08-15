@@ -948,10 +948,23 @@ impl Simulator {
                 self.ninja
                     .pre_collision(&self.entity_grid, self.has_physical_entities);
 
-                // 4 physics substeps
-                for _ in 0..4 {
-                    self.collide_vs_objects();
-                    self.ninja.collide_vs_tiles(&self.segment_grid, &self.segments);
+                // 4 physics substeps.
+                //
+                // Open-air skip, the same one `tick_tiles_only` already uses:
+                // with no active segment in the (radius-padded) swept region,
+                // `sweep_circle_vs_tiles` returns 1.0 and the depenetration loop
+                // breaks on its first iteration, so all four substeps are
+                // provably no-ops. Gated additionally on there being no
+                // physically-collidable entity on the map, because those move the
+                // ninja inside the loop and would invalidate a region test taken
+                // before it -- when that flag is false `pre_collision` leaves the
+                // entity neighbourhood empty, so `collide_vs_objects` is a no-op
+                // too and the loop reduces exactly to the tiles-only case.
+                if self.has_physical_entities || self.frame_has_tile_segments() {
+                    for _ in 0..4 {
+                        self.collide_vs_objects();
+                        self.ninja.collide_vs_tiles(&self.segment_grid, &self.segments);
+                    }
                 }
 
                 // Post-collision with entity handler
@@ -1309,6 +1322,15 @@ impl Simulator {
             entities[idx].move_entity(&mut ctx);
         }
         for &idx in &thinkable {
+            // Toggle mines are the bulk of the think pass on most maps (they
+            // outnumber every other type in the corpus about two to one), and
+            // their think reads nothing but the ninja. Dispatching them here
+            // skips the 25-arm jump table, the `EntityCtx` build and the door
+            // test below -- all of which are no-ops for a mine.
+            if let Entity::ToggleMine(mine) = &mut entities[idx] {
+                mine.think(ninja);
+                continue;
+            }
             if matches!(entities[idx], Entity::DeathBall(_) | Entity::EvilNinja(_)) {
                 // Handled below: the death ball needs its sibling balls and the
                 // evil ninja needs the position tape, neither of which EntityCtx
@@ -1326,7 +1348,12 @@ impl Simulator {
             entities[idx].think(&mut ctx);
             // Immediately, not in the sync pass below: a door that just closed
             // has to be solid to the entities still to think this frame.
-            sync_one_door(&mut entities[idx], segments, grid_edges);
+            // `sync_one_door` is a no-op for every other variant, so the door
+            // test is hoisted here -- it saves a 25-arm dispatch per thinking
+            // entity per frame, and toggle mines make that the bulk of the pass.
+            if matches!(entities[idx], Entity::SwitchDoor(_) | Entity::LockedDoor(_)) {
+                sync_one_door(&mut entities[idx], segments, grid_edges);
+            }
         }
 
         for i in 0..thinkable.len() {
