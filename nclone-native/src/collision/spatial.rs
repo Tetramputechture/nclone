@@ -5,15 +5,23 @@ use crate::constants::{MAP_HEIGHT, MAP_WIDTH, TILE_SIZE};
 use crate::segments::Segment;
 use crate::types::Cell;
 
-/// Gather active collision segments from tile cells overlapped by a rectangle.
-pub fn gather_segments_from_region(
+/// Visit every active collision segment in the tile cells overlapped by a
+/// rectangle, in gather order. `f` returns `false` to stop the walk early.
+///
+/// This is the primitive behind `gather_segments_from_region`; the collision hot
+/// paths call it directly so that a query which only scans its results (the
+/// sweep, the closest-point search, the depenetration loop) never materialises
+/// the index list. The walk order is identical, so tie-breaks are unchanged.
+#[inline]
+pub fn for_each_segment_in_region<F: FnMut(usize) -> bool>(
     segment_grid: &[[Vec<usize>; MAP_HEIGHT]; MAP_WIDTH],
     all_segments: &[Segment],
     x1: f64,
     y1: f64,
     x2: f64,
     y2: f64,
-) -> Vec<usize> {
+    mut f: F,
+) {
     let min_x = x1.min(x2);
     let min_y = y1.min(y2);
     let max_x = x1.max(x2);
@@ -29,13 +37,12 @@ pub fn gather_segments_from_region(
     // which normal ejects the ninja. The game's gather (`FUN_1050DDF0`,
     // `docs/decomp/gs_sweep_DDF0.c`) runs y outer, x inner. Must stay in step
     // with `nclone/physics.py:gather_segments_from_region`.
-    let mut result = Vec::new();
     if crate::ab::ab().row_major_gather {
         for ycell in min_cell_y..=max_cell_y {
             for xcell in min_cell_x..=max_cell_x {
                 for &seg_idx in &segment_grid[xcell][ycell] {
-                    if all_segments[seg_idx].is_active() {
-                        result.push(seg_idx);
+                    if all_segments[seg_idx].is_active() && !f(seg_idx) {
+                        return;
                     }
                 }
             }
@@ -44,13 +51,29 @@ pub fn gather_segments_from_region(
         for xcell in min_cell_x..=max_cell_x {
             for ycell in min_cell_y..=max_cell_y {
                 for &seg_idx in &segment_grid[xcell][ycell] {
-                    if all_segments[seg_idx].is_active() {
-                        result.push(seg_idx);
+                    if all_segments[seg_idx].is_active() && !f(seg_idx) {
+                        return;
                     }
                 }
             }
         }
     }
+}
+
+/// Gather active collision segments from tile cells overlapped by a rectangle.
+pub fn gather_segments_from_region(
+    segment_grid: &[[Vec<usize>; MAP_HEIGHT]; MAP_WIDTH],
+    all_segments: &[Segment],
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+) -> Vec<usize> {
+    let mut result = Vec::new();
+    for_each_segment_in_region(segment_grid, all_segments, x1, y1, x2, y2, |seg_idx| {
+        result.push(seg_idx);
+        true
+    });
     result
 }
 
@@ -104,12 +127,17 @@ pub fn region_has_segments(
     false
 }
 
-/// Gather entity indices from the 3x3 neighbourhood around a position.
-pub fn gather_entities_from_neighbourhood(
+/// Gather entity indices from the 3x3 neighbourhood around a position into a
+/// caller-owned buffer, which is cleared first. Same result and same order as
+/// `gather_entities_from_neighbourhood`; the per-frame callers use this one so
+/// they can reuse one allocation for the life of the sim.
+pub fn gather_entities_from_neighbourhood_into(
+    out: &mut Vec<usize>,
     entity_grid: &[[Vec<usize>; MAP_HEIGHT]; MAP_WIDTH],
     xpos: f64,
     ypos: f64,
-) -> Vec<usize> {
+) {
+    out.clear();
     let cx = ((xpos / TILE_SIZE).floor() as i32).clamp(0, (MAP_WIDTH - 1) as i32) as usize;
     let cy = ((ypos / TILE_SIZE).floor() as i32).clamp(0, (MAP_HEIGHT - 1) as i32) as usize;
 
@@ -118,12 +146,21 @@ pub fn gather_entities_from_neighbourhood(
     let y_start = if cy > 0 { cy - 1 } else { 0 };
     let y_end = (cy + 1).min(MAP_HEIGHT - 1);
 
-    let mut result = Vec::new();
     for x in x_start..=x_end {
         for y in y_start..=y_end {
-            result.extend_from_slice(&entity_grid[x][y]);
+            out.extend_from_slice(&entity_grid[x][y]);
         }
     }
+}
+
+/// Gather entity indices from the 3x3 neighbourhood around a position.
+pub fn gather_entities_from_neighbourhood(
+    entity_grid: &[[Vec<usize>; MAP_HEIGHT]; MAP_WIDTH],
+    xpos: f64,
+    ypos: f64,
+) -> Vec<usize> {
+    let mut result = Vec::new();
+    gather_entities_from_neighbourhood_into(&mut result, entity_grid, xpos, ypos);
     result
 }
 

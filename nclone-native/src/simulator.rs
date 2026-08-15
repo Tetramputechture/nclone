@@ -38,6 +38,34 @@ pub struct Simulator {
     /// load; entity indices are stable for the lifetime of a Simulator.
     pub entity_order: Vec<usize>,
 
+    /// `entity_order` restricted to the types that take part in the `move` pass.
+    /// `Entity::is_movable` keys off the variant alone, so this set is fixed for
+    /// the lifetime of the sim; only `active()` varies per frame. Precomputed so
+    /// the move pass touches the movers instead of sweeping every entity.
+    move_candidates: Vec<usize>,
+
+    /// `entity_order` restricted to the types that can take part in the `think`
+    /// pass, pre-sorted by `think_order_rank`. The rank depends only on the
+    /// entity type, and a stable sort of the full list filtered afterwards is the
+    /// same sequence as filtering first and then stably sorting -- which is what
+    /// the pass used to do, per frame. `Entity::is_thinkable` is still evaluated
+    /// per frame (the drone arm reads its behaviour), so this is a superset.
+    think_candidates: Vec<usize>,
+
+    /// Indices of the door entities (`door_barrier` returns `Some`). The barrier
+    /// sync visits these instead of every entity.
+    door_indices: Vec<usize>,
+
+    /// Scratch lists for the per-frame move/think passes, kept across frames so
+    /// the passes do not allocate. Emptied at the start of every use.
+    movable_buf: Vec<usize>,
+    thinkable_buf: Vec<usize>,
+
+    /// Scratch lists for `post_collision_with_entities`, kept for the same
+    /// reason: both are rebuilt from scratch on every frame.
+    scratch_entity_indices: Vec<usize>,
+    scratch_collected_doors: Vec<usize>,
+
     /// Death-ball count from the map header (`map_data[1200]`), which gates the
     /// ball-vs-ball repulsion. Read from the header rather than counted so a
     /// header/entity mismatch behaves the way Python's does.
@@ -165,6 +193,27 @@ impl Simulator {
         let mut entity_order: Vec<usize> = (0..data.entities.len()).collect();
         entity_order.sort_by_key(|&i| data.entities[i].entity_type_id());
 
+        // Static slices of `entity_order` for the two per-frame passes. See the
+        // field docs: membership is decided by the entity's variant, which never
+        // changes, so the per-frame work reduces to the `active()`/`is_thinkable()`
+        // checks that were already there.
+        let move_candidates: Vec<usize> = entity_order
+            .iter()
+            .copied()
+            .filter(|&i| data.entities[i].is_movable())
+            .collect();
+        let mut think_candidates: Vec<usize> = entity_order
+            .iter()
+            .copied()
+            .filter(|&i| data.entities[i].can_ever_think())
+            .collect();
+        think_candidates.sort_by_key(|&i| think_order_rank(data.entities[i].entity_type_id()));
+        let door_indices: Vec<usize> = (0..data.entities.len())
+            .filter(|&i| door_barrier(&data.entities[i]).is_some())
+            .collect();
+        let n_move = move_candidates.len();
+        let n_think = think_candidates.len();
+
         let mut sim = Simulator {
             frame: 0,
             ninja,
@@ -173,6 +222,13 @@ impl Simulator {
             entities: data.entities,
             entity_grid: std::array::from_fn(|_| std::array::from_fn(|_| Vec::new())),
             entity_order,
+            move_candidates,
+            think_candidates,
+            door_indices,
+            movable_buf: Vec::with_capacity(n_move),
+            thinkable_buf: Vec::with_capacity(n_think),
+            scratch_entity_indices: Vec::new(),
+            scratch_collected_doors: Vec::new(),
             death_ball_count: if map_data.len() > 1200 {
                 map_data[1200].max(0) as usize
             } else {
@@ -257,7 +313,8 @@ impl Simulator {
     /// doors genuinely toggle every few frames, so an incremental delta beats
     /// rebuilding the whole edge layer.
     fn sync_door_barriers(&mut self) {
-        for i in 0..self.entities.len() {
+        for k in 0..self.door_indices.len() {
+            let i = self.door_indices[k];
             let Some((seg_idx, dx, dy, orientation, closed)) = door_barrier(&self.entities[i])
             else {
                 continue;
@@ -1176,17 +1233,22 @@ impl Simulator {
     /// difference is observable: an entity deactivated during `move` still gets
     /// its `think` on the same frame.
     fn run_entity_passes(&mut self) {
-        let mut movable: Vec<usize> = Vec::new();
-        let mut thinkable: Vec<usize> = Vec::new();
-        for &idx in &self.entity_order {
-            let entity = &self.entities[idx];
-            if !entity.active() {
-                continue;
-            }
-            if entity.is_movable() {
+        // Both lists are drawn from precomputed, correctly ordered candidate
+        // slices (see the `move_candidates` / `think_candidates` field docs), and
+        // land in buffers owned by the sim, so the passes neither sort nor
+        // allocate. The per-frame predicates are unchanged.
+        let mut movable = std::mem::take(&mut self.movable_buf);
+        let mut thinkable = std::mem::take(&mut self.thinkable_buf);
+        movable.clear();
+        thinkable.clear();
+        for &idx in &self.move_candidates {
+            if self.entities[idx].active() {
                 movable.push(idx);
             }
-            if entity.is_thinkable() {
+        }
+        for &idx in &self.think_candidates {
+            let entity = &self.entities[idx];
+            if entity.active() && entity.is_thinkable() {
                 thinkable.push(idx);
             }
         }
@@ -1206,8 +1268,10 @@ impl Simulator {
         // DEAD ninja, so whether the killing think ran first decides the mine's
         // state. Types 18, 19 and 20 all think before type 1 in the game; before
         // 18 and 19 landed, only type 20 sat in that window.
-        thinkable.sort_by_key(|&idx| think_order_rank(self.entities[idx].entity_type_id()));
+        // `think_candidates` is already in this order -- see its field docs.
         if movable.is_empty() && thinkable.is_empty() {
+            self.movable_buf = movable;
+            self.thinkable_buf = thinkable;
             return;
         }
 
@@ -1277,6 +1341,9 @@ impl Simulator {
         // A regular door that auto-closed during `think` must be solid before the
         // ninja's collision substeps run this frame.
         self.sync_door_barriers();
+
+        self.movable_buf = movable;
+        self.thinkable_buf = thinkable;
     }
 
     /// Execute one physics frame without entity AI (for value iteration).
@@ -1438,8 +1505,11 @@ impl Simulator {
 
     /// Handle post-collision entity interactions.
     fn post_collision_with_entities(&mut self) {
-        // Gather entity indices from neighbourhood
-        let entity_indices = crate::collision::spatial::gather_entities_from_neighbourhood(
+        // Gather entity indices from neighbourhood into a buffer kept across
+        // frames, so the per-frame gather does not allocate.
+        let mut entity_indices = std::mem::take(&mut self.scratch_entity_indices);
+        crate::collision::spatial::gather_entities_from_neighbourhood_into(
+            &mut entity_indices,
             &self.entity_grid,
             self.ninja.xpos,
             self.ninja.ypos,
@@ -1447,10 +1517,11 @@ impl Simulator {
 
         // Contacts in the game's list order, kept alongside the sum for the
         // `NCLONE_AB_WN_FIRST` variant. Entities come first there, so the tile
-        // contacts gathered after the loop go in the second vector.
+        // contacts gathered after the loop go in the second slot. Only the FIRST
+        // contact of each list is ever read, so only the first is kept.
         let mut wall_normal = 0.0f64;
-        let mut entity_wn: Vec<f64> = Vec::new();
-        let mut tile_wn: Vec<f64> = Vec::new();
+        let mut entity_wn: Option<f64> = None;
+        let mut tile_wn: Option<f64> = None;
 
         // Process entity logical collisions.
         //
@@ -1459,7 +1530,8 @@ impl Simulator {
         // be collected in a single frame. Keeping only the last one left the other
         // door shut forever -- the ninja then walked through it on frame 392 and
         // native reported a timeout where python won.
-        let mut collected_doors: Vec<usize> = Vec::new();
+        let mut collected_doors = std::mem::take(&mut self.scratch_collected_doors);
+        collected_doors.clear();
 
         for &eidx in &entity_indices {
             if eidx >= self.entities.len() {
@@ -1551,7 +1623,7 @@ impl Simulator {
                         // `list[0]` is not. Python drops these implicitly because
                         // `0.0` is falsy.
                         if n != 0.0 {
-                            entity_wn.push(n);
+                            entity_wn.get_or_insert(n);
                         }
                     }
                 }
@@ -1601,7 +1673,7 @@ impl Simulator {
                         // `list[0]` is not. Python drops these implicitly because
                         // `0.0` is falsy.
                         if n != 0.0 {
-                            entity_wn.push(n);
+                            entity_wn.get_or_insert(n);
                         }
                     }
                 }
@@ -1618,7 +1690,7 @@ impl Simulator {
                         // `list[0]` is not. Python drops these implicitly because
                         // `0.0` is falsy.
                         if n != 0.0 {
-                            entity_wn.push(n);
+                            entity_wn.get_or_insert(n);
                         }
                     }
                 }
@@ -1644,7 +1716,7 @@ impl Simulator {
                         // `list[0]` is not. Python drops these implicitly because
                         // `0.0` is falsy.
                         if n != 0.0 {
-                            entity_wn.push(n);
+                            entity_wn.get_or_insert(n);
                         }
                     }
                 }
@@ -1680,29 +1752,31 @@ impl Simulator {
         // sent the jump ladder down the wall-jump row instead of `lp_jump` on
         // frame 1, and native died where the game and the python sim win.
         let rad = crate::constants::NINJA_RADIUS + 0.1;
-        let seg_indices = crate::collision::spatial::gather_segments_from_region(
+        let (nxpos, nypos) = (self.ninja.xpos, self.ninja.ypos);
+        crate::collision::spatial::for_each_segment_in_region(
             &self.segment_grid,
             &self.segments,
-            self.ninja.xpos - rad,
-            self.ninja.ypos - rad,
-            self.ninja.xpos + rad,
-            self.ninja.ypos + rad,
+            nxpos - rad,
+            nypos - rad,
+            nxpos + rad,
+            nypos + rad,
+            |seg_idx| {
+                let seg = &self.segments[seg_idx];
+                let (_, a, b) = seg.get_closest_point(nxpos, nypos);
+                let dx = nxpos - a;
+                let dy = nypos - b;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dy.abs() < 0.00001 && dist > 0.0 && dist <= rad {
+                    wall_normal += dx / dist;
+                    tile_wn.get_or_insert(dx / dist);
+                }
+                true
+            },
         );
-        for seg_idx in seg_indices {
-            let seg = &self.segments[seg_idx];
-            let (_, a, b) = seg.get_closest_point(self.ninja.xpos, self.ninja.ypos);
-            let dx = self.ninja.xpos - a;
-            let dy = self.ninja.ypos - b;
-            let dist = (dx * dx + dy * dy).sqrt();
-            if dy.abs() < 0.00001 && dist > 0.0 && dist <= rad {
-                wall_normal += dx / dist;
-                tile_wn.push(dx / dist);
-            }
-        }
 
         // Every switch collected this frame opens its own door and puts it in the
         // entity grid, so the ninja can reach it from the next frame on.
-        for idx in collected_doors {
+        for idx in collected_doors.drain(..) {
             if idx < self.entities.len() {
                 if let Entity::ExitDoor(door) = &mut self.entities[idx] {
                     door.switch_hit = true;
@@ -1717,7 +1791,7 @@ impl Simulator {
         self.ninja.airborn = true;
         self.ninja.walled = false;
         if crate::ab::ab().wall_normal_first {
-            if let Some(&n) = entity_wn.first().or_else(|| tile_wn.first()) {
+            if let Some(n) = entity_wn.or(tile_wn) {
                 self.ninja.walled = true;
                 self.ninja.wall_normal = if crate::ab::ab().wall_normal_sign {
                     if n > 0.0 { 1.0 } else { -1.0 }
@@ -1833,6 +1907,9 @@ impl Simulator {
                                 Some("crush"));
             }
         }
+
+        self.scratch_entity_indices = entity_indices;
+        self.scratch_collected_doors = collected_doors;
     }
 
     /// Post-collision handling using tile geometry only — no entity interactions.

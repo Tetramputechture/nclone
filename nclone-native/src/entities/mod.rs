@@ -243,6 +243,31 @@ impl Entity {
         ) || matches!(self, Entity::Drone(d) if d.is_thinkable())
     }
 
+    /// Type-only superset of `is_thinkable`: true for every variant that *can*
+    /// reach the think pass, ignoring the one dynamic arm (a drone's behaviour).
+    ///
+    /// Used to precompute the think pass's candidate list at load. It must stay a
+    /// superset -- an entity excluded here can never think, so any variant added
+    /// to `is_thinkable` has to be added here too.
+    pub fn can_ever_think(&self) -> bool {
+        matches!(
+            self,
+            Entity::ToggleMine(_)
+                | Entity::Thwump(_)
+                | Entity::ShoveThwump(_)
+                | Entity::SwitchDoor(_)
+                | Entity::DeathBall(_)
+                | Entity::FloorGuard(_)
+                | Entity::EyeBat(_)
+                | Entity::Rocket(_)
+                | Entity::Turret(_)
+                | Entity::DualLaser(_)
+                | Entity::EvilNinja(_)
+                | Entity::PcRocket(_)
+                | Entity::Drone(_)
+        )
+    }
+
     /// Whether this entity participates in the per-frame `move` pass, which runs
     /// BEFORE the `think` pass and before ninja physics (nclone/nsim.py:398).
     ///

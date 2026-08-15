@@ -14,6 +14,24 @@ from ..gym_environment.config import EnvironmentConfig
 from ..gym_environment.npp_environment import NppEnvironment
 
 
+# Semantic version of the tape -> (observation, action) decoding contract.
+#
+# BUMP THIS whenever a change alters the ACTIONS or OBSERVATIONS produced from an
+# UNCHANGED tape. Downstream consumers that cache decoded demos (npp-rl's FiGAR
+# BC/DAPG dataset) hash it into their cache key, because a semantic change of this
+# kind is invisible to every shape-based staleness check they have: the cached
+# arrays are exactly the same size and dtype, only the labels differ. Without a
+# version bump a corrected decoder silently keeps training on the old, wrong
+# targets for as long as the cache survives.
+#
+#   1 -> original.
+#   2 -> 2026-08-14, pipeline-audit P0.1: input bytes 6 and 7 decode to LEFT and
+#        LEFT+JUMP instead of NOOP. Affects 11.8% of harvested tapes and 68.2% of
+#        the first-party attract demos, so every cache built before this must be
+#        rebuilt.
+REPLAY_DECODE_CONTRACT_VERSION = 2
+
+
 def map_input_to_action(input_byte: int) -> int:
     """Map N++ input byte (0-7) to the 6-way discrete action space.
 

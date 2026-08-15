@@ -260,8 +260,14 @@ impl Ninja {
         self.y_crush = 0.0;
         self.crush_len = 0.0;
         if gather_physical_entities {
-            self.cached_entity_indices =
-                spatial::gather_entities_from_neighbourhood(entity_grid, self.xpos, self.ypos);
+            // Fill in place: the buffer lives on the ninja, so the per-frame
+            // gather reuses one allocation instead of making a fresh Vec.
+            spatial::gather_entities_from_neighbourhood_into(
+                &mut self.cached_entity_indices,
+                entity_grid,
+                self.xpos,
+                self.ypos,
+            );
         } else {
             self.cached_entity_indices.clear();
         }
@@ -303,9 +309,14 @@ impl Ninja {
         let mut floor_normal_x = self.floor_normal_x;
         let mut floor_normal_y = self.floor_normal_y;
 
+        // Read the A/B config once: `regather` is checked on every iteration of a
+        // loop that runs up to 32 times per substep, and each read is an atomic
+        // load through a `OnceLock`.
+        let regather = crate::ab::ab().regather;
+
         // Gathered once up front only for the `NCLONE_AB_NO_REGATHER` variant;
         // the default path re-gathers inside the loop and ignores this.
-        let gathered_once = if crate::ab::ab().regather {
+        let gathered_once = if regather {
             Vec::new()
         } else {
             spatial::gather_segments_from_region(
@@ -327,32 +338,17 @@ impl Ninja {
             // port used to gather once, before the loop, from the pre-depenetration
             // position -- which loses any segment the ninja is pushed into and
             // keeps ones it has been pushed out of.
-            let regathered;
-            let seg_indices: &[usize] = if crate::ab::ab().regather {
-                regathered = spatial::gather_segments_from_region(
-                    segment_grid,
-                    all_segments,
-                    xpos - NINJA_RADIUS,
-                    ypos - NINJA_RADIUS,
-                    xpos + NINJA_RADIUS,
-                    ypos + NINJA_RADIUS,
-                );
-                &regathered
-            } else {
-                &gathered_once
-            };
-
             // Find closest point from gathered segments
             let mut shortest_distance: f64 = 9999999.0;
             let mut result = 0i32;
             let mut closest_a = 0.0f64;
             let mut closest_b = 0.0f64;
 
-            for &seg_idx in seg_indices {
-                let seg = &all_segments[seg_idx];
-                if !seg.is_active() {
-                    continue;
-                }
+            // Scan straight out of the cell walk rather than through an index
+            // list: the walk order, the `is_active` filter and the strict-`<`
+            // tie-break are the same, so the winning segment is the same, but the
+            // loop no longer allocates a `Vec` per iteration.
+            let mut consider = |seg: &Segment| {
                 let (is_back_facing, a, b) = seg.get_closest_point(xpos, ypos);
                 let mut distance_sq = (xpos - a) * (xpos - a) + (ypos - b) * (ypos - b);
                 if !is_back_facing {
@@ -363,6 +359,28 @@ impl Ninja {
                     closest_a = a;
                     closest_b = b;
                     result = if is_back_facing { -1 } else { 1 };
+                }
+            };
+            if regather {
+                spatial::for_each_segment_in_region(
+                    segment_grid,
+                    all_segments,
+                    xpos - NINJA_RADIUS,
+                    ypos - NINJA_RADIUS,
+                    xpos + NINJA_RADIUS,
+                    ypos + NINJA_RADIUS,
+                    |seg_idx| {
+                        consider(&all_segments[seg_idx]);
+                        true
+                    },
+                );
+            } else {
+                for &seg_idx in &gathered_once {
+                    let seg = &all_segments[seg_idx];
+                    if !seg.is_active() {
+                        continue;
+                    }
+                    consider(seg);
                 }
             }
 

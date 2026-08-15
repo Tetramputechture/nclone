@@ -24,19 +24,26 @@ pub fn sweep_circle_vs_tiles(
     let x2 = xpos_old.max(xpos_new) + width;
     let y2 = ypos_old.max(ypos_new) + width;
 
-    let seg_indices =
-        super::spatial::gather_segments_from_region(segment_grid, all_segments, x1, y1, x2, y2);
-
     let mut shortest_time = 1.0;
-    for seg_idx in seg_indices {
-        let time = all_segments[seg_idx].intersect_with_ray(xpos_old, ypos_old, dx, dy, radius);
-        if time == 0.0 {
-            return 0.0;
-        }
-        if time < shortest_time {
-            shortest_time = time;
-        }
-    }
+    super::spatial::for_each_segment_in_region(
+        segment_grid,
+        all_segments,
+        x1,
+        y1,
+        x2,
+        y2,
+        |seg_idx| {
+            let time = all_segments[seg_idx].intersect_with_ray(xpos_old, ypos_old, dx, dy, radius);
+            if time == 0.0 {
+                shortest_time = 0.0;
+                return false;
+            }
+            if time < shortest_time {
+                shortest_time = time;
+            }
+            true
+        },
+    );
     shortest_time
 }
 
@@ -50,15 +57,6 @@ pub fn get_single_closest_point(
     ypos: f64,
     radius: f64,
 ) -> (i32, Option<(f64, f64)>) {
-    let seg_indices = super::spatial::gather_segments_from_region(
-        segment_grid,
-        all_segments,
-        xpos - radius,
-        ypos - radius,
-        xpos + radius,
-        ypos + radius,
-    );
-
     // Python's initial bound (`physics.py:116`), not `f64::INFINITY`. Unreachable
     // on a real level -- the longest diagonal squares to ~1.5e6 -- but it is the
     // reference value, so it stays the reference value.
@@ -72,20 +70,29 @@ pub fn get_single_closest_point(
     // yet still be the closest point returned. Filtering here made the native sim
     // miss a door segment 36px from a dual laser that Python sees, flipping the
     // laser's spinner-vs-surface mode at construction.
-    for seg_idx in seg_indices {
-        let seg = &all_segments[seg_idx];
+    super::spatial::for_each_segment_in_region(
+        segment_grid,
+        all_segments,
+        xpos - radius,
+        ypos - radius,
+        xpos + radius,
+        ypos + radius,
+        |seg_idx| {
+            let seg = &all_segments[seg_idx];
 
-        let (is_back_facing, a, b) = seg.get_closest_point(xpos, ypos);
-        let mut distance_sq = (xpos - a) * (xpos - a) + (ypos - b) * (ypos - b);
+            let (is_back_facing, a, b) = seg.get_closest_point(xpos, ypos);
+            let mut distance_sq = (xpos - a) * (xpos - a) + (ypos - b) * (ypos - b);
 
-        if !is_back_facing {
-            distance_sq -= 0.1;
-        }
-        if distance_sq < shortest_distance {
-            shortest_distance = distance_sq;
-            closest_point = Some((a, b));
-            result = if is_back_facing { -1 } else { 1 };
-        }
-    }
+            if !is_back_facing {
+                distance_sq -= 0.1;
+            }
+            if distance_sq < shortest_distance {
+                shortest_distance = distance_sq;
+                closest_point = Some((a, b));
+                result = if is_back_facing { -1 } else { 1 };
+            }
+            true
+        },
+    );
     (result, closest_point)
 }
