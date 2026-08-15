@@ -50,6 +50,71 @@ impl Hasher {
     }
 }
 
+/// Run one seeded rollout and fold every frame's full state into `h`.
+///
+/// `mode` selects the frame variant: 0 = `tick`, 1 = `tick_physics_only`.
+fn roll(map_data: &[i32], frames: usize, seed: usize, mode: usize, h: &mut Hasher) {
+    let mut sim = Simulator::load(map_data);
+    let mut rng = Rng(0x243F6A8885A308D3u64.wrapping_add(seed as u64 * 0x9E3779B97F4A7C15));
+    for i in 0..frames {
+        let (hor, j) = rng.action();
+        if mode == 0 {
+            sim.tick(hor, j);
+        } else {
+            sim.tick_physics_only(hor, j);
+        }
+        let st = sim.get_state_dynamic();
+        let n = &st.ninja;
+        h.f64(n.xpos);
+        h.f64(n.ypos);
+        h.f64(n.xspeed);
+        h.f64(n.yspeed);
+        h.byte(n.state);
+        h.bool(n.airborn);
+        h.bool(n.walled);
+        h.f64(n.wall_normal);
+        h.u64(n.jump_duration as u64);
+        h.u64(n.floor_count as u64);
+        h.u64(n.wall_count as u64);
+        h.u64(n.ceiling_count as u64);
+        h.f64(n.floor_normalized_x);
+        h.f64(n.floor_normalized_y);
+        h.f64(n.ceiling_normalized_x);
+        h.f64(n.ceiling_normalized_y);
+        h.bool(n.has_won);
+        h.bool(n.has_died);
+        h.u64(n.gold_collected as u64);
+        h.u64(n.doors_opened as u64);
+        h.u64(n.frames_airborne as u64);
+        h.u64(n.jump_buffer as u64);
+        h.u64(n.floor_buffer as u64);
+        h.u64(n.wall_buffer as u64);
+        h.u64(n.launch_pad_buffer as u64);
+        h.f64(n.applied_gravity);
+        h.f64(n.applied_drag);
+        h.f64(n.applied_friction);
+        for m in st.action_mask.iter() {
+            h.bool(*m);
+        }
+        for e in &st.entities {
+            h.byte(e.entity_type);
+            h.f64(e.x);
+            h.f64(e.y);
+            h.bool(e.active);
+            h.byte(e.state);
+            h.f64(e.radius);
+            h.byte(e.orientation);
+            h.f64(e.door_x);
+            h.f64(e.door_y);
+            h.byte(e.door_orientation);
+            h.bool(e.door_closed);
+        }
+        if i % 600 == 599 {
+            sim.fast_reset();
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let dir = args.get(1).cloned().unwrap_or_else(|| "maps".to_string());
@@ -73,61 +138,12 @@ fn main() {
             .collect();
 
         let mut h = Hasher::new();
-        for seed in 0..seeds {
-            let mut sim = Simulator::load(&map_data);
-            let mut rng = Rng(0x243F6A8885A308D3u64.wrapping_add(seed as u64 * 0x9E3779B97F4A7C15));
-            for i in 0..frames {
-                let (hor, j) = rng.action();
-                sim.tick(hor, j);
-                let st = sim.get_state_dynamic();
-                let n = &st.ninja;
-                h.f64(n.xpos);
-                h.f64(n.ypos);
-                h.f64(n.xspeed);
-                h.f64(n.yspeed);
-                h.byte(n.state);
-                h.bool(n.airborn);
-                h.bool(n.walled);
-                h.f64(n.wall_normal);
-                h.u64(n.jump_duration as u64);
-                h.u64(n.floor_count as u64);
-                h.u64(n.wall_count as u64);
-                h.u64(n.ceiling_count as u64);
-                h.f64(n.floor_normalized_x);
-                h.f64(n.floor_normalized_y);
-                h.f64(n.ceiling_normalized_x);
-                h.f64(n.ceiling_normalized_y);
-                h.bool(n.has_won);
-                h.bool(n.has_died);
-                h.u64(n.gold_collected as u64);
-                h.u64(n.doors_opened as u64);
-                h.u64(n.frames_airborne as u64);
-                h.u64(n.jump_buffer as u64);
-                h.u64(n.floor_buffer as u64);
-                h.u64(n.wall_buffer as u64);
-                h.u64(n.launch_pad_buffer as u64);
-                h.f64(n.applied_gravity);
-                h.f64(n.applied_drag);
-                h.f64(n.applied_friction);
-                for m in st.action_mask.iter() {
-                    h.bool(*m);
-                }
-                for e in &st.entities {
-                    h.byte(e.entity_type);
-                    h.f64(e.x);
-                    h.f64(e.y);
-                    h.bool(e.active);
-                    h.byte(e.state);
-                    h.f64(e.radius);
-                    h.byte(e.orientation);
-                    h.f64(e.door_x);
-                    h.f64(e.door_y);
-                    h.byte(e.door_orientation);
-                    h.bool(e.door_closed);
-                }
-                if i % 600 == 599 {
-                    sim.fast_reset();
-                }
+        // Mode 0 exercises the full frame, mode 1 the physics-only frame used by
+        // the enumeration / value-iteration paths. Both take the open-air
+        // collision skip, so both are fingerprinted.
+        for mode in 0..2usize {
+            for seed in 0..seeds {
+                roll(&map_data, frames, seed, mode, &mut h);
             }
         }
         println!(

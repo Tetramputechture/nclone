@@ -1386,9 +1386,12 @@ impl Simulator {
                 self.ninja
                     .pre_collision(&self.entity_grid, self.has_physical_entities);
 
-                for _ in 0..4 {
-                    self.collide_vs_objects();
-                    self.ninja.collide_vs_tiles(&self.segment_grid, &self.segments);
+                // Same open-air skip as `tick`; see the comment there.
+                if self.has_physical_entities || self.frame_has_tile_segments() {
+                    for _ in 0..4 {
+                        self.collide_vs_objects();
+                        self.ninja.collide_vs_tiles(&self.segment_grid, &self.segments);
+                    }
                 }
 
                 self.post_collision_with_entities();
