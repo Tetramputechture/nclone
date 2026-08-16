@@ -160,6 +160,33 @@ except ImportError:  # pragma: no cover - stale native build
 logger = logging.getLogger(__name__)
 
 
+#: The 8 neighbour offsets for `_compute_ego_crop_route_fine`'s steepest descent,
+#: in the ORDER the scalar `for dx in (-1,0,1): for dy in (-1,0,1)` loop visited
+#: them. The order is load-bearing: the loop took a neighbour on a strict
+#: `score < best`, so the FIRST of any tied minima won, and `np.argmin` also
+#: returns the first minimum. Reordering this silently changes which descent
+#: direction is emitted on ties.
+_EGO_ROUTE_NEIGHBOUR_OFFSETS = (
+    (-1, -1), (-1, 0), (-1, 1),
+    (0, -1), (0, 1),
+    (1, -1), (1, 0), (1, 1),
+)
+#: Euclidean step length per offset, shaped to broadcast over (8, S, S).
+_EGO_ROUTE_NEIGHBOUR_STEPS = np.array(
+    [math.hypot(dx, dy) for dx, dy in _EGO_ROUTE_NEIGHBOUR_OFFSETS],
+    dtype=np.float64,
+).reshape(-1, 1, 1)
+#: Unit descent vector per offset, indexed by the argmin result.
+_EGO_ROUTE_UNIT_DX = np.array(
+    [dx / math.hypot(dx, dy) for dx, dy in _EGO_ROUTE_NEIGHBOUR_OFFSETS],
+    dtype=np.float64,
+)
+_EGO_ROUTE_UNIT_DY = np.array(
+    [dy / math.hypot(dx, dy) for dx, dy in _EGO_ROUTE_NEIGHBOUR_OFFSETS],
+    dtype=np.float64,
+)
+
+
 def _cell_x(px: float, cell_px: float, odd_dir: int) -> int:
     """Ninja x -> grid column, equivariant under a left-right reflection.
 
@@ -4265,24 +4292,38 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                     np.isfinite(sub), sub, np.inf
                 )
             center = win[1:-1, 1:-1]
-            best = np.full((size, size), np.inf)
-            bdx = np.zeros((size, size))
-            bdy = np.zeros((size, size))
+            # Vectorized over the 8 neighbours. The scalar loop this replaces was
+            # the single hottest function in env.step() -- 6.2% of self time for
+            # 0.9% of the observation's bytes -- because each of its 8 iterations
+            # allocated six (size, size) float64 temporaries via np.where.
+            #
+            # Bit-exact with that loop. What actually makes it so:
+            #  * _EGO_ROUTE_NEIGHBOUR_OFFSETS is in the loop's original (dx, dy)
+            #    order, and argmin returns the FIRST minimum, matching the loop's
+            #    strict `score < best` (first-wins on ties). This one IS
+            #    load-bearing: reordering the offsets changes the emitted descent
+            #    direction on 60/60 random tied fields.
+            #  * The nan -> +inf map is DEFENSIVE, not required. inf - inf = nan
+            #    arises only where `center` itself is infinite, and `live` already
+            #    masks those cells to zero, so argmin selecting a nan cannot reach
+            #    the output today. It is kept because the loop's `score < best`
+            #    was False for nan and argmin's is not, so without it the two
+            #    forms agree only by way of the `live` mask -- a coupling that a
+            #    later change to `live` would break silently.
+            offs = _EGO_ROUTE_NEIGHBOUR_OFFSETS
+            steps = _EGO_ROUTE_NEIGHBOUR_STEPS
             with np.errstate(invalid="ignore"):
-                for dx in (-1, 0, 1):
-                    for dy in (-1, 0, 1):
-                        if dx == 0 and dy == 0:
-                            continue
-                        nb = win[1 + dx:1 + dx + size, 1 + dy:1 + dy + size]
-                        step = math.hypot(dx, dy)
-                        score = (nb - center) / step
-                        take = score < best
-                        best = np.where(take, score, best)
-                        bdx = np.where(take, dx / step, bdx)
-                        bdy = np.where(take, dy / step, bdy)
+                nb = np.stack(
+                    [win[1 + dx:1 + dx + size, 1 + dy:1 + dy + size]
+                     for dx, dy in offs]
+                )
+                score = (nb - center) / steps
+            score = np.where(np.isnan(score), np.inf, score)
+            k = np.argmin(score, axis=0)
+            best = np.take_along_axis(score, k[None], axis=0)[0]
             live = np.isfinite(center) & (best < -1e-9)
-            out[0] = np.where(live, bdx, 0.0).astype(np.float32)
-            out[1] = np.where(live, bdy, 0.0).astype(np.float32)
+            out[0] = np.where(live, _EGO_ROUTE_UNIT_DX[k], 0.0).astype(np.float32)
+            out[1] = np.where(live, _EGO_ROUTE_UNIT_DY[k], 0.0).astype(np.float32)
         except Exception:
             out[:] = 0.0
         return out
