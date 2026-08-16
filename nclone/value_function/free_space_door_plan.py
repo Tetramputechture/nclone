@@ -339,11 +339,15 @@ class FreeSpaceDoorOracle:
 def solve(map_data, *, mine_hard: bool = True, physics_cost: bool = True,
           one_way: Optional[bool] = None,
           mine_split_topology: bool = False,
-          name: Optional[str] = None):
+          name: Optional[str] = None,
+          compute_legs: bool = True):
     """``(DoorPlan, FreeSpaceDoorOracle)`` for a level, or ``(None, None)``.
 
     ``None`` when the level has no locked doors, no goals, or will not build —
     all of which mean "use the ordinary single-phase field", not "error".
+
+    ``compute_legs=False`` answers only "which doors are necessary", skipping the
+    per-leg cost fields; see :func:`door_dependency.solve_door_dependencies`.
     """
     from .door_dependency import DoorDescriptor, solve_door_dependencies
 
@@ -369,5 +373,6 @@ def solve(map_data, *, mine_hard: bool = True, physics_cost: bool = True,
         float(base.switch[0]), float(base.switch[1]),
         float(base.exit[0]), float(base.exit[1]),
         oracle=oracle,
+        compute_legs=compute_legs,
     )
     return plan, oracle

@@ -929,6 +929,35 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # routable. Surface it so the trainer can log pbrs/spawn_cost_finite_frac.
         info["pbrs_spawn_cost_finite"] = self._pbrs_spawn_cost_finite()
 
+        # --- Locked-door progress ------------------------------------------
+        # There was NO telemetry for locked doors at all, which is why two whole
+        # runs could complete 0/338 door levels with the milestone reward off and
+        # nothing in the logs said so. Named under ``door_*`` and surfaced under
+        # ``door/`` in TB -- deliberately NOT ``phase/door_*``, which is the
+        # EXIT-switch -> EXIT-door metric and has nothing to do with these.
+        #
+        # Emitted on every level, door or not: ``door_level`` is what lets the
+        # consumer split the door rows out, and a rate averaged over the whole
+        # corpus would be diluted by the 77% of levels with no door to open.
+        _n_doors = int(getattr(self, "_locked_door_count", 0))
+        info["door_level"] = bool(_n_doors > 0)
+        info["door_count"] = _n_doors
+        if _n_doors:
+            _nec_total = int(getattr(self, "_necessary_door_total", 0))
+            _nec_open = int(getattr(self, "_necessary_doors_open", 0))
+            info["door_necessary_total"] = _nec_total
+            info["door_necessary_open"] = _nec_open
+            info["door_necessary_solvable"] = bool(
+                getattr(self, "_necessary_door_solvable", True)
+            )
+            # Any locked door open at all -- including a non-necessary one. Kept
+            # separate from the necessary count because "never finds a switch"
+            # and "opens the wrong doors" are different failures.
+            try:
+                info["door_any_open"] = len(self._lattice_open_door_indices())
+            except Exception:
+                info["door_any_open"] = 0
+
         # Add level spawn position for corruption detection in Go-Explore
         # This helps detect checkpoints with spawn position but long action sequences
         if hasattr(self, "level_data") and self.level_data is not None:

@@ -136,6 +136,19 @@ class ReachabilityMixin:
         # door-dependency plan); drives the locked-door reward + HWM sub-goal
         # phase. 0 when there is no plan / no necessary doors.
         self._necessary_doors_open = 0
+        # The necessary-door ORDER itself, and the map it was resolved for.
+        # Static per level, so it is resolved once per map identity rather than
+        # per episode. Populated either from the live potential source (free,
+        # and guaranteed to agree with the phase that source is descending) or
+        # from the standalone cached solver, which is what lets the milestone
+        # reward run without the door-legged potential it was entangled with.
+        self._necessary_door_order: tuple = ()
+        self._necessary_door_map_name = None
+        self._necessary_door_total = 0
+        self._locked_door_count = 0
+        self._necessary_door_solvable = True
+        self._necessary_door_from_source = False
+        self._necessary_door_map_obj = None
 
         # Initialize logging if debug is enabled
         if self.debug:
@@ -167,6 +180,25 @@ class ReachabilityMixin:
         self._free_space_nav_memo = None
         self._cached_free_space_nav = np.zeros(4, dtype=np.float32)
         self._necessary_doors_open = 0
+        # Locked-door inventory for telemetry. Counted here rather than on the
+        # step path because it is a per-reset property and reading it from the
+        # raw map bytes is microseconds; the alternative (a native
+        # ``locked_doors()`` call per step) is not. This runs whether or not the
+        # door reward is on, so ``door/levels_with_doors_frac`` can answer
+        # "is the agent even being SHOWN door levels" for any run.
+        _map_data = getattr(getattr(self, "nplay_headless", None),
+                            "current_map_data", None)
+        if _map_data is not self._necessary_door_map_obj:
+            try:
+                from ...value_function.door_necessity import count_locked_doors
+
+                self._locked_door_count = (
+                    count_locked_doors(_map_data) if _map_data else 0
+                )
+            except Exception:
+                self._locked_door_count = 0
+            self._necessary_door_total = 0
+            self._necessary_door_solvable = True
         # Force a per-episode tracker rebuild (picks up newly injected waypoints /
         # the new map). The lattice build is disk-cached so repeat maps are cheap.
         self._waypoint_tracker = None
@@ -335,29 +367,40 @@ class ReachabilityMixin:
         failure leaves the geometric distances untouched.
         """
         cfg = getattr(self, "config", None)
+        # The locked-door reward needs to know WHICH doors are necessary. That
+        # used to mean forcing the full surface-lattice build, because the plan
+        # rode along with the potential's legs -- so enabling the reward also
+        # bought a 3.3 s worst-case field the door A/B had already refuted.
+        # ``door_necessity`` answers the necessity question on its own (cached,
+        # static per map), so the reward now costs a cache read and does not
+        # constrain which potential is running.
+        want_door_reward = bool(
+            getattr(getattr(cfg, "reward_config", None),
+                    "enable_locked_door_rewards", False)
+        )
+        if want_door_reward:
+            # Unconditional and BEFORE every early return below -- including the
+            # no-reachability-config one: the count feeds a REWARD, so it has to
+            # be right on levels whose potential source never commits, and on
+            # runs that configure no potential at all.
+            self._update_necessary_doors_open()
         reach_cfg = getattr(cfg, "reachability", None)
         if reach_cfg is None:
             return
         want_reward = bool(getattr(reach_cfg, "use_lattice_potential", False))
         want_global = bool(getattr(reach_cfg, "use_global_potential", False))
         want_obs = bool(getattr(reach_cfg, "expose_lattice_features", False))
-        # The locked-door reward needs the door-dependency plan (which defines
-        # "necessary"); building it requires the lattice source. So enable the
-        # build/plan when door rewards are on, even if the potential/obs aren't.
-        want_door_reward = bool(
-            getattr(getattr(cfg, "reward_config", None),
-                    "enable_locked_door_rewards", False)
-        )
         # use_jump_potential routes through the same free-space-primary path (the
         # jump source is a drop-in subclass); _freespace_substitute picks the class.
         want_free_space = bool(
             getattr(reach_cfg, "use_free_space_potential", False)
             or getattr(reach_cfg, "use_jump_potential", False)
         )
-        if not (
-            want_reward or want_global or want_obs
-            or want_door_reward or want_free_space
-        ):
+        # ``want_door_reward`` is deliberately NOT in this gate any more: the
+        # count it needs is already published above, and leaving it here would
+        # start a potential build purely to answer a question that no longer
+        # depends on one.
+        if not (want_reward or want_global or want_obs or want_free_space):
             return
 
         # Substitution status is re-derived on every call; each commit path below
@@ -401,10 +444,7 @@ class ReachabilityMixin:
                 return
 
             open_door_indices = self._lattice_open_door_indices()
-            order = list(getattr(src, "necessary_order", ()) or ())
-            self._necessary_doors_open = sum(
-                1 for d in order if d in open_door_indices
-            )
+            self._update_necessary_doors_open(src, open_door_indices)
             c_sw = src.cost_to_completion(
                 nx, ny, False, open_door_indices
             )
@@ -430,9 +470,11 @@ class ReachabilityMixin:
 
         # Free-space-PRIMARY potential: skip the (often infeasible) surface-lattice
         # build entirely and take the reward distances straight from the cheap
-        # mine-aware free-space grid. Only valid when the policy obs / locked-door
-        # plan don't also need the full lattice (those fall through below).
-        if want_free_space and not (want_obs or want_door_reward):
+        # mine-aware free-space grid. Only valid when the policy obs doesn't also
+        # need the full lattice (that falls through below). The locked-door
+        # reward no longer forces the lattice -- ``_update_necessary_doors_open``
+        # above has already answered it from the standalone cached solver.
+        if want_free_space and not want_obs:
             nx, ny = float(ninja_pos[0]), float(ninja_pos[1])
             self._use_lattice_this_episode = False
             committed_src = None
@@ -504,12 +546,7 @@ class ReachabilityMixin:
             # NECESSARY ones (for the door reward + N-phase potential select).
             open_door_indices = self._lattice_open_door_indices()
             plan = getattr(src, "_door_plan", None)
-            if plan is not None:
-                self._necessary_doors_open = sum(
-                    1 for d in plan.necessary_order if d in open_door_indices
-                )
-            else:
-                self._necessary_doors_open = 0
+            self._update_necessary_doors_open(plan, open_door_indices)
 
             # Policy nav hint (independent of the reward substitution). When the
             # gold potential is on, make the hint orienteering-aware so it bends
@@ -571,6 +608,107 @@ class ReachabilityMixin:
             # Never let the potential source break an episode.
             self._use_lattice_this_episode = False
             self._potential_substituted = False
+
+    # ------------------------------------------------------------------
+    # Locked-door necessity
+    #
+    # Kept apart from the potential deliberately. ``necessary_doors_open`` feeds
+    # the milestone reward and the HWM sub-goal phase, and until now its only
+    # producer was a door-LEGGED cost field. That field was A/B'd and lost
+    # (-0.126 rho, 3.3 s worst-case build), so turning it off -- which gamma-5c
+    # did -- silently zeroed the count as well, and the reward that was never
+    # enabled went down with the potential that was. These two methods make the
+    # count available on its own; see ``value_function/door_necessity.py``.
+    # ------------------------------------------------------------------
+    def _resolve_necessary_door_order(self, src=None) -> tuple:
+        """Necessary-door indices for the current map, resolved once per map.
+
+        Prefers the live potential source's own ``necessary_order``: it is free
+        (already computed for the legs) and, more importantly, it is the order
+        that source is descending, so the reward's phase and the potential's
+        phase cannot disagree. Falls back to the standalone cached solver, which
+        is the path that runs when the door legs are off.
+        """
+        map_name = getattr(
+            getattr(self, "map_loader", None), "current_map_name", None
+        )
+        nplay = getattr(self, "nplay_headless", None)
+        map_data = getattr(nplay, "current_map_data", None)
+        # This memo is read EVERY STEP, so it cannot hash the map bytes. It keys
+        # on the map-data object's identity instead -- and holds a reference to
+        # that object (below) so the address cannot be recycled under it, which
+        # would otherwise serve one procgen level's necessity set for another's.
+        # Names are useless as identity here: every procgen level shares one.
+        ident = id(map_data)
+        src_order = tuple(int(i) for i in (getattr(src, "necessary_order", ()) or ()))
+        if ident == self._necessary_door_map_name and not (
+            src_order and not self._necessary_door_from_source
+        ):
+            # Cached for this map. The one case that still re-resolves is an
+            # UPGRADE: the standalone solver answered first (it runs before any
+            # source is built) and a door-aware source has since appeared. Its
+            # order is the one the potential is descending, and reward phase and
+            # potential phase disagreeing is exactly the discontinuity this
+            # whole area has already been burned by.
+            return self._necessary_door_order
+
+        order = src_order
+        self._necessary_door_from_source = bool(order)
+        if order:
+            self._necessary_door_solvable = True
+            try:
+                self._locked_door_count = len(self.nplay_headless.locked_doors())
+            except Exception:
+                self._locked_door_count = len(order)
+        elif map_data:
+            try:
+                from ...value_function.door_necessity import necessary_doors
+
+                reach_cfg = getattr(
+                    getattr(self, "config", None), "reachability", None
+                )
+                nec = necessary_doors(
+                    map_data,
+                    name=map_name,
+                    one_way=bool(getattr(reach_cfg, "global_one_way", True)),
+                )
+                order = nec.order
+                self._locked_door_count = nec.n_doors
+                self._necessary_door_solvable = nec.solvable
+            except Exception:
+                order = ()
+                self._locked_door_count = 0
+                self._necessary_door_solvable = True
+        else:
+            self._locked_door_count = 0
+
+        self._necessary_door_order = order
+        self._necessary_door_total = len(order)
+        self._necessary_door_map_name = ident
+        # Pin the object the id() above names, so the memo cannot be aliased by
+        # a later allocation landing at the same address.
+        self._necessary_door_map_obj = map_data
+        return order
+
+    def _update_necessary_doors_open(self, src=None, open_door_indices=None) -> int:
+        """Recount opened NECESSARY doors and publish it. Returns the count.
+
+        Monotonic by construction -- a locked door's switch is spent on contact
+        and never re-arms -- which is what the reward's positive-delta rule
+        relies on.
+        """
+        order = self._resolve_necessary_door_order(src)
+        if not order:
+            self._necessary_doors_open = 0
+            return 0
+        idx = (
+            set(int(i) for i in open_door_indices)
+            if open_door_indices is not None
+            else self._lattice_open_door_indices()
+        )
+        n = sum(1 for d in order if d in idx)
+        self._necessary_doors_open = n
+        return n
 
     def _lattice_open_door_indices(self) -> set:
         """Indices of currently-OPEN locked doors, aligned with the lattice door

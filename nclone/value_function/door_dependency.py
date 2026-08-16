@@ -171,6 +171,7 @@ def solve_door_dependencies(
     exit_x: float,
     exit_y: float,
     oracle=None,
+    compute_legs: bool = True,
 ) -> DoorPlan:
     """Resolve locked-door dependencies by faithful per-config re-evaluation.
 
@@ -181,6 +182,14 @@ def solve_door_dependencies(
     ``oracle`` supplies a different backend for the same algorithm (see
     :class:`SurfaceGraphOracle` for the interface).  Exactly one of the two is
     required; ``oracle`` wins when both are given.
+
+    ``compute_legs=False`` returns ``necessary_order`` alone and skips the
+    per-leg cost fields.  That is the whole answer for the *milestone reward*,
+    which only needs to know WHICH doors count -- and it is a different cost
+    class: the legs are ``k+1`` extra Dijkstras over the 6px grid on top of the
+    configs the necessity questions already forced.  Splitting the two lets the
+    reward be enabled without also committing to the door-legged potential (a
+    measured regression -- see ``PLAN_gamma5c_training_setup.md``).
     """
     n = len(doors)
     sw = [(d.switch_x, d.switch_y) for d in doors]
@@ -344,6 +353,9 @@ def solve_door_dependencies(
         order.append(pick)
         opened.add(pick)
         remaining.discard(pick)
+
+    if not compute_legs:
+        return DoorPlan(solvable=True, necessary_order=order)
 
     # --- Per-leg cost-to-go (faithful, config-aware) ----------------------------
     door_leg_dstar: List[np.ndarray] = []
