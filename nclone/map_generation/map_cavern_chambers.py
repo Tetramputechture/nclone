@@ -181,6 +181,29 @@ class MapCavernChambers(Map):
     # what makes a route genuinely nonlinear (more than one way around).
     EXTRA_EDGES = 1
 
+    # --- locked doors -------------------------------------------------------
+    # Gate tunnels with locked doors whose switches must be collected first.
+    #
+    # These are placed on CUT EDGES of the chamber graph, so a door is necessary
+    # BY CONSTRUCTION rather than by accident. That distinction is the whole
+    # reason this exists: measured over all 808 official locked-door levels, 473
+    # of the 767 solvable ones (62%) need ZERO doors -- their doors are
+    # decoration, and a bucket sampled to look like the official corpus would
+    # inherit that dilution and teach nothing. Here the route is severed until
+    # the switch is taken, on every level the bucket emits.
+    #
+    # Doors are opened in a dependency CHAIN: door i is a cut edge of the graph
+    # with doors 0..i-1 already open, and its switch sits on the spawn side of
+    # that cut. So the level cannot be finished except by opening them in order,
+    # which is the sequential-subtask structure the curriculum is meant to ramp.
+    MIN_LOCKED_DOORS = 0
+    MAX_LOCKED_DOORS = 0
+    #: Non-necessary doors added on top, as distractors. Official levels are full
+    #: of decorative doors, and an agent that has only ever seen load-bearing
+    #: ones has learned "always open doors" rather than "open the doors on the
+    #: route". Placed on NON-cut edges, so they never gate anything.
+    MAX_DECOY_DOORS = 0
+
     # --- chamber interiors --------------------------------------------------
     # Relative weights for (box, terraced, pillared, cavern).
     STYLE_WEIGHTS = (2, 3, 2, 3)
@@ -843,6 +866,9 @@ class MapCavernChambers(Map):
                 continue
             self._carve_path(path)
             carved.append((a, b))
+            # Kept so the locked-door pass can gate a specific tunnel: it needs
+            # the block anchors, not just the fact that the edge exists.
+            self._edge_paths[(a, b)] = list(path)
         return carved
 
     # ---------------------------------------------------------------- smoothing
@@ -1043,6 +1069,306 @@ class MapCavernChambers(Map):
         self.set_ninja_spawn(ninja[0], ninja[1], 1 if switch[0] >= ninja[0] else -1)
         self.add_entity(3, door[0], door[1], 0, 0, switch[0], switch[1])
         self._goal_cells = (ninja, switch, door)
+        # Which chambers the route must visit. The locked-door pass gates the
+        # graph relative to these, so it needs the indices, not just the cells.
+        self._goal_chambers = (src, switch_c, door_c)
+        self._goal_taken = list(taken)
+        return True
+
+    # -------------------------------------------------------------- locked doors
+    #
+    # A locked door is a 24px barrier plus a switch that opens it permanently.
+    # Two facts drive everything below.
+    #
+    # NECESSITY IS STRUCTURAL, NOT INCIDENTAL. A door only teaches the mechanic
+    # if the level cannot be finished without opening it. On the official corpus
+    # that is the minority case -- 473 of 767 solvable door levels (62%) reach
+    # the exit with every door shut -- so this places doors on CUT EDGES of the
+    # chamber graph, where severing the tunnel provably severs the route.
+    #
+    # A DOOR MUST SEAL WHAT IT GATES. Tunnels here are 2 tiles tall, and a 24px
+    # barrier covers one tile, so a door dropped into a tunnel as-is is simply
+    # jumped over. The gate is therefore built: the tunnel's upper row is filled
+    # back in for the door's two columns, leaving the 1-tile-tall doorway the
+    # barrier actually spans. That is the same geometry `map_horizontal_corridor`
+    # already restricts its own locked doors to (`height == 1`).
+    def _door_gate_sites(self, path: Sequence[Tuple[int, int]]):
+        """Block anchors along ``path`` where a sealed 1-tall doorway can be cut.
+
+        Requires a straight horizontal run of three blocks so that filling the
+        middle one's upper row cannot cap a vertical shaft -- the shafts are how
+        the ninja changes height, and a ceiling dropped onto one makes the level
+        unsolvable in a way no entity-level check would catch.
+        """
+        sites = []
+        for i, cur in enumerate(path):
+            bx, by = cur
+            neighbours = [path[j] for j in (i - 1, i + 1) if 0 <= j < len(path)]
+            if not neighbours:
+                continue
+            # Straight horizontal: every neighbour on the same row, one step away.
+            if any(nb[1] != by or abs(nb[0] - bx) != 1 for nb in neighbours):
+                continue
+            if any(self.get_tile(x, y) != EMPTY
+                   for x in (bx, bx + 1) for y in (by, by + 1)):
+                continue
+            # Only the two cells about to be FILLED need to be clear of shafts.
+            # Testing all four was the over-broad version and it rejected most
+            # straight runs: consecutive 2x2 blocks overlap by a column, so a
+            # corner's vertical tag bleeds into the horizontal run beside it.
+            # What actually matters is not capping a climb, and the climb is in
+            # the cells being filled.
+            if any((x, by) in self._shaft_cells for x in (bx, bx + 1)):
+                continue
+            sites.append(cur)
+        return sites
+
+    def _carve_door_gate(self, anchor: Tuple[int, int]) -> Tuple[float, float]:
+        """Fill the upper corridor row at ``anchor`` and return the barrier cell.
+
+        Returns the grid coordinate to hand to ``add_entity``, which places the
+        entity at the CENTRE of the named cell -- so a vertical barrier there
+        spans that cell's full height and seals the doorway.
+        """
+        bx, by = anchor
+        for x in (bx, bx + 1):
+            self.set_tile(x, by, SOLID)
+            self._corridor_cells.discard((x, by))
+        return (bx, by + 1)
+
+    def _components_without(self, n: int, edges, cut) -> List[int]:
+        """Component id per chamber with the edges in ``cut`` removed."""
+        adj: List[List[int]] = [[] for _ in range(n)]
+        for a, b in edges:
+            if (a, b) in cut:
+                continue
+            adj[a].append(b)
+            adj[b].append(a)
+        comp = [-1] * n
+        cid = 0
+        for s in range(n):
+            if comp[s] >= 0:
+                continue
+            comp[s] = cid
+            q = deque([s])
+            while q:
+                u = q.popleft()
+                for v in adj[u]:
+                    if comp[v] < 0:
+                        comp[v] = cid
+                        q.append(v)
+            cid += 1
+        return comp
+
+    def _verify_door_chain(self, placed) -> bool:
+        """Prove, on tiles, that the chain is both NECESSARY and OPENABLE.
+
+        The chamber graph says a tunnel is a cut; it does not say the finished
+        tile map is. Smoothing removes material, chambers can end up two tiles
+        apart with a hole between them, and a gate can simply fail to seal. A
+        generator that asserts its own claim proves nothing -- so the claim is
+        re-derived here from the tiles that were actually emitted, by treating
+        each gate cell as solid and re-running the flood.
+
+        Two properties, in the order the agent meets them:
+
+        * **Necessary** -- with every necessary door shut, the exit switch and
+          exit door are UNREACHABLE. If they are reachable the door is
+          decoration, and this bucket's entire premise is that it emits no
+          decoration by accident.
+        * **Openable** -- door i's switch is reachable with doors 0..i-1 open and
+          i..k shut. Without this the level is a dependency cycle: unfinishable,
+          and reported by the solver as a phantom "unexpected cycle".
+
+        This is a tile-level flood, so it ignores gravity and is only a NECESSARY
+        condition -- deliberately the cheap-and-conservative direction. It runs
+        per generated level, where the real solver's seconds-per-level would not
+        fit. The real solver is what the bucket is then audited with.
+        """
+        ninja, switch, door = self._goal_cells
+        need = [p for p in placed if p[2]]
+        if not need:
+            return True
+        gates = [tuple(g) for g, _sw, _n in need]
+
+        def reachable(blocked):
+            seen = {ninja}
+            q = deque([ninja])
+            blocked = set(blocked)
+            while q:
+                x, y = q.popleft()
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    nxt = (x + dx, y + dy)
+                    if nxt in seen or nxt in blocked or not self._is_open(*nxt):
+                        continue
+                    seen.add(nxt)
+                    q.append(nxt)
+            return seen
+
+        shut_all = reachable(gates)
+        if switch in shut_all and door in shut_all:
+            # Necessity is about COMPLETION, not about either goal alone: the
+            # level is finished only by touching the exit switch AND then the
+            # exit door, so a door is necessary when it severs either one.
+            # Requiring BOTH to be unreachable rejected every legitimate T1
+            # layout -- with two chambers the exit switch sits in the spawn's own
+            # chamber, so it is trivially reachable doors-shut while the exit
+            # door behind the gate is not. Measured: 16 of 16 T1 levels fell back
+            # to the trivial two-box level, which then supplied the door and made
+            # the tier look like it was working.
+            return False
+
+        for i, (_g, sw, _n) in enumerate(need):
+            if tuple(sw) not in reachable(gates[i:]):
+                return False  # door i's switch is behind door i or later
+        return True
+
+    def _place_locked_doors(self, chambers, edges) -> bool:
+        """Gate the route with a chain of necessary locked doors.
+
+        Returns False to reject the layout, which is the right answer when a
+        tier asked for doors and the geometry could not carry them: emitting the
+        level anyway would put door-free levels into a door bucket, which is the
+        exact dilution this bucket exists to avoid.
+        """
+        # Bail BEFORE touching the RNG. Drawing first shifts every subsequent
+        # random number for presets that asked for no doors at all, which
+        # silently re-rolls the geometry of every existing cavern preset -- the
+        # byte-identity suite caught exactly that.
+        if int(self.MAX_LOCKED_DOORS) <= 0 and int(self.MAX_DECOY_DOORS) <= 0:
+            return True
+        want = self.rng.randint(int(self.MIN_LOCKED_DOORS),
+                                int(self.MAX_LOCKED_DOORS))
+        if not self._goal_chambers:
+            return False
+
+        n = len(chambers)
+        src, switch_c, door_c = self._goal_chambers
+        targets = (switch_c, door_c)
+        spots = [self._floor_spots(c) for c in chambers]
+        taken = list(self._goal_taken)
+        opened: List[Tuple[int, int]] = []
+        placed = []
+
+        def is_cut(edge) -> bool:
+            """Does shutting ``edge`` (with earlier doors OPEN) sever the route?"""
+            comp = self._components_without(n, edges, {edge})
+            return any(comp[t] != comp[src] for t in targets)
+
+        def pick_switch_cell(edge):
+            """A standable cell on the SPAWN side of ``edge``.
+
+            The switch has to be reachable before the door opens or the level is
+            unopenable -- the failure mode the dependency solver reports as a
+            phantom cycle. Preferring the far side of the spawn component keeps
+            the leg from being a two-step formality.
+            """
+            comp = self._components_without(n, edges, {edge})
+            near = [i for i in range(n) if comp[i] == comp[src] and spots[i]]
+            if not near:
+                return None
+            dist = self._graph_distances(n, [e for e in edges if e != edge], src)
+            near.sort(key=lambda i: (-(dist[i] if dist[i] >= 0 else 0),
+                                     self.rng.random()))
+            for ci in near:
+                cands = [
+                    s for s in spots[ci]
+                    if all(abs(s[0] - t[0]) >= 3 or abs(s[1] - t[1]) >= 2
+                           for t in taken)
+                ]
+                # Relax the spacing rather than abandon the door, exactly as
+                # `_place_goals` does. The first door of a chain is the one this
+                # bites: its cut is nearest the spawn, so the only chamber on the
+                # spawn side is the spawn's own, which already holds the ninja.
+                # Without the relaxation that door is dropped and the chain never
+                # gets past length one.
+                if not cands:
+                    cands = spots[ci]
+                if cands:
+                    choice = self.rng.choice(cands)
+                    taken.append(choice)
+                    return choice
+            return None
+
+        remaining = [e for e in edges]
+        rejected: Set[Tuple[int, int]] = set()
+        dist_src = self._graph_distances(n, edges, src)
+
+        def route_rank(e):
+            """How early on the route this cut sits, for chain ordering."""
+            da = dist_src[e[0]] if dist_src[e[0]] >= 0 else n
+            db = dist_src[e[1]] if dist_src[e[1]] >= 0 else n
+            return min(da, db)
+
+        while len(placed) < want:
+            cands = []
+            for e in remaining:
+                if e in rejected or not is_cut(e):
+                    continue
+                sites = self._door_gate_sites(self._edge_paths.get(e, ()))
+                if sites:
+                    cands.append((e, sites))
+            if not cands:
+                break
+            # Nearest-to-spawn first, so the doors form an ORDERED chain along
+            # the route: door i's switch lands in the region door i-1 opened.
+            cands.sort(key=lambda c: (route_rank(c[0]), self.rng.random()))
+            edge, sites = cands[0]
+            sw = pick_switch_cell(edge)
+            if sw is None:
+                # A door that could not be given a switch must not consume one of
+                # the requested doors -- doing so silently shortened every chain
+                # to length 1 (measured: T3 accepted 1 layout in 165).
+                rejected.add(edge)
+                continue
+            gate = self._carve_door_gate(sites[self.rng.randrange(len(sites))])
+            placed.append((gate, sw, True))
+            # The door is now part of the OPEN topology for the next iteration:
+            # the agent will have opened it, so the next cut must be a cut of
+            # the graph as it stands after that. This is what makes the doors a
+            # dependency CHAIN rather than a set of independent gates.
+            remaining.remove(edge)
+            opened.append(edge)
+
+        # Accept a SHORTER chain than sampled, but never a door-free level from a
+        # door preset: an under-length chain is a slightly easier level, whereas
+        # zero doors in a door bucket is the dilution the bucket exists to avoid
+        # and would be invisible in every downstream metric.
+        if int(self.MAX_LOCKED_DOORS) > 0:
+            floor = max(1, int(self.MIN_LOCKED_DOORS))
+            if sum(1 for _g, _s, nec in placed if nec) < floor:
+                return False
+        if not self._verify_door_chain(placed):
+            return False
+
+        # Decoys: doors on edges that are NOT cuts, so nothing depends on them.
+        # An agent trained only on load-bearing doors learns "open every door";
+        # official levels are mostly decoration, and the reward pays only for
+        # the necessary ones, so the distinction has to be in the data too.
+        decoys = int(self.MAX_DECOY_DOORS)
+        if decoys > 0:
+            pool = [e for e in remaining if not is_cut(e)]
+            self.rng.shuffle(pool)
+            for e in pool[:self.rng.randint(0, decoys)]:
+                sites = self._door_gate_sites(self._edge_paths.get(e, ()))
+                if not sites:
+                    continue
+                sw = pick_switch_cell(e)
+                if sw is None:
+                    continue
+                gate = self._carve_door_gate(sites[self.rng.randrange(len(sites))])
+                placed.append((gate, sw, False))
+
+        for (gx, gy), (sx, sy), necessary in placed:
+            # Orientation 0/4 makes the 24px barrier VERTICAL (see
+            # `free_space_distance._DOOR_VERTICAL_ORIENTS`), which is what blocks
+            # a horizontal tunnel.
+            self.add_entity(6, gx, gy, 0, 0, sx, sy)
+        self.locked_door_cells = [
+            ((int(g[0]), int(g[1])), (int(s[0]), int(s[1])), bool(nec))
+            for g, s, nec in placed
+        ]
+        self.necessary_door_count = sum(1 for _g, _s, nec in placed if nec)
         return True
 
     # -------------------------------------------------------------------- mines
@@ -1723,6 +2049,11 @@ class MapCavernChambers(Map):
         self._ramp_columns: Set[Tuple[int, int]] = set()
         self._last_transition_cols = 0
         self._goal_cells = None
+        self._goal_chambers = None
+        self._goal_taken = []
+        self._edge_paths: Dict[Tuple[int, int], List[Tuple[int, int]]] = {}
+        self.locked_door_cells: List[Tuple[Tuple[int, int], Tuple[int, int], bool]] = []
+        self.necessary_door_count = 0
         self.chambers = []
         self.mine_cells: List[Tuple[int, int]] = []
         self.entity_cells: List[Tuple[Tuple[int, int], int]] = []
@@ -1748,6 +2079,14 @@ class MapCavernChambers(Map):
         # goal cells it might touch are already fixed -- it only opens space
         # anyway); mines after it, so they anchor to the final surfaces.
         self._smooth()
+
+        # Doors AFTER smoothing, and the ordering is load-bearing. Smoothing only
+        # ever removes material, so a gate carved before it can be re-opened
+        # around the edges -- measured: 2 of 12 T1 levels came out with a door
+        # the necessity solver correctly called unnecessary, because the ninja
+        # could get past the gate the generator thought it had sealed.
+        if not self._place_locked_doors(chambers, edges):
+            return False
         self._populate(chambers)
         self.chambers = chambers
         self.chamber_edges = edges
@@ -1782,6 +2121,22 @@ class MapCavernChambers(Map):
         self.add_entity(3, 36, mid + 2, 0, 0, 30, mid + 2)
         self.chambers = [left, right]
         self.chamber_edges = [(0, 1)]
+        self.locked_door_cells = []
+        self.necessary_door_count = 0
+        # A door preset must never fall back to a door-FREE level. That failure
+        # is silent everywhere downstream -- the bucket still emits, the pool
+        # still fills, and only a necessity audit would ever notice that the door
+        # bucket contains no doors. Measured: T3/T4 hit exactly this, producing
+        # 0 doors on 12 of 12 levels while reporting success.
+        if int(self.MAX_LOCKED_DOORS) > 0:
+            gate_x = 20
+            self.set_tile(gate_x, mid + 1, SOLID)
+            self.set_tile(gate_x + 1, mid + 1, SOLID)
+            self._corridor_cells.discard((gate_x, mid + 1))
+            self._corridor_cells.discard((gate_x + 1, mid + 1))
+            self.add_entity(6, gate_x, mid + 2, 0, 0, 8, mid + 2)
+            self.locked_door_cells = [((gate_x, mid + 2), (8, mid + 2), True)]
+            self.necessary_door_count = 1
 
     def generate(self, seed: Optional[int] = None) -> "MapCavernChambers":
         if seed is not None:

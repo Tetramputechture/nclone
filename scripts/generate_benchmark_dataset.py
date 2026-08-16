@@ -51,6 +51,26 @@ from nclone.map_generation.generator_configs import (
 )
 from nclone.map_generation.generator_factory import GeneratorFactory
 from nclone.levelgen.labeling import subset_ok
+from nclone.constants.entity_types import EntityType, MINIMAL_TRAINING_SUBSET
+
+
+#: Entity types a bucket is allowed to emit beyond ``MINIMAL_TRAINING_SUBSET``.
+#
+# ``--subset-entities-only`` enforces the five-type minimal contract, and a
+# bucket whose whole point is an entity outside it would be rejected on EVERY
+# seed -- silently, since a rejected seed is just retried. LOCKED_DOOR is exactly
+# that case: type 6 is not in the minimal subset, so the door bucket would emit
+# nothing at all and the flag would look like it had done its job. Widening is
+# per-bucket and explicit precisely because `constants/entity_types` warns that
+# widening what the SIM supports must never silently widen what TRAINING accepts.
+_BUCKET_EXTRA_ENTITIES: "Dict[str, frozenset]" = {
+    "LOCKED_DOOR": frozenset({EntityType.LOCKED_DOOR}),
+}
+
+
+def _allowed_entities(bucket: str):
+    extra = _BUCKET_EXTRA_ENTITIES.get(bucket)
+    return MINIMAL_TRAINING_SUBSET | extra if extra else MINIMAL_TRAINING_SUBSET
 
 
 DEFAULT_OUTPUT_DIR = "./datasets/mechanic_benchmark"
@@ -197,7 +217,9 @@ class BenchmarkGenerator:
             # Entity-subset contract gate: reject any level whose instantiated
             # entities leave the RL training subset (e.g. an incidental locked
             # door from a corridor preset). Retried like an unsolvable seed.
-            if self.enforce_subset_entities and not subset_ok(map_data):
+            if self.enforce_subset_entities and not subset_ok(
+                map_data, allowed=_allowed_entities(bucket)
+            ):
                 continue
 
             map_hash = _hash_map_data(map_data)

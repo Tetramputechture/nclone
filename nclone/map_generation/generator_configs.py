@@ -2220,6 +2220,23 @@ class CavernChambersConfig:
     min_boost_pads: int = 0
     max_boost_pads: int = 0
     traversal_min_spacing: int = 3
+    # Locked doors, placed on CUT EDGES of the chamber graph so each one is
+    # necessary BY CONSTRUCTION, in a dependency chain (door i is a cut of the
+    # graph with doors 0..i-1 open, and its switch sits on the spawn side).
+    #
+    # This is the property the official corpus does NOT have: 473 of its 767
+    # solvable door levels (62%) reach the exit with every door shut, so a bucket
+    # sampled to look official would inherit that dilution and teach nothing. A
+    # layout that cannot carry the requested doors is REJECTED rather than
+    # emitted door-free.
+    #
+    # ``max_decoy_doors`` adds doors on NON-cut edges. The milestone reward pays
+    # only for necessary doors, so the data has to contain the distinction too --
+    # otherwise the agent learns "open every door" rather than "open the doors on
+    # the route", which is the wrong lesson for a corpus that is mostly decoration.
+    min_locked_doors: int = 0
+    max_locked_doors: int = 0
+    max_decoy_doors: int = 0
     # Shaped gold clusters. Official reference: every level has gold, 93% of it
     # clustered, 24 gold in 5 clusters at the median (p90 51 in 11); the dominant
     # intra-cluster spacing is 12px, i.e. the half-tile lattice.
@@ -2305,6 +2322,89 @@ GENERATOR_PRESETS["cavern_chambers"] = {
         wall_roughness=0.25,
         min_mines=24, max_mines=44, mine_min_spacing=2,
         min_gold_clusters=5, max_gold_clusters=10,
+    ),
+    # ---- LOCKED_DOOR bucket ------------------------------------------------
+    #
+    # The mechanic taught on its own, on the most official-like layout source in
+    # this catalog. Every level here has at least one door the route CANNOT
+    # bypass, which the official corpus mostly does not offer: 473 of its 767
+    # solvable door levels (62%) reach the exit with every door shut.
+    #
+    # The tiers ramp DEPENDENCY DEPTH first and geometry second -- one door, then
+    # a two-door chain, then three plus decoys, then chains inside hazardous
+    # geometry. Sequential subtasks are learned fastest in their natural order,
+    # so chain length is the axis that has to move; adding hazards at T1 would
+    # only confound "cannot do doors" with "cannot survive".
+    #
+    # T1 IS A DIAGNOSTIC, not a warm-up. One door, two small rooms, a tree graph,
+    # no mines, no hazards, no decoys, and no out-and-back. If the agent cannot
+    # clear T1 the problem is the reward or the field, not the difficulty -- the
+    # same role T1 plays in the hazard buckets.
+    "door_t1": CavernChambersConfig(
+        min_chambers=2, max_chambers=2,
+        min_chamber_width=9, min_chamber_height=5,
+        fill_bias=0.95, extra_edges=0,
+        style_weights=(4, 2, 0, 0),
+        max_floor_step=1, wall_roughness=0.1,
+        smoothing_rate=0.6, flat_smoothing_rate=0.05,
+        nonlinear_prob=0.0,
+        min_locked_doors=1, max_locked_doors=1,
+    ),
+    # T2: the first real CHAIN -- two doors, where the second switch is only
+    # reachable once the first door is open. This is the step that separates
+    # "touch a switch" from "sequence two of them".
+    "door_t2": CavernChambersConfig(
+        min_chambers=3, max_chambers=3,
+        fill_bias=0.9, extra_edges=0,
+        style_weights=(2, 4, 2, 1),
+        max_floor_step=2, wall_roughness=0.2,
+        nonlinear_prob=0.2, layout_attempts=30,
+        min_locked_doors=1, max_locked_doors=2,
+    ),
+    # T3: deeper chains, one cycle so the graph stops being a tree, DECOY doors,
+    # and a first scatter of mines. Decoys are the tier's real content: with a
+    # cycle present, some doors gate nothing, and the agent has to tell the two
+    # apart rather than opening everything it sees.
+    #
+    # Chamber count is raised to 4-5 here, and that is not cosmetic. With 3
+    # chambers and one extra edge the graph is a TRIANGLE, which has no cut edge
+    # at all -- so a necessary door is impossible and every layout is rejected
+    # (measured: 172 attempts, 0 accepted, silently falling back to the trivial
+    # two-box level). A cycle only leaves cuts if the graph is bigger than it.
+    "door_t3": CavernChambersConfig(
+        min_chambers=4, max_chambers=5,
+        fill_bias=0.85, extra_edges=0, layout_attempts=40,
+        style_weights=(1, 3, 2, 3),
+        nonlinear_prob=0.4,
+        min_locked_doors=2, max_locked_doors=3,
+        max_decoy_doors=2,
+        min_mines=2, max_mines=8,
+        min_gold_clusters=2, max_gold_clusters=4,
+    ),
+    # T4: the mechanic where it actually lives -- long chains, out-and-back
+    # routing, decoys, and official-ish mine density, so the door leg has to be
+    # executed under the pressure the rest of the corpus applies.
+    "door_t4": CavernChambersConfig(
+        min_chambers=5, max_chambers=6,
+        fill_bias=0.8, extra_edges=0, layout_attempts=40,
+        nonlinear_prob=0.6,
+        min_locked_doors=3, max_locked_doors=4,
+        max_decoy_doors=3,
+        min_mines=12, max_mines=28, mine_min_spacing=2,
+        min_gold_clusters=3, max_gold_clusters=7,
+    ),
+    # A single door with NOTHING else -- the ablation arm. Same geometry family
+    # as door_t1 but forced to the simplest layout the generator can emit, so a
+    # failure here cannot be blamed on anything but the door.
+    "door_probe": CavernChambersConfig(
+        min_chambers=2, max_chambers=2,
+        min_chamber_width=10, min_chamber_height=5,
+        fill_bias=1.0, extra_edges=0,
+        style_weights=(1, 0, 0, 0),
+        max_floor_step=0, wall_roughness=0.0,
+        smoothing_rate=0.0, flat_smoothing_rate=0.0,
+        nonlinear_prob=0.0,
+        min_locked_doors=1, max_locked_doors=1,
     ),
     # ONE-WAY platforms only. Phase 2 scope: `entity_mask` already models them,
     # so the reachability graph and cost-to-go field stay correct and this preset
@@ -3103,6 +3203,47 @@ BUCKET_CATALOG: "dict[str, dict[int, List[BucketEntry]]]" = {
         2: [("cavern_chambers", "cavern_traversal", 1)],
         3: [("cavern_chambers", "cavern_traversal", 1)],
         4: [("cavern_chambers", "cavern_traversal", 1)],
+    },
+    # ---- LOCKED_DOOR. APPENDED (see MINE_FIELD's note): every bucket above
+    # keeps its seed offset.
+    #
+    # WHY THIS BUCKET HAS TO EXIST. 808 of 3,568 official maps (22.6%) carry a
+    # locked door, and locked doors appear in NO other bucket in this catalog --
+    # so the only place the agent could ever meet the mechanic was inside the
+    # hardest layouts in the corpus, behind 26 competence gates. gamma-5b and
+    # gamma-5c each completed 0 of 338.
+    #
+    # AND WHY THE OFFICIAL CORPUS CANNOT SUBSTITUTE FOR IT. Necessity was solved
+    # over all 808: 473 of the 767 solvable ones (62%) reach the exit with EVERY
+    # door shut. Their doors are decoration. A bucket sampled to look like the
+    # official distribution would inherit that dilution and teach nothing on
+    # nearly two thirds of its levels -- and the milestone reward, which pays only
+    # for necessary doors, would correctly pay nothing there. This bucket places
+    # doors on CUT EDGES of the chamber graph and verifies the cut on the emitted
+    # tiles, so a door gates the route on essentially every level: measured 79 of
+    # 80 sampled levels (99%) carry at least one NECESSARY door, against 38% of
+    # the official door corpus.
+    #
+    # TIERS RAMP DEPENDENCY DEPTH, then geometry. T1 one door; T2 the first
+    # two-door chain; T3 chains plus DECOY doors that gate nothing; T4 long
+    # chains, out-and-back routing and mines. Sequential subtasks are learned
+    # fastest in their natural order, so chain length is the axis that moves --
+    # adding hazards at T1 would only confound "cannot do doors" with "cannot
+    # survive".
+    #
+    # T1 IS A DIAGNOSTIC. Two chambers, one door, no hazards. If the agent cannot
+    # clear T1 the problem is the reward or the distance field, not difficulty --
+    # the same role T1 plays in the hazard buckets.
+    #
+    # PHASE SCOPE: phase 2. A locked door is an entity the reachability graph and
+    # the free-space field both model (`doors=` build mode), so the cost-to-go
+    # field stays correct. Mines in T3/T4 are phase 1.
+    "LOCKED_DOOR": {
+        1: [("cavern_chambers", "door_t1", 3),
+            ("cavern_chambers", "door_probe", 1)],
+        2: [("cavern_chambers", "door_t2", 1)],
+        3: [("cavern_chambers", "door_t3", 1)],
+        4: [("cavern_chambers", "door_t4", 1)],
     },
 }
 
