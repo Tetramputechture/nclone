@@ -247,6 +247,20 @@ def _variants(compare: str):
             }, {}),
             ("global", {"_source": "global"}, {}),
         ]
+    if compare == "doors":
+        # ONE switch: locked-door phase legs, with one-ways ON in both arms.
+        # Run this on levels that HAVE doors; elsewhere the arms are identical
+        # by construction and the comparison is vacuous.
+        return [
+            ("global-nodoors", {"_source": "global", "_door_aware": False}, {}),
+            ("global-doors", {"_source": "global", "_door_aware": True}, {}),
+        ]
+    if compare == "oneway":
+        # ONE switch: directional one-way edges, with doors ON in both arms.
+        return [
+            ("global-nooneway", {"_source": "global", "_one_way": False}, {}),
+            ("global-oneway", {"_source": "global", "_one_way": True}, {}),
+        ]
     if compare == "projection":
         return [
             ("global-static", {
@@ -293,7 +307,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     help="pbrs_gamma used for the shaping-variance term")
     ap.add_argument("--weight", type=float, default=1.0, help="pbrs_weight")
     ap.add_argument("--compare",
-                    choices=("model", "arcs", "air-k", "global", "projection"),
+                    choices=("model", "arcs", "air-k", "global", "projection",
+                             "doors", "oneway"),
                     default="model",
                     help="'model' = geometric vs physics; 'arcs' = physics A/B")
     ap.add_argument("--per-demo", action="store_true", help="print every demo")
@@ -349,8 +364,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                 use_projection = bool(build_kwargs.pop("_projection", True))
                 if source == "global":
                     from ..global_potential import GlobalPotentialSource
+                    # ``_door_aware`` / ``_one_way`` let a variant toggle ONE of
+                    # the global source's switches while holding the others
+                    # fixed. Without them the only available comparison is
+                    # seedless-vs-global, which moves doors, one-ways AND
+                    # mine_split_topology together and cannot attribute a
+                    # difference to any of them.
                     src = GlobalPotentialSource(
-                        list(map_data), lattice_fallback=False
+                        list(map_data), lattice_fallback=False,
+                        door_aware=bool(build_kwargs.pop("_door_aware", True)),
+                        one_way=bool(build_kwargs.pop("_one_way", True)),
                     )
                 else:
                     src = fsd.FreeSpaceDistanceSource(
