@@ -222,12 +222,72 @@ def solve_door_dependencies(
             "(dependency cycle or unreachable prerequisite switch)",
         )
 
-    # --- Minimal sufficient set: greedily drop doors that aren't needed ---------
-    suff = set(closure)
-    for di in sorted(closure):
-        cand = suff - {di}
-        if exit_ok(cand):
-            suff = cand
+    # --- Necessary set: exit-critical doors, CLOSED under prerequisites ---------
+    #
+    # The previous rule greedily dropped any door whose removal still left the
+    # exit reachable. That tests SUFFICIENCY ("with this set open, can I finish")
+    # and never tests FEASIBILITY ("can I actually open this set from spawn"),
+    # because ``exit_ok`` assumes the candidate set is already open without
+    # asking how. On a prerequisite chain -- A's switch is reachable from spawn,
+    # B's switch only once A is open, the exit only once B is open -- it drops A
+    # (the exit is fine with B open) and the order loop below then finds B
+    # unopenable and returns solvable=False on a LEVEL THAT IS SOLVABLE, blaming
+    # a "dependency cycle" that does not exist. Prerequisite chains are the
+    # normal way multi-door levels are built, so this was not an edge case.
+    #
+    # The rule now names the two ways a door can matter, which is what a door
+    # actually does on these maps:
+    #   1. EXIT-CRITICAL -- shutting it (with every other openable door open)
+    #      breaks the route to the exit or the exit switch.
+    #   2. PREREQUISITE -- shutting it breaks the route to some other necessary
+    #      door's SWITCH.
+    # Necessity is (1) closed under (2).
+    #
+    # COST. This is O(n) oracle configurations, the same as the greedy loop it
+    # replaces, because both facts are read off the SAME config `closure - {p}`:
+    # one pass asks that config about the exit and about every door switch. A
+    # feasibility-preserving greedy drop would have been O(n^2) configs, and the
+    # corpus will not take that -- official door levels average 7.5 locked doors
+    # but the tail runs to 380 on one level, where O(n^2) is ~144k floods.
+    #
+    # DIRECTION OF ERROR. The blocking test fixes every other door open, so it
+    # can miss a pair that only matters jointly; the closure then OVER-includes
+    # rather than under-includes. Over-crediting a door costs a spurious
+    # milestone reward; under-crediting reports a solvable level unsolvable and
+    # deletes its potential. The conservative direction is the correct one here.
+    exit_critical: Set[int] = set()
+    blocks: Dict[int, Set[int]] = {p: set() for p in closure}
+    for p in sorted(closure):
+        cand = closure - {p}
+        g = G(cand)
+        reach = oracle.reachable_from(g, spawn_x, spawn_y)
+        if not (oracle.reaches(g, reach, exit_x, exit_y, "exit")
+                and oracle.reaches(g, reach, switch_x, switch_y, "switch")):
+            exit_critical.add(p)
+        # Which OTHER doors' switches does shutting p cut off?
+        for d in closure:
+            if d == p:
+                continue
+            if not oracle.reaches(g, reach, sw[d][0], sw[d][1], "switch"):
+                blocks[p].add(d)
+
+    # Close the exit-critical set under "is a prerequisite of".
+    needed_by: Dict[int, Set[int]] = {d: set() for d in closure}
+    for p, ds in blocks.items():
+        for d in ds:
+            needed_by[d].add(p)
+    suff = set(exit_critical)
+    stack = list(exit_critical)
+    while stack:
+        d = stack.pop()
+        for p in needed_by.get(d, ()):
+            if p not in suff:
+                suff.add(p)
+                stack.append(p)
+    if not suff:
+        # Every door is individually droppable and none gates another: the exit
+        # is reachable with all doors shut. Genuinely a zero-necessary-door level.
+        suff = set()
 
     # --- Dependency open-order within the minimal set ---------------------------
     order: List[int] = []
