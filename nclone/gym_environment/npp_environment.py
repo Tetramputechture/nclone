@@ -2270,6 +2270,10 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # consumed by the reward calculator for the locked-door-switch bonus +
         # HWM sub-goal phase. 0 when no plan / no necessary doors.
         obs["necessary_doors_open"] = int(getattr(self, "_necessary_doors_open", 0))
+        # How many the level requires in total. The reward needs it to bound the
+        # episode's milestone payout (see R_LOCKED_DOOR_TOTAL_CAP): a flat
+        # per-door bonus on a 71-door level outpays completion 35.5 to 10.0.
+        obs["necessary_doors_total"] = int(getattr(self, "_necessary_door_total", 0))
 
         # Extract locked door switch states from environment — kept internally
         # for the reward path even though `switch_states` is no longer in the
@@ -5539,6 +5543,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             "waypoint_leg_distance",
             "waypoint_index",
             "necessary_doors_open",
+            "necessary_doors_total",
             "switch_states_dict",
             "level_data",
             "entity_positions",

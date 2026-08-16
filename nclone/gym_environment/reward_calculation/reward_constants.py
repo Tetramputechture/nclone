@@ -56,6 +56,25 @@ R_EXIT = 10.0
 # NECESSARY doors are rewarded (opening an irrelevant door pays nothing) so the
 # signal never encourages detours. Gated by RewardConfig.enable_locked_door_rewards.
 R_LOCKED_DOOR_SWITCH = 0.5
+# Ceiling on the TOTAL locked-door milestone an episode can bank, spread evenly
+# over the level's necessary doors (each pays min(R_LOCKED_DOOR_SWITCH, cap/k)).
+#
+# Without this the milestone breaks completion dominance on the tail of the
+# corpus. Measured over all 808 official locked-door levels: 294 need at least
+# one door, p50 = 2, but the tail runs to 71 -- and 0.5 * 71 = 35.5 against
+# R_EXIT = 10.0. Nine levels (3.1% of the door-needing set) pay more for opening
+# doors than for finishing, and 24 (8.2%) pay more than half of it. Locked doors
+# are IRREVERSIBLE, so on those levels "open every door, then run out the clock"
+# is not merely competitive with winning, it strictly dominates it -- the agent
+# banks the whole payout and then declines the death risk of the exit leg.
+#
+# 2.0 = 20% of R_EXIT. It is deliberately below the ~3.1 of persistent
+# un-farmable shaping already bankable without a win (see R_EXIT's note), so the
+# two together stay well clear of 10.0. k <= 4 covers 225 of the 294 levels and
+# is unaffected; only the tail is compressed. Per-door value is constant within
+# an episode (k is a static property of the map), so this adds no
+# non-stationarity to the signal.
+R_LOCKED_DOOR_TOTAL_CAP = 2.0
 R_DEATH = -0.5
 
 # Extra penalty for mine deaths. Applied when death_cause == 'mine'. Total mine

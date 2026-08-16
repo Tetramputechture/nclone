@@ -13,6 +13,7 @@ from .reward_constants import (
     R_SWITCH,
     R_EXIT,
     R_LOCKED_DOOR_SWITCH,
+    R_LOCKED_DOOR_TOTAL_CAP,
     R_DEATH,
     R_DEATH_MINE,
     R_GOLD,
@@ -74,6 +75,10 @@ class RewardConfig:
     # Opening a non-necessary door pays nothing (no detour incentive).
     enable_locked_door_rewards: bool = False
     _locked_door_switch_reward_override: Optional[float] = None
+    # Ceiling on the episode's TOTAL door milestone; see R_LOCKED_DOOR_TOTAL_CAP.
+    # 0 or negative disables the cap (each door then pays the full per-door
+    # bonus, which breaks completion dominance on many-door levels).
+    _locked_door_total_cap_override: Optional[float] = None
 
     # --- Lattice / free-space PBRS (reward_constants LATTICE_PBRS_* block) ---
     # When True, a true policy-invariant potential-based shaping term
@@ -520,6 +525,18 @@ class RewardConfig:
         if self._locked_door_switch_reward_override is not None:
             return self._locked_door_switch_reward_override
         return R_LOCKED_DOOR_SWITCH
+
+    @property
+    def locked_door_total_cap(self) -> float:
+        """Ceiling on the episode's total locked-door milestone.
+
+        See ``R_LOCKED_DOOR_TOTAL_CAP``: uncapped, a 71-necessary-door official
+        level pays 35.5 for opening doors against 10.0 for finishing, and doors
+        do not re-close.
+        """
+        if self._locked_door_total_cap_override is not None:
+            return self._locked_door_total_cap_override
+        return R_LOCKED_DOOR_TOTAL_CAP
 
     @property
     def gold_reward_per_piece(self) -> float:

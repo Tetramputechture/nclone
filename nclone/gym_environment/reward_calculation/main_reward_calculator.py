@@ -1475,8 +1475,23 @@ class RewardCalculator:
             self._prev_necessary_doors_open = n_open
         newly = n_open - self._prev_necessary_doors_open
         self._prev_necessary_doors_open = n_open
-        reward = newly * self.config.locked_door_switch_reward if newly > 0 else 0.0
-        return reward, n_open
+        if newly <= 0:
+            return 0.0, n_open
+        # Spread a bounded TOTAL over the level's necessary doors rather than
+        # paying a flat per-door bonus. Doors are irreversible, so on a level
+        # with many of them a flat bonus makes "open everything, then run out
+        # the clock" pay more than winning: measured over the official corpus,
+        # 9 levels exceed R_EXIT and the worst pays 35.5 against 10.0. See
+        # R_LOCKED_DOOR_TOTAL_CAP. k is static per map, so the per-door value is
+        # constant within an episode -- this rescales the signal, it does not
+        # make it non-stationary. Levels needing <= 4 doors (225 of the 294 that
+        # need any) are unaffected.
+        per_door = self.config.locked_door_switch_reward
+        cap = self.config.locked_door_total_cap
+        n_total = int(obs.get("necessary_doors_total", 0) or 0)
+        if cap > 0 and n_total > 0:
+            per_door = min(per_door, cap / n_total)
+        return newly * per_door, n_open
 
     def _load_pace_table(self) -> None:
         """Load the cost-to-go -> reference-frame table once per calculator."""
