@@ -148,6 +148,60 @@ def test_two_independent_gates_are_both_necessary_in_either_order():
     assert set(plan.necessary_order) == {0, 1}
 
 
+def test_two_parallel_routes_credit_one_door_not_zero():
+    """The DISJUNCTION case: open AT LEAST ONE of {A, B}, neither individually
+    necessary.
+
+    Two parallel routes to the exit, each gated by its own door. Drop A and the
+    B route still serves; drop B and the A route still serves -- so a per-door
+    test finds NEITHER exit-critical and the set-valued answer is "0 necessary",
+    even though the exit is unreachable with both shut. Measured on 39 solvable
+    official door levels: 2 (5%) had exactly this shape.
+
+    For a `necessary_doors_open` COUNT that is the worst failure available: the
+    agent must open a door, does, and is paid nothing. The solver must commit to
+    one valid unlocking branch.
+    """
+    def rule(target, open_):
+        if target in (0, 1):
+            return True                      # both switches reachable from spawn
+        return bool({0, 1} & open_)          # exit needs EITHER door
+
+    plan, _ = _solve(rule, 2)
+    assert plan.solvable, plan.reason
+    assert len(plan.necessary_order) == 1, (
+        f"expected exactly one door credited, got {plan.necessary_order}"
+    )
+    assert plan.necessary_order[0] in (0, 1)
+
+
+def test_disjunction_repair_respects_openability():
+    """The repair must pick a door it can actually open.
+
+    Either B or C opens the exit; C's switch is reachable from spawn, B's is not
+    (it needs A). Crediting B alone would be a set the agent cannot open.
+    """
+    def rule(target, open_):
+        if target == 0:                      # A: from spawn
+            return True
+        if target == 1:                      # B: needs A
+            return 0 in open_
+        if target == 2:                      # C: from spawn
+            return True
+        return bool({1, 2} & open_)          # exit needs B or C
+
+    plan, _ = _solve(rule, 3)
+    assert plan.solvable, plan.reason
+    # Whatever is credited must be openable in the order given, from spawn.
+    opened = set()
+    for di in plan.necessary_order:
+        assert rule(di, opened), (
+            f"door {di} credited but its switch is unreachable with {opened} open"
+        )
+        opened.add(di)
+    assert rule("exit", opened), "credited set does not actually open the exit"
+
+
 def test_genuinely_unreachable_exit_is_still_reported_unsolvable():
     """The fix must not turn every level solvable."""
     def rule(target, open_):

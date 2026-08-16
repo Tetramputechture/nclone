@@ -284,10 +284,44 @@ def solve_door_dependencies(
             if p not in suff:
                 suff.add(p)
                 stack.append(p)
-    if not suff:
-        # Every door is individually droppable and none gates another: the exit
-        # is reachable with all doors shut. Genuinely a zero-necessary-door level.
-        suff = set()
+    # --- Sufficiency repair: the DISJUNCTION case -------------------------------
+    #
+    # Everything above asks per-door questions, so it can only ever return a SET
+    # -- a conjunction, "these doors are all needed". The truth is sometimes a
+    # DISJUNCTION: two parallel routes, each gated by its own door, so you must
+    # open AT LEAST ONE of {A, B} and NEITHER is individually necessary (drop
+    # either alone and the other route still serves). `exit_critical` is then
+    # empty and the honest set-valued answer is "0 necessary doors" -- which is
+    # wrong, because the exit is unreachable with every door shut.
+    #
+    # Measured on 39 solvable official door levels: 2 (5%) report zero necessary
+    # doors while the exit is NOT reachable doors-shut. For the milestone reward
+    # that is the worst possible failure -- the agent must open a door, does,
+    # and is paid nothing.
+    #
+    # Repair: if the chosen set does not actually reach the exit, open further
+    # doors in feasible order until it does. That commits to ONE valid unlocking
+    # sequence rather than representing the disjunction, which is all a
+    # `necessary_doors_open` COUNT can consume anyway. Doors are added in
+    # nearest-first feasible order so the committed branch is the cheap one.
+    if not exit_ok(suff):
+        pool = closure - suff
+        while pool and not exit_ok(suff):
+            g = G(suff)
+            reach = oracle.reachable_from(g, spawn_x, spawn_y)
+            ready = [di for di in pool
+                     if oracle.reaches(g, reach, sw[di][0], sw[di][1], "switch")]
+            if not ready:
+                break
+            cx, cy = (spawn_x, spawn_y)
+            pick = min(ready, key=lambda di: (sw[di][0] - cx) ** 2 + (sw[di][1] - cy) ** 2)
+            suff.add(pick)
+            pool.discard(pick)
+        if not exit_ok(suff):
+            # Cannot happen: `closure` was already shown to reach the exit, and
+            # the loop can only stop early if some door in `closure` is not
+            # openable -- which contradicts how `closure` was built.
+            suff = set(closure)
 
     # --- Dependency open-order within the minimal set ---------------------------
     order: List[int] = []
