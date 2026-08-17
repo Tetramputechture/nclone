@@ -38,6 +38,7 @@ from typing import Callable, Dict, Iterator, List, Tuple
 
 from ..constants import MAP_TILE_WIDTH, MAP_TILE_HEIGHT
 from ..map_generation.constants import GRID_SIZE_FACTOR
+from ..physics import map_orientation_to_vector as _map_orientation_to_vector
 
 # Reflection axis in map-data units. Entities live in the absolute coordinate
 # frame (interior grid + 1-tile border each side), so the axis is the full
@@ -78,10 +79,31 @@ for _a, _b in (
     _TILE_MIRROR[_b] = _a
 
 # Entity types whose ``orientation`` byte encodes a compass direction that must
-# be reflected. The 8-way orientation reflects via this map; the purely vertical
-# orientations (0 = right-of-axis-symmetric "up", 4 = "down") are unchanged.
+# be reflected.
 _ORIENT_TYPES = frozenset({5, 6, 8, 10, 11, 14, 15, 20, 23, 26})
-_ORIENT_FLIP: Dict[int, int] = {1: 3, 2: 6, 3: 1, 5: 7, 6: 2, 7: 5}
+
+#: Horizontal-mirror map for the 8-way orientation byte, DERIVED from the
+#: simulator's own ``physics.map_orientation_to_vector`` rather than written by
+#: hand -- a horizontal mirror negates x and leaves y alone, so the table is
+#: whatever that operation says it is.
+#:
+#: The previous hand-written table was ``{1: 3, 2: 6, 3: 1, 5: 7, 6: 2, 7: 5}``:
+#: the four DIAGONALS were right and all four AXIS-ALIGNED cases were wrong. It
+#: left 0 and 4 untouched and swapped 2 <-> 6, which is exactly backwards -- the
+#: sim says 0 is (+1, 0) "right" and 4 is (-1, 0) "left" (so they must swap),
+#: while 2 is (0, +1) "down" and 6 is (0, -1) "up" (so they must not). The old
+#: comment called 0 "up" and 4 "down", which is where the misconception came
+#: from. Deriving it removes the class of error entirely.
+_ORIENT_FLIP: Dict[int, int] = {}
+for _o in range(8):
+    _vx, _vy = _map_orientation_to_vector(_o)
+    for _cand in range(8):
+        _cx, _cy = _map_orientation_to_vector(_cand)
+        if abs(_cx - (-_vx)) < 1e-9 and abs(_cy - _vy) < 1e-9:
+            _ORIENT_FLIP[_o] = _cand
+            break
+    else:  # pragma: no cover - the 8-way basis is closed under reflection
+        raise AssertionError(f"no mirrored orientation for {_o}")
 
 # Drone entity types whose ``mode`` byte encodes a chirality (clockwise vs
 # counter-clockwise wall-follow / wander) that must be swapped under reflection.
@@ -91,13 +113,11 @@ _DRONE_MODE_SWAP: Dict[int, int] = {0: 1, 1: 0, 2: 3, 3: 2}
 
 #: Entity types whose reflection is KNOWN to be wrong, with the defect.
 #:
-#: 1. ``_ORIENT_FLIP`` above is provably wrong for the four AXIS-ALIGNED
-#:    orientations. Checked against the simulator's own
-#:    ``map_orientation_to_vector``: a horizontal mirror must map 0 <-> 4
-#:    (right / left) and leave 2 and 6 (down / up) alone. The table does the
-#:    opposite -- it leaves 0 and 4 untouched (the ``not in (0, 4)`` guard) and
-#:    swaps 2 <-> 6. The four diagonals are correct. Its comment shows the
-#:    misconception: it calls 0 "up" and 4 "down", but the sim says 0 is (+1, 0).
+#: 1. ORIENTATION -- **FIXED 2026-08-17.** ``_ORIENT_FLIP`` is now derived from
+#:    ``physics.map_orientation_to_vector`` and the ``not in (0, 4)`` call-site
+#:    guard is gone, so all eight orientations reflect correctly. This entry is
+#:    kept because the fix does NOT on its own make these types mirror-faithful:
+#:    defect 2 below is independent and still open.
 #: 2. Drone TRAJECTORIES do not reflect even once the orientation is corrected.
 #:    Measured 2026-08-03: spawn positions mirror exactly but the paths diverge
 #:    from frame 1, up to 312 px over 200 frames on `official/R/173 variational
@@ -202,7 +222,12 @@ def mirror_map_data(map_data: List[int]) -> List[int]:
     while i + 4 < n:
         etype = md[i]
         out[i + 1] = axis - md[i + 1]
-        if etype in _ORIENT_TYPES and md[i + 3] not in (0, 4):
+        # No orientation is exempt. The old `not in (0, 4)` guard here skipped
+        # right (0) and left (4) -- the two that a HORIZONTAL mirror must swap,
+        # and the only two it must not leave alone. `_ORIENT_FLIP` is now derived
+        # from the sim, so the identity cases (2 = down, 6 = up) map to
+        # themselves and need no special-casing.
+        if etype in _ORIENT_TYPES:
             out[i + 3] = _ORIENT_FLIP.get(md[i + 3], md[i + 3])
         if etype in _DRONE_TYPES:
             out[i + 4] = _DRONE_MODE_SWAP.get(md[i + 4], md[i + 4])
