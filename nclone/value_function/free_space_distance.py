@@ -557,7 +557,8 @@ def _fs_cache_key(map_data: List[int], mine_hard: bool = False,
                   doors: str = "open",
                   threat_occupancy: bool = False,
                   one_way: bool = False,
-                  mine_split_topology: bool = False) -> str:
+                  mine_split_topology: bool = False,
+                  solid_bodies: bool = False) -> str:
     h = hashlib.md5()
     h.update(_FS_CACHE_VERSION.encode())
     h.update(_native_fingerprint().encode())
@@ -598,8 +599,24 @@ def _fs_cache_key(map_data: List[int], mine_hard: bool = False,
     # adds four arrays to the cached state.
     if one_way:
         h.update(repr(("oneway", _ONE_WAY_SEMI)).encode())
+    # Solid BODIES as terrain removes cells from `free`, which changes the edge
+    # set AND both derived climb fields (floor_rise, wall_adj). A field built
+    # with them must never be served from a cache entry built without, or an A/B
+    # of the two arms silently compares one field against itself.
+    if solid_bodies:
+        h.update(repr(("solidbodies", sorted(_SOLID_BODY_SEMI.items()))).encode())
     h.update(np.asarray([int(v) for v in map_data], dtype=np.int64).tobytes())
     return h.hexdigest()
+
+
+#: Ninja-blocking solid bodies and their half-extent in px. Mirrors
+#: `graph.reachability.entity_mask._SOLID_BODY_SEMI` -- the two must agree, or
+#: the lattice and the global field disagree about what a level even contains.
+_SOLID_BODY_SEMI = {
+    17: 9.0,   # BOUNCE_BLOCK
+    20: 9.0,   # THWUMP
+    28: 12.0,  # SHWUMP (shove thwump)
+}
 
 
 class FreeSpaceDistanceSource:
@@ -678,8 +695,18 @@ class FreeSpaceDistanceSource:
                  doors: str = "open",
                  threat_occupancy: Optional[bool] = None,
                  one_way: Optional[bool] = None,
-                 mine_split_topology: bool = False):
+                 mine_split_topology: bool = False,
+                 solid_bodies: Optional[bool] = None):
         self.available = False
+        # Solid ninja-blocking BODIES (bounce block / thwump / shove thwump) as
+        # terrain. Default OFF: this changes the cost-to-go field, and every
+        # consumer of it -- PBRS, the demo corpus, the reverse curriculum -- is
+        # calibrated against the field without it. Opt in per instance, or
+        # process-wide via NCLONE_FS_SOLID_BODIES=1, so it can be A/B'd rather
+        # than silently shipped.
+        if solid_bodies is None:
+            solid_bodies = os.environ.get("NCLONE_FS_SOLID_BODIES", "0") == "1"
+        self._solid_bodies = bool(solid_bodies)
         # Mine-FAITHFUL mode (v24, for the POLICY observation): cut deadly-mine
         # cells from the free mask so the cost-to-go / nav gradient the policy
         # sees routes AROUND mines. Default False keeps the legacy mine-SOFT
@@ -840,7 +867,8 @@ class FreeSpaceDistanceSource:
         try:
             key = _fs_cache_key(map_data, self._mine_hard, self._physics_cost,
                                 self._doors, self._threat_occupancy,
-                                self._one_way, self._mine_split_topology)
+                                self._one_way, self._mine_split_topology,
+                                self._solid_bodies)
         except Exception:
             self.cache_tier = "build"
             _note_live_build()
@@ -946,6 +974,9 @@ class FreeSpaceDistanceSource:
         # silently doubling the barriers the flood routes around.
         self.one_ways = []
         self.locked_doors = []
+        #: (x, y, semi_extent_px) of ninja-blocking solid BODIES at their RESTING
+        #: position -- bounce blocks, thwumps, shove thwumps.
+        self.solid_bodies = []
         sim = Nnative.Simulator.load(map_data)
         st = sim.get_state()
         switch = exit_door = None
@@ -961,6 +992,19 @@ class FreeSpaceDistanceSource:
                 n = _ORIENT_NORMAL.get(int(getattr(e, "orientation", -1)))
                 if n is not None:
                     self.one_ways.append((float(e.x), float(e.y), n[0], n[1]))
+            elif e.entity_type in _SOLID_BODY_SEMI and self._solid_bodies:
+                # Anchored at the RESTING position on purpose. A thwump's phase
+                # and a bounce block's displacement are agent- and
+                # time-dependent, and a field that tracked them would make Phi
+                # oscillate for reasons unrelated to progress -- the v39
+                # hazard-PBRS pathology through a different door. A bounce block
+                # only ever leaves its origin because the agent pushed it and
+                # springs back, so anchoring at rest also removes any incentive
+                # to farm shaping by shoving one toward the goal. Same rule the
+                # reachability graph already uses (`entity_mask._SOLID_BODY_SEMI`).
+                self.solid_bodies.append(
+                    (float(e.x), float(e.y), _SOLID_BODY_SEMI[e.entity_type])
+                )
             elif e.entity_type == 6:
                 # Locked door.  ``x, y`` is its SWITCH (the base class overwrites
                 # the entity position with the switch position after building the
@@ -1003,6 +1047,37 @@ class FreeSpaceDistanceSource:
         free = lut[np.clip(ttype, 0, lut.shape[0] - 1),
                    sub_x[:, None], sub_y[None, :]]
         free &= in_x[:, None] & in_y[None, :]
+
+        # SOLID BODIES AS TERRAIN (opt-in, `solid_bodies=True`).
+        #
+        # Cutting these cells out of `free` is the whole change, because
+        # `free_space.climb_fields` derives BOTH of its outputs from `free`
+        # alone: `floor_rise` resets to 0 above a non-free cell, and `wall_adj`
+        # is set beside one. So one mask edit simultaneously
+        #
+        #   * stops the flood routing THROUGH a solid object -- measured before
+        #     this change, 89.7% of the cells inside a bounce block were marked
+        #     free on 12/12 official levels;
+        #   * makes the body's top a FLOOR, so cells above it are within jump
+        #     reach instead of being sealed by the open-air climb rule;
+        #   * makes its sides WALL-ADJACENT, which is the escape hatch that
+        #     admits an unbounded climb -- i.e. the repeated wall-jumps against a
+        #     bounce block that the operator describes.
+        #
+        # What it does NOT model is the extra launch velocity a pumped block
+        # returns; the physics flood's jump reach is a fixed constant. So a route
+        # that merely STANDS on or wall-jumps off a body becomes representable,
+        # while a super-launched trajectory is still under-modelled.
+        if self._solid_bodies and self.solid_bodies:
+            bxy = np.asarray(
+                [(bx, by, semi) for (bx, by, semi) in self.solid_bodies],
+                dtype=np.float64,
+            )
+            # A cell is occupied when its CENTRE lies inside the body's square.
+            dx = np.abs(cxs[:, None, None] - bxy[None, None, :, 0])
+            dy = np.abs(cys[None, :, None] - bxy[None, None, :, 1])
+            semi = bxy[None, None, :, 2]
+            free &= ~((dx <= semi) & (dy <= semi)).any(axis=2)
 
         # Per-cell conservative ROUTING density: how many deadly kill discs,
         # dilated by one 6px cell, cover the cell centre. This remains the route
