@@ -60,6 +60,7 @@ use crate::constants::{
     FLOOR_GUARD_SPEED, MINI_DRONE_RADIUS, NINJA_RADIUS, ROCKET_INITIAL_STEP, ROCKET_LAUNCH_DELAY,
     ROCKET_MAX_SPEED, ROCKET_RADIUS, ROCKET_SPEED_MULTIPLIER, ROCKET_TURN_RATE,
     BOUNCE_BLOCK_SEMI_SIDE, ONE_WAY_PLATFORM_SEMI_SIDE, SHOVE_THWUMP_RADIUS,
+    BOUNCE_BLOCK_DAMPENING, BOUNCE_BLOCK_STIFFNESS,
     SHOVE_THWUMP_SEMI_SIDE, THWUMP_BACKWARD_SPEED, THWUMP_FORWARD_SPEED,
     THWUMP_SEMI_SIDE,
 };
@@ -1692,13 +1693,18 @@ const SOLID_MOTION_HORIZONS: [i32; 2] = [12, 24];
 /// this steps the same rule `Thwump::move_entity` does, including the snap-to-
 /// origin that ends a retreat.
 ///
-/// Bounce blocks and shove thwumps get **velocity and phase exactly** but a
-/// LINEAR forecast, which is an approximation: a bounce block is spring-damped
-/// and will fall short of a straight-line extrapolation. That is deliberately
-/// the conservative direction for a platform (it predicts the block further
-/// along than it gets, so a policy that trusts it overshoots rather than
-/// stepping into a gap it thought was solid), but it is an approximation and
-/// should not be read as a guarantee.
+/// Bounce blocks forecast **exactly** too, by stepping their own spring. They
+/// were
+/// briefly shipped with a linear extrapolation and that was wrong, not merely
+/// imprecise: the block's measured oscillation period is **42 frames**
+/// (`scripts/probe_bounce_block_spring_scale.py`), so the t+24 horizon is more
+/// than half a cycle and a straight line points the WRONG WAY for most of the
+/// second half of every oscillation. The spring is three lines; there was no
+/// reason to approximate it.
+///
+/// Shove thwumps keep a linear forecast, which is exact for a launch or retreat
+/// in progress -- constant speed along a fixed axis -- and wrong only where one
+/// is stopped early by geometry.
 ///
 /// Doors are absent on purpose. They change STATE but never translate, so there
 /// is no velocity to publish, and their open/closed bit is already
@@ -1715,8 +1721,23 @@ struct MovingBody {
     vx: f64,
     vy: f64,
     phase: f32,
-    /// Thwumps forecast exactly; everything else extrapolates linearly.
-    thwump: Option<ThwumpForecast>,
+    /// How this body's future position is computed. Every body that can be
+    /// ridden gets an EXACT model; linear extrapolation is the fallback.
+    kind: ForecastKind,
+}
+
+enum ForecastKind {
+    /// Steps `Thwump::move_entity`, grid-edge reversal included.
+    Thwump(ThwumpForecast),
+    /// Steps `BounceBlock::move_entity`. A bounce block is an OSCILLATOR with a
+    /// measured period of 42 frames, so over the t+24 horizon it reverses
+    /// direction; a linear extrapolation does not merely lose accuracy there, it
+    /// points the wrong way for most of the second half of every cycle. The
+    /// spring is three lines, so there is no reason to approximate it.
+    Spring { origin_x: f64, origin_y: f64 },
+    /// Constant velocity. Correct for a shove thwump mid-launch or mid-retreat,
+    /// which moves at a fixed speed along a fixed axis until it is stopped.
+    Linear,
 }
 
 struct ThwumpForecast {
@@ -1798,6 +1819,32 @@ impl SolidMotionField {
         (px, py)
     }
 
+    /// Advance a bounce block `frames` steps under its own rule.
+    ///
+    /// Mirrors `BounceBlock::move_entity` exactly, including the part that looks
+    /// like a bug and is not: the restoring force is added to POSITION as well as
+    /// to velocity, which is why the block settles faster than a textbook
+    /// oscillator. Reproducing the real integrator matters here because the
+    /// forecast is compared against the simulator, not against theory.
+    fn step_spring(
+        ox: f64, oy: f64, x: f64, y: f64, vx: f64, vy: f64, frames: i32,
+    ) -> (f64, f64) {
+        let (mut px, mut py, mut sx, mut sy) = (x, y, vx, vy);
+        for _ in 0..frames {
+            sx *= BOUNCE_BLOCK_DAMPENING;
+            sy *= BOUNCE_BLOCK_DAMPENING;
+            px += sx;
+            py += sy;
+            let fx = BOUNCE_BLOCK_STIFFNESS * (ox - px);
+            let fy = BOUNCE_BLOCK_STIFFNESS * (oy - py);
+            px += fx;
+            py += fy;
+            sx += fx;
+            sy += fy;
+        }
+        (px, py)
+    }
+
     pub fn compute(&mut self, sim: &Simulator) -> &[f32] {
         self.buf.fill(0.0);
 
@@ -1820,7 +1867,7 @@ impl SolidMotionField {
                         vx,
                         vy,
                         phase: t.state as f32,
-                        thwump: Some(ThwumpForecast {
+                        kind: ForecastKind::Thwump(ThwumpForecast {
                             is_horizontal: t.is_horizontal,
                             direction: t.direction,
                             state: t.state,
@@ -1853,7 +1900,7 @@ impl SolidMotionField {
                         vx,
                         vy,
                         phase,
-                        thwump: None,
+                        kind: ForecastKind::Linear,
                     });
                 }
                 Entity::BounceBlock(b) => {
@@ -1874,7 +1921,10 @@ impl SolidMotionField {
                             let dy = b.ypos - b.yorigin;
                             if dx * b.xspeed + dy * b.yspeed >= 0.0 { 1.0 } else { -1.0 }
                         },
-                        thwump: None,
+                        kind: ForecastKind::Spring {
+                            origin_x: b.xorigin,
+                            origin_y: b.yorigin,
+                        },
                     });
                 }
                 _ => {}
@@ -1905,9 +1955,14 @@ impl SolidMotionField {
         for (i, horizon) in SOLID_MOTION_HORIZONS.iter().enumerate() {
             let ch = SOLID_MOTION_CH_FCAST_12 + i;
             for b in &bodies {
-                let (fx, fy) = match &b.thwump {
-                    Some(f) => Self::step_thwump(f, b.x, b.y, *horizon, &sim.grid_edges),
-                    None => (
+                let (fx, fy) = match &b.kind {
+                    ForecastKind::Thwump(f) => {
+                        Self::step_thwump(f, b.x, b.y, *horizon, &sim.grid_edges)
+                    }
+                    ForecastKind::Spring { origin_x, origin_y } => Self::step_spring(
+                        *origin_x, *origin_y, b.x, b.y, b.vx, b.vy, *horizon,
+                    ),
+                    ForecastKind::Linear => (
                         b.x + b.vx * (*horizon as f64),
                         b.y + b.vy * (*horizon as f64),
                     ),
