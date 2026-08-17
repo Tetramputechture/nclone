@@ -26,6 +26,7 @@ from .loaders import (
     MapSource,
     OfficialMapSource,
 )
+from .ninja_state import ninja_state_lines
 from .overlays import OverlayManager
 from .panel import DevPanel
 
@@ -57,6 +58,10 @@ class DevToolApp:
         #: True while a death is being watched instead of reset. See
         #: :meth:`_should_linger`.
         self._lingering = False
+        #: Show the ninja buffer / contact read-out (see :mod:`.ninja_state`).
+        #: On by default: it is the only view of the frame-scale state that
+        #: decides whether a jump does anything, and it costs a dozen rows.
+        self.show_ninja_state = True
 
         # Optional live 3D view of the same sim, blitted into a reserved strip.
         self.panel3d = None
@@ -323,6 +328,24 @@ class DevToolApp:
 
     # -- row model ---------------------------------------------------------
 
+    def toggle_ninja_state(self):
+        self.show_ninja_state = not self.show_ninja_state
+
+    def _ninja_state_lines(self) -> List[str]:
+        """Buffer / contact read-out, or why it is unavailable.
+
+        Contained: this is a debug read-out on the frame path, so a backend that
+        does not expose some field must not take the whole tool down.
+        """
+        try:
+            ninja = self.env.nplay_headless.sim.ninja
+        except Exception as exc:  # noqa: BLE001 - read-out must not be fatal
+            return [f"unavailable: {type(exc).__name__}"]
+        try:
+            return ninja_state_lines(ninja)
+        except Exception as exc:  # noqa: BLE001
+            return [f"read failed: {type(exc).__name__}"]
+
     def build_rows(self) -> List[Row]:
         rows: List[Row] = [Row(HEADER, "Map source")]
         rows.append(Row(ACTION, "Next", "G", pygame.K_g, on_activate=self.source_next))
@@ -389,6 +412,15 @@ class DevToolApp:
                 get_state=(lambda n=name: self.overlays.is_on(n)),
                 on_activate=(lambda n=name: self.overlays.toggle(n)),
             ))
+
+        rows.append(Row(HEADER, "Ninja state"))
+        # "S": J is the jump-cost-to-go overlay, and S is the only letter left.
+        rows.append(Row(TOGGLE, "Buffers / contacts", "S", pygame.K_s,
+                        get_state=lambda: self.show_ninja_state,
+                        on_activate=self.toggle_ninja_state))
+        if self.show_ninja_state:
+            for line in self._ninja_state_lines():
+                rows.append(Row(STATUS, line))
 
         if self.recorder is not None:
             rows.append(Row(HEADER, "Recording"))
