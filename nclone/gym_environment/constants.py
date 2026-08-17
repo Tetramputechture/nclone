@@ -600,6 +600,23 @@ SOLID_MAP_CH_LAUNCHPAD_BX = 8
 SOLID_MAP_CH_LAUNCHPAD_BY = 9
 SOLID_MAP_CH_BOOST_PAD = 10
 
+# --- solid_motion: where a moving solid body is going -----------------------
+#
+# `solid_map` stamps a body's CURRENT footprint. That is the whole answer for a
+# wall and only half of it for a thwump, which is a moving platform: several
+# official routes require riding one along its charge axis. A ride needs the
+# velocity, the phase, and where the body will be on arrival -- and since frame
+# stacking was removed the policy cannot difference positions to recover any of
+# them. A thwump charging toward the ninja and one retreating away occupy the
+# same cell on the same frame and want opposite actions.
+SOLID_MOTION_CHANNELS = 5
+SOLID_MOTION_CH_VX = 0
+SOLID_MOTION_CH_VY = 1
+#: -1 retreating, 0 idle, +1 charging / launching.
+SOLID_MOTION_CH_PHASE = 2
+SOLID_MOTION_CH_FCAST_12 = 3
+SOLID_MOTION_CH_FCAST_24 = 4
+
 # v17 episodic visitation map (``visitation_map``): a per-episode "where have I
 # been" grid co-registered EXACTLY with cost_to_go_map (same 12px cells, same
 # border-stripped playable frame, same (W, H) axis order). One channel carrying a

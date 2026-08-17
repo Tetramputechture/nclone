@@ -103,6 +103,7 @@ from .constants import (
     HAZARD_MAP_OBS_WIDTH,
     THREAT_TTL_CHANNELS,
     SOLID_MAP_CHANNELS,
+    SOLID_MOTION_CHANNELS,
     HAZARD_MAP_OBS_HEIGHT,
     COST_TO_GO_MAP_DOWNSAMPLE,
     COST_TO_GO_MAP_WIDTH,
@@ -357,6 +358,19 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 "reference implementation, and emitting zeros would misreport "
                 "every solid entity as absent."
             )
+        self._solid_motion_enabled = bool(
+            getattr(_reach, "enable_solid_motion", False)
+        )
+        if self._solid_motion_enabled and not self._solid_map_enabled:
+            # The motion field QUALIFIES the geometry solid_map publishes: its
+            # velocity and forecast channels are indexed by the same cells. On
+            # its own it would describe the motion of bodies the policy cannot
+            # see, which is worse than not shipping it.
+            raise ValueError(
+                "enable_solid_motion requires enable_solid_map: the motion "
+                "channels qualify solid_map's geometry cell-for-cell and are "
+                "meaningless without it."
+            )
 
         self._drone_hazard_cache = np.ones(
             (DRONE_HAZARD_MAP_CHANNELS, HAZARD_MAP_WIDTH, HAZARD_MAP_HEIGHT),
@@ -596,6 +610,17 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
                 high=1.0,
                 shape=(
                     SOLID_MAP_CHANNELS,
+                    HAZARD_MAP_OBS_WIDTH,
+                    HAZARD_MAP_OBS_HEIGHT,
+                ),
+                dtype=np.float32,
+            )
+        if self._solid_motion_enabled:
+            obs_spaces["solid_motion"] = box.Box(
+                low=-1.0,
+                high=1.0,
+                shape=(
+                    SOLID_MOTION_CHANNELS,
                     HAZARD_MAP_OBS_WIDTH,
                     HAZARD_MAP_OBS_HEIGHT,
                 ),
@@ -2342,6 +2367,10 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         if self._solid_map_enabled:
             obs["solid_map"] = self._read_native_field(
                 "solid_map", SOLID_MAP_CHANNELS
+            )
+        if self._solid_motion_enabled:
+            obs["solid_motion"] = self._read_native_field(
+                "solid_motion", SOLID_MOTION_CHANNELS
             )
         if self._drone_hazard_enabled:
             obs["drone_hazard_map"] = pool_channels(

@@ -60,11 +60,13 @@ use crate::constants::{
     FLOOR_GUARD_SPEED, MINI_DRONE_RADIUS, NINJA_RADIUS, ROCKET_INITIAL_STEP, ROCKET_LAUNCH_DELAY,
     ROCKET_MAX_SPEED, ROCKET_RADIUS, ROCKET_SPEED_MULTIPLIER, ROCKET_TURN_RATE,
     BOUNCE_BLOCK_SEMI_SIDE, ONE_WAY_PLATFORM_SEMI_SIDE, SHOVE_THWUMP_RADIUS,
-    SHOVE_THWUMP_SEMI_SIDE, THWUMP_FORWARD_SPEED, THWUMP_SEMI_SIDE,
+    SHOVE_THWUMP_SEMI_SIDE, THWUMP_BACKWARD_SPEED, THWUMP_FORWARD_SPEED,
+    THWUMP_SEMI_SIDE,
 };
 use crate::entities::drone::{DroneBehaviour, DroneKind};
 use crate::entities::evil_ninja;
 use crate::entities::Entity;
+use crate::grid_edges::GridEdges;
 use crate::simulator::Simulator;
 
 /// Fine grid the SDF is evaluated on -- the resolution the distances are
@@ -1638,3 +1640,287 @@ impl SolidField {
 /// Half-extent used to stamp a door barrier. A door spans one 24px cell edge, so
 /// half of that is the right footprint.
 const DOOR_SEMI_SIDE: f64 = 12.0;
+
+// ---------------------------------------------------------------------------
+// Moving-platform motion field
+// ---------------------------------------------------------------------------
+
+/// Channels of `solid_motion`. See `SolidMotionField::compute`.
+pub const SOLID_MOTION_CHANNELS: usize = 5;
+/// Body velocity along x, px/frame, normalised by `THWUMP_FORWARD_SPEED`.
+pub const SOLID_MOTION_CH_VX: usize = 0;
+/// Body velocity along y, same normalisation.
+pub const SOLID_MOTION_CH_VY: usize = 1;
+/// Motion phase: `-1` retreating, `0` idle, `+1` charging / launching.
+pub const SOLID_MOTION_CH_PHASE: usize = 2;
+/// Predicted occupancy at t+12 frames.
+pub const SOLID_MOTION_CH_FCAST_12: usize = 3;
+/// Predicted occupancy at t+24 frames.
+pub const SOLID_MOTION_CH_FCAST_24: usize = 4;
+
+const SOLID_MOTION_HORIZONS: [i32; 2] = [12, 24];
+
+/// Where a moving solid body is going, and when it will turn around.
+///
+/// # Why `solid_map` is not enough
+///
+/// `SolidField` stamps a body's CURRENT footprint as a 1.0 occupancy square. That
+/// is the right answer to "is there a surface here", and it is the whole answer
+/// for a wall. It is not the whole answer for a thwump, because a thwump is a
+/// moving platform: several official routes require riding one along its charge
+/// axis to reach ground that is otherwise unreachable.
+///
+/// A ride needs three things the occupancy stamp cannot express:
+///
+/// 1. **Which way the body is moving, and how fast.** Charge and retreat run at
+///    different speeds (`20/7` vs `8/7` px/frame), so matching the platform is a
+///    different problem in each phase.
+/// 2. **Which phase it is in.** A thwump charging *toward* the ninja and one
+///    retreating *away* from it can occupy the same cell on the same frame, and
+///    the correct action is opposite. The observation had no bit that separated
+///    them: `threat_ttl` carries `state == 1` as a tier, so *charging* is weakly
+///    visible, but retreating and idle are identical there and the retraction
+///    sweep is deliberately not modelled at all.
+/// 3. **Where it will be when the ninja arrives.** Landing on a platform is a
+///    rendezvous, and the observation is single-frame -- frame stacking was
+///    removed -- so the policy cannot difference positions to recover velocity.
+///
+/// # What is exact and what is not
+///
+/// The thwump forecast is **exact**: its motion is fully determined by
+/// `(state, direction, position)` plus the grid-edge test that reverses it, and
+/// this steps the same rule `Thwump::move_entity` does, including the snap-to-
+/// origin that ends a retreat.
+///
+/// Bounce blocks and shove thwumps get **velocity and phase exactly** but a
+/// LINEAR forecast, which is an approximation: a bounce block is spring-damped
+/// and will fall short of a straight-line extrapolation. That is deliberately
+/// the conservative direction for a platform (it predicts the block further
+/// along than it gets, so a policy that trusts it overshoots rather than
+/// stepping into a gap it thought was solid), but it is an approximation and
+/// should not be read as a guarantee.
+///
+/// Doors are absent on purpose. They change STATE but never translate, so there
+/// is no velocity to publish, and their open/closed bit is already
+/// `SOLID_CH_STATIC` vs `SOLID_CH_DOOR_OPEN`.
+pub struct SolidMotionField {
+    buf: Vec<f32>,
+}
+
+/// One moving body, reduced to what the field needs.
+struct MovingBody {
+    x: f64,
+    y: f64,
+    semi: f64,
+    vx: f64,
+    vy: f64,
+    phase: f32,
+    /// Thwumps forecast exactly; everything else extrapolates linearly.
+    thwump: Option<ThwumpForecast>,
+}
+
+struct ThwumpForecast {
+    is_horizontal: bool,
+    direction: f64,
+    state: i8,
+    xorigin: f64,
+    yorigin: f64,
+}
+
+impl SolidMotionField {
+    pub fn new() -> Self {
+        SolidMotionField {
+            buf: vec![0.0; SOLID_MOTION_CHANNELS * OUT_WIDTH * OUT_HEIGHT],
+        }
+    }
+
+    fn channel_mut(&mut self, ch: usize) -> &mut [f32] {
+        let n = OUT_WIDTH * OUT_HEIGHT;
+        &mut self.buf[ch * n..(ch + 1) * n]
+    }
+
+    /// Advance a thwump `frames` steps under its own rule.
+    ///
+    /// Mirrors `Thwump::move_entity`: forward speed while charging, backward
+    /// while retreating, snap-and-stop when a retreat crosses the origin, and
+    /// flip to retreating when a charge meets a solid half-cell edge.
+    fn step_thwump(f: &ThwumpForecast, x: f64, y: f64, frames: i32, edges: &GridEdges) -> (f64, f64) {
+        let (mut px, mut py) = (x, y);
+        let mut state = f.state;
+        for _ in 0..frames {
+            if state == 0 {
+                break;
+            }
+            let speed = if state == 1 {
+                THWUMP_FORWARD_SPEED
+            } else {
+                THWUMP_BACKWARD_SPEED
+            };
+            let speed_dir = f.direction * (state as f64);
+            if !f.is_horizontal {
+                let ny = py + speed * speed_dir;
+                if state == -1 && (ny - f.yorigin) * (py - f.yorigin) < 0.0 {
+                    py = f.yorigin;
+                    state = 0;
+                    continue;
+                }
+                let cy = ((py + speed_dir * 11.0) / 12.0).floor() as i32;
+                let cy_new = ((ny + speed_dir * 11.0) / 12.0).floor() as i32;
+                if cy != cy_new {
+                    let cx1 = ((px - 11.0) / 12.0).floor() as i32;
+                    let cx2 = ((px + 11.0) / 12.0).floor() as i32;
+                    if !edges.is_empty_row(cx1, cx2, cy, speed_dir as i32) {
+                        state = -1;
+                        continue;
+                    }
+                }
+                py = ny;
+            } else {
+                let nx = px + speed * speed_dir;
+                if state == -1 && (nx - f.xorigin) * (px - f.xorigin) < 0.0 {
+                    px = f.xorigin;
+                    state = 0;
+                    continue;
+                }
+                let cx = ((px + speed_dir * 11.0) / 12.0).floor() as i32;
+                let cx_new = ((nx + speed_dir * 11.0) / 12.0).floor() as i32;
+                if cx != cx_new {
+                    let cy1 = ((py - 11.0) / 12.0).floor() as i32;
+                    let cy2 = ((py + 11.0) / 12.0).floor() as i32;
+                    if !edges.is_empty_column(cx, cy1, cy2, speed_dir as i32) {
+                        state = -1;
+                        continue;
+                    }
+                }
+                px = nx;
+            }
+        }
+        (px, py)
+    }
+
+    pub fn compute(&mut self, sim: &Simulator) -> &[f32] {
+        self.buf.fill(0.0);
+
+        let mut bodies: Vec<MovingBody> = Vec::new();
+        for entity in &sim.entities {
+            match entity {
+                Entity::Thwump(t) => {
+                    // move_entity: displacement is `speed * direction * state`.
+                    let speed = if t.state == 1 {
+                        THWUMP_FORWARD_SPEED
+                    } else {
+                        THWUMP_BACKWARD_SPEED
+                    };
+                    let v = speed * t.direction * (t.state as f64);
+                    let (vx, vy) = if t.is_horizontal { (v, 0.0) } else { (0.0, v) };
+                    bodies.push(MovingBody {
+                        x: t.xpos,
+                        y: t.ypos,
+                        semi: THWUMP_SEMI_SIDE,
+                        vx,
+                        vy,
+                        phase: t.state as f32,
+                        thwump: Some(ThwumpForecast {
+                            is_horizontal: t.is_horizontal,
+                            direction: t.direction,
+                            state: t.state,
+                            xorigin: t.xorigin,
+                            yorigin: t.yorigin,
+                        }),
+                    });
+                }
+                Entity::ShoveThwump(s) => {
+                    // States: 0 immobile, 1 activated (still), 2 launching,
+                    // 3 retreating. Only 2 and 3 translate, and the SIGNS are
+                    // easy to get backwards: `ShoveThwump::move_entity` calls
+                    // `move_if_possible(-xdir, -ydir, 4.0)` while LAUNCHING
+                    // (state 2) and `move_if_possible(xdir, ydir, 1.0)` while
+                    // RETREATING (state 3). So the launch runs *against* xdir at
+                    // 4 px/frame and the retreat runs *along* it at 1.
+                    const SHWUMP_LAUNCH_SPEED: f64 = 4.0;
+                    const SHWUMP_RETREAT_SPEED: f64 = 1.0;
+                    let (vx, vy, phase) = match s.state {
+                        2 => (-s.xdir * SHWUMP_LAUNCH_SPEED,
+                              -s.ydir * SHWUMP_LAUNCH_SPEED, 1.0),
+                        3 => (s.xdir * SHWUMP_RETREAT_SPEED,
+                              s.ydir * SHWUMP_RETREAT_SPEED, -1.0),
+                        _ => (0.0, 0.0, 0.0),
+                    };
+                    bodies.push(MovingBody {
+                        x: s.xpos,
+                        y: s.ypos,
+                        semi: SHOVE_THWUMP_SEMI_SIDE,
+                        vx,
+                        vy,
+                        phase,
+                        thwump: None,
+                    });
+                }
+                Entity::BounceBlock(b) => {
+                    // Spring-damped about its origin; the sign of the velocity is
+                    // the useful phase bit (compressing vs rebounding).
+                    let moving = b.xspeed.abs() + b.yspeed.abs() > 1e-9;
+                    bodies.push(MovingBody {
+                        x: b.xpos,
+                        y: b.ypos,
+                        semi: BOUNCE_BLOCK_SEMI_SIDE,
+                        vx: b.xspeed,
+                        vy: b.yspeed,
+                        phase: if !moving {
+                            0.0
+                        } else {
+                            // Away from origin = being compressed, toward = rebounding.
+                            let dx = b.xpos - b.xorigin;
+                            let dy = b.ypos - b.yorigin;
+                            if dx * b.xspeed + dy * b.yspeed >= 0.0 { 1.0 } else { -1.0 }
+                        },
+                        thwump: None,
+                    });
+                }
+                _ => {}
+            }
+        }
+        if bodies.is_empty() {
+            return &self.buf;
+        }
+
+        const VNORM: f64 = THWUMP_FORWARD_SPEED;
+        for b in &bodies {
+            SolidField::stamp_box(
+                self.channel_mut(SOLID_MOTION_CH_VX),
+                b.x, b.y, b.semi,
+                (b.vx / VNORM).clamp(-1.0, 1.0) as f32,
+            );
+            SolidField::stamp_box(
+                self.channel_mut(SOLID_MOTION_CH_VY),
+                b.x, b.y, b.semi,
+                (b.vy / VNORM).clamp(-1.0, 1.0) as f32,
+            );
+            SolidField::stamp_box(
+                self.channel_mut(SOLID_MOTION_CH_PHASE),
+                b.x, b.y, b.semi, b.phase,
+            );
+        }
+
+        for (i, horizon) in SOLID_MOTION_HORIZONS.iter().enumerate() {
+            let ch = SOLID_MOTION_CH_FCAST_12 + i;
+            for b in &bodies {
+                let (fx, fy) = match &b.thwump {
+                    Some(f) => Self::step_thwump(f, b.x, b.y, *horizon, &sim.grid_edges),
+                    None => (
+                        b.x + b.vx * (*horizon as f64),
+                        b.y + b.vy * (*horizon as f64),
+                    ),
+                };
+                SolidField::stamp_box(self.channel_mut(ch), fx, fy, b.semi, 1.0);
+            }
+        }
+        &self.buf
+    }
+}
+
+impl Default for SolidMotionField {
+    fn default() -> Self {
+        Self::new()
+    }
+}

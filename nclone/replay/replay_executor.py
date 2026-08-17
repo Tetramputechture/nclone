@@ -166,6 +166,11 @@ class ReplayExecutor:
         "threat_ttl_max_frames",
         "threat_ttl_stride",
         "enable_solid_map",
+        # Gated with solid_map above. A demo re-simulated WITHOUT this key while
+        # the live policy has it produces an obs dict the extractor pads with
+        # zeros -- i.e. "nothing is moving" -- on exactly the levels the demo was
+        # collected to teach.
+        "enable_solid_motion",
     )
     # Non-boolean exposure fields whose value is applied verbatim (NOT bool-coerced)
     # so a demo re-simulates the ego-crop at the SAME size as the live policy space

@@ -66,6 +66,12 @@ class ObservationProcessor:
         # threat that is, in principle, unlearnable.
         "threat_proximity",
         "solid_map",  # optional solid-entity surface map (only when enabled)
+        # Velocity / phase / forecast of MOVING solid bodies, gated with
+        # solid_map. solid_map says a thwump is here; this says which way it is
+        # going and when it turns around, which is what riding one as a moving
+        # platform requires. Frame stacking was removed, so without this the
+        # policy cannot recover the velocity by differencing.
+        "solid_motion",
         "lattice_nav",  # optional d* nav hint (only present when enabled)
         "waypoint_nav",  # optional waypoint-subgoal nav hint (only when enabled)
         "cost_to_go_map",  # optional Phase-2 O2 global cost-to-go field (only when enabled)

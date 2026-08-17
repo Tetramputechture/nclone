@@ -42,6 +42,7 @@ pub struct PySimulator {
     /// Solid-entity surface map buffers, built lazily and reused. Same reason as
     /// `threat`: this is recomputed every step.
     solid: Option<threat_field::SolidField>,
+    solid_motion: Option<threat_field::SolidMotionField>,
     /// Telegraph block buffer. Tiny (one fixed-size vector), but held for the
     /// same reason as the fields: it is refilled every step.
     proximity: Option<threat_proximity::ThreatProximity>,
@@ -56,6 +57,7 @@ impl PySimulator {
             inner: simulator::Simulator::load(&map_data),
             threat: None,
             solid: None,
+            solid_motion: None,
             proximity: None,
         }
     }
@@ -223,6 +225,32 @@ impl PySimulator {
         let engine = self
             .solid
             .get_or_insert_with(threat_field::SolidField::new);
+        let field = engine.compute(&self.inner);
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(field.as_ptr() as *const u8, std::mem::size_of_val(field))
+        };
+        pyo3::types::PyBytes::new_bound(py, bytes)
+    }
+
+    /// Moving-platform motion field as raw f32 bytes, shape `(5, 84, 46)`.
+    ///
+    /// Channels: `[vx, vy, phase, forecast_t12, forecast_t24]`, co-registered
+    /// cell-for-cell with `solid_map`.
+    ///
+    /// `solid_map` answers "is there a surface here"; this answers "where is it
+    /// going and when does it turn around". Both are needed to ride a thwump
+    /// along its charge axis, which several official routes require: a thwump
+    /// charging toward the ninja and one retreating away occupy the same cell on
+    /// the same frame and want opposite actions, and with frame stacking removed
+    /// the policy cannot difference positions to recover the velocity itself.
+    ///
+    /// The thwump forecast is exact (it steps `Thwump::move_entity`'s own rule,
+    /// grid-edge reversal included); bounce blocks and shove thwumps carry exact
+    /// velocity and phase but a linear forecast.
+    fn solid_motion<'py>(&mut self, py: Python<'py>) -> pyo3::Bound<'py, pyo3::types::PyBytes> {
+        let engine = self
+            .solid_motion
+            .get_or_insert_with(threat_field::SolidMotionField::new);
         let field = engine.compute(&self.inner);
         let bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(field.as_ptr() as *const u8, std::mem::size_of_val(field))

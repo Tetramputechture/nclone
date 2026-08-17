@@ -385,6 +385,10 @@ class ReachabilityConfig:
     #: and ignores this.
     threat_ttl_stride: int = 4
     enable_solid_map: bool = False
+    #: Publish `solid_motion` (velocity / phase / forecast of moving solid
+    #: bodies). Requires `enable_solid_map`, because the motion field qualifies
+    #: the geometry that field publishes and is meaningless without it.
+    enable_solid_motion: bool = False
     # v25: expose the directional nearest-mine bearing + CLOSING-SPEED vector
     # (``mine_proximity``, MINE_PROXIMITY_DIM floats). The v24 fine mine crop
     # above is a still frame — it says where the mines are but not whether the
