@@ -1,1 +1,9 @@
 * text eol=lf
+# `* text eol=lf` above applies to EVERY path, binaries included -- it silently
+# CRLF-normalized the packed corpus and corrupted it on the first commit attempt.
+# Binary artifacts must opt out explicitly.
+*.gz binary
+*.zst binary
+*.pkl binary
+*.png binary
+*.mp4 binary

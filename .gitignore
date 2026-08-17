@@ -57,7 +57,11 @@ nclone/_version.py
 # OpenHands
 .openhands/
 
-datasets/
+# datasets/ is regenerable bulk EXCEPT the packed benchmark corpus, which is not:
+# see datasets/GAMMA_BENCHMARK_PHASE2.md. Pattern is `datasets/*` (not `datasets/`)
+# so the negation below can take effect -- git will not descend into an excluded
+# DIRECTORY, so a file inside one cannot be re-included.
+datasets/*
 
 .ruff_cache/validation_results.json
 
@@ -122,3 +126,8 @@ nclone/latticepaths/
 *_0th_replay
 nclone/maps/142634
 nclone/maps/142634_0.replay
+
+# --- Re-includes. These must stay LAST: gitignore lets a later pattern override an
+# earlier one, and `*.gz` above would otherwise re-exclude the packed corpus. ---
+!datasets/gamma_benchmark_phase2.tar.gz
+!datasets/GAMMA_BENCHMARK_PHASE2.md
