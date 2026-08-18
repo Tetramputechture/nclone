@@ -410,6 +410,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         self._visit_cells: int = 0  # distinct cells visited this episode
         self._visit_coverage: float = 0.0  # visited / reachable-cell fraction
         self._visitation_bonus: float = 0.0  # coef * novelty * directed added this step
+        self._episode_visitation_bonus_total: float = 0.0
         self._visit_directed_wt: float = 1.0  # P2 d*-directed weight this step
         # (src identity, reachable count, pooled (84,46) bool mask or None)
         self._visit_reachable_cache: tuple = (None, 0, None)
@@ -422,6 +423,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         self._regions_visited: set = set()
         self._region_new = False
         self._region_bonus = 0.0
+        self._episode_region_bonus_total: float = 0.0
         self._region_coverage = 0.0
         self._region_count = 0
         self._region_label_cache = None
@@ -458,6 +460,7 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             self._expose_frontier_map or self._frontier_approach_coef > 0.0
         )
         self._frontier_bonus: float = 0.0  # reward term added this step
+        self._episode_frontier_bonus_total: float = 0.0
         self._frontier_dist: float = -1.0  # cells to nearest frontier (-1 = n/a)
         self._frontier_hwm: float = float("inf")  # HWM (min approach) this epoch
         self._frontier_cells: int = 0  # frontier cells remaining
@@ -3390,13 +3393,16 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         self._regions_visited = set()
         self._region_new = False
         self._region_bonus = 0.0
+        self._episode_region_bonus_total = 0.0
         self._region_coverage = 0.0
         self._region_count = 0
         self._visit_coverage = 0.0
         self._visitation_bonus = 0.0
+        self._episode_visitation_bonus_total = 0.0
         self._visit_directed_wt = 1.0
         # v18 C1: frontier shaping state is strictly episodic too.
         self._frontier_bonus = 0.0
+        self._episode_frontier_bonus_total = 0.0
         self._frontier_dist = -1.0
         self._frontier_hwm = float("inf")
         self._frontier_cells = 0
@@ -3774,13 +3780,19 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         intrinsic used, without RND's beta-schedule / goal-decay zeroing."""
         reward = super()._modify_reward_hook(reward, curr_obs, player_won, terminated)
         if self._visitation_bonus_coef > 0.0:
-            reward = reward + float(getattr(self, "_visitation_bonus", 0.0))
+            bonus = float(getattr(self, "_visitation_bonus", 0.0))
+            reward = reward + bonus
+            self._episode_visitation_bonus_total += bonus
         # v18 C1 go-to-frontier shaping (same post-clawback slot).
         if getattr(self, "_frontier_approach_coef", 0.0) > 0.0:
-            reward = reward + float(getattr(self, "_frontier_bonus", 0.0))
+            bonus = float(getattr(self, "_frontier_bonus", 0.0))
+            reward = reward + bonus
+            self._episode_frontier_bonus_total += bonus
         # v26 W4 room-discovery bonus (same post-clawback slot).
         if self._region_novelty_coef > 0.0:
-            reward = reward + float(getattr(self, "_region_bonus", 0.0))
+            bonus = float(getattr(self, "_region_bonus", 0.0))
+            reward = reward + bonus
+            self._episode_region_bonus_total += bonus
         return reward
 
     def _compute_ego_crop(self, nx: float, ny: float) -> np.ndarray:

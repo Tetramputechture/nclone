@@ -219,3 +219,25 @@ class TestVisitationMap:
                     break
         finally:
             env.close()
+
+    def test_episode_metrics_reconcile_environment_return(self):
+        env = _make_env(expose=False, coef=0.05)
+        try:
+            env.reset(options={"map_data": _map(), "map_name": "reconcile"})
+            # End after this step so terminal info carries the full accounting.
+            env.truncation_checker.current_truncation_limit = 1
+            _obs, reward, _term, trunc, info = env.step(0)
+            assert trunc
+            metrics = info["episode_reward_metrics"]
+
+            assert metrics["visitation_bonus_total"] > 0.0
+            np.testing.assert_allclose(
+                metrics["post_calculator_bonus_total"],
+                metrics["visitation_bonus_total"],
+            )
+            np.testing.assert_allclose(metrics["episode_return_internal"], reward)
+            np.testing.assert_allclose(metrics["components_sum"], reward)
+            np.testing.assert_allclose(metrics["reconciliation_residual"], 0.0)
+            assert metrics["calculator_return_internal"] != reward
+        finally:
+            env.close()

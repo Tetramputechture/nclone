@@ -290,6 +290,11 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # because the condition previously announced itself only through a
         # per-step warning that reached 31,837 lines in one gamma-3 run.
         self._oob_truncations = 0
+        # Set for the single episode that an out-of-bounds truncation ends, and
+        # cleared when `_build_episode_info` reports it. Without this the
+        # counter above was written and never read anywhere in either repo, so
+        # the pathology was silently HANDLED but still unobservable.
+        self._episode_ended_out_of_bounds = False
 
         # Store all configuration flags for logging and debugging
         self.config_flags = {
@@ -564,6 +569,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
                 if not truncated and self._ninja_out_of_bounds():
                     truncated = True
                     self._oob_truncations += 1
+                    self._episode_ended_out_of_bounds = True
 
             self._track_position_after_step()
 
@@ -1026,6 +1032,21 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         w, h = self._LEVEL_BOUNDS_PX
         return not (0.0 <= float(x) <= w and 0.0 <= float(y) <= h)
 
+    def _report_out_of_bounds(self, info: dict) -> None:
+        """Publish escaped-ninja accounting onto an episode-end info dict.
+
+        `episode_ended_out_of_bounds` is THIS episode's cause;
+        `oob_truncations_total` is the env's lifetime count. Both are needed: a
+        rate can then be computed without differencing a monotonic counter
+        across workers. The per-episode flag is cleared on read, or every later
+        episode on the same env would report itself out of bounds.
+        """
+        info["episode_ended_out_of_bounds"] = bool(
+            self._episode_ended_out_of_bounds
+        )
+        info["oob_truncations_total"] = int(self._oob_truncations)
+        self._episode_ended_out_of_bounds = False
+
     def _check_curriculum_aware_truncation(self) -> bool:
         """Check truncation with curriculum-aware policy that respects reward config.
 
@@ -1341,6 +1362,7 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
 
         # Death and timeout diagnostics for TensorBoard
         if terminated or truncated:
+            self._report_out_of_bounds(info)
             ninja_pos = self.nplay_headless.ninja_position()
             if ninja_pos is not None:
                 px, py = float(ninja_pos[0]), float(ninja_pos[1])
@@ -1479,9 +1501,45 @@ class BaseNppEnvironment(gymnasium.Env, ProfilingMixin):
         # Episode-end reward metrics (only populated when the episode is actually done)
         if terminated or truncated:
             if hasattr(self.reward_calculator, "get_episode_reward_metrics"):
-                info["episode_reward_metrics"] = (
+                metrics = dict(
                     self.reward_calculator.get_episode_reward_metrics()
                 )
+                # The calculator is not the final environment reward boundary:
+                # NppEnvironment adds visitation/frontier/region bonuses in
+                # _modify_reward_hook. Reconcile against the reward the vecenv
+                # actually returned instead of reporting an internally exact
+                # subtotal as the episode return.
+                calculator_return = float(
+                    metrics.get("episode_return_internal", 0.0)
+                )
+                calculator_components = float(
+                    metrics.get("components_sum", calculator_return)
+                )
+                environment_return = float(self.current_ep_reward)
+                post_calculator = environment_return - calculator_return
+                metrics["calculator_return_internal"] = calculator_return
+                metrics["calculator_components_sum"] = calculator_components
+                metrics["calculator_reconciliation_residual"] = float(
+                    metrics.get("reconciliation_residual", 0.0)
+                )
+                metrics["post_calculator_bonus_total"] = post_calculator
+                metrics["visitation_bonus_total"] = float(
+                    getattr(self, "_episode_visitation_bonus_total", 0.0)
+                )
+                metrics["frontier_approach_bonus_total"] = float(
+                    getattr(self, "_episode_frontier_bonus_total", 0.0)
+                )
+                metrics["region_novelty_bonus_total"] = float(
+                    getattr(self, "_episode_region_bonus_total", 0.0)
+                )
+                metrics["episode_return_internal"] = environment_return
+                metrics["components_sum"] = (
+                    calculator_components + post_calculator
+                )
+                metrics["reconciliation_residual"] = (
+                    metrics["components_sum"] - environment_return
+                )
+                info["episode_reward_metrics"] = metrics
             # Active reward-shaping config (phase, pbrs weight/scale, time penalty)
             # for the npp-rl PBRSLoggingCallback curriculum/* panel. Previously a
             # dead read — the callback expected this key but the env never sent it.

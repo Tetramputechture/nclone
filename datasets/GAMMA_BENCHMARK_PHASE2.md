@@ -26,8 +26,8 @@ and `launch_gamma5.sh`'s `BENCH` default point at. The extracted tree is gitigno
 | tarball size | 6,609,750 B (6.6 MB) |
 | extracted size | 90 MB |
 | files | 21,278 (21,271 `.pkl`, 4 `.json`, 3 `.bak`) |
-| train / test levels | **16,206 / 3,902** |
-| buckets | 19 |
+| train / test levels (actual `.pkl` members) | **16,937 / 4,334** |
+| buckets (actual loader view) | 28 train / 28 test |
 | tiers | 4 |
 | merged bucket | `HAZARD_FIELD` |
 | official corpus | `phase1` |
@@ -36,6 +36,14 @@ The tarball is built deterministically (`--sort=name --owner=0 --group=0
 --numeric-owner --mtime='UTC 2026-08-17'`, `gzip -9n`), so a rebuild from an
 identical tree reproduces the same bytes. Round-trip was verified by sha256 over
 all 21,278 files, not by spot check.
+
+The embedded `manifest.json` still reports `split_totals_after_merge` as
+16,206/3,902 and lists 19 buckets. Those counters predate the later hazard,
+ATTRACT, phase-2 OFFICIAL and OFFICIAL_DOORS additions; they are stale metadata,
+not the archive's contents. Measured directly from the tar on 2026-08-17:
+21,271 `.pkl` members = 16,937 train + 4,334 test, byte-identical to the
+extracted tree. Consumers scan the split directories and therefore see the
+actual counts above.
 
 ## Provenance — and why it is not enough
 
