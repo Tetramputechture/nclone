@@ -169,6 +169,26 @@ class DoorAwareFreeSpaceField:
         n_open = sum(1 for d in self.necessary_order if d in idx)
         return n_open if n_open < len(self.necessary_order) else None
 
+    @property
+    def route_cost_unit(self) -> str:
+        """Delegated from whichever field actually answers a cost query."""
+        src = getattr(self, "_final", None) or self._base
+        return str(getattr(src, "route_cost_unit", "grid"))
+
+    @property
+    def route_cost_px_per_unit(self) -> float:
+        src = getattr(self, "_final", None) or self._base
+        return float(getattr(src, "route_cost_px_per_unit", 1.0))
+
+    @property
+    def exit_reachable_from_switch(self) -> bool:
+        """False when ANY field in the composition took the shrinking
+        ``_d_max_exit`` tail fallback. Conservative on purpose: a route length
+        composed from a degraded leg is not a route length."""
+        srcs = [self._base, getattr(self, "_final", None)]
+        return all(bool(getattr(s, "exit_reachable_from_switch", True))
+                   for s in srcs if s is not None)
+
     def spawn_finite(self, spawn_x: float, spawn_y: float) -> bool:
         """Whether the phase-0 cost-to-completion is usable at the spawn."""
         return bool(np.isfinite(

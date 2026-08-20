@@ -140,6 +140,11 @@ class RewardCalculator:
 
         self.episode_path_length = 0.0
         self.optimal_path_length: Optional[float] = None
+        # Unit of ``optimal_path_length`` ("frames" | "grid" | "px") and whether
+        # it is a usable route length at all. See the assignment in ``_calculate``.
+        self.optimal_path_unit: str = "px"
+        self.optimal_path_px_per_unit: float = 1.0
+        self.optimal_path_trustworthy: bool = True
         # Fastest winning frame count seen on the CURRENT level, for the
         # record-relative completion-speed bonus. Deliberately survives
         # ``reset()`` (it is a cross-episode personal best) and is cleared only
@@ -418,8 +423,37 @@ class RewardCalculator:
                 initial_dist_exit=self._initial_dist_exit,
                 max_dist_exit=self._initial_dist_exit,
             )
+            # Route length at spawn, for the per-level discount proxy and the
+            # completion-speed par.
+            #
+            # The two distances are NOT two disjoint legs. Under a committed
+            # potential substitution the phase-0 slot is already the composed
+            # COST-TO-COMPLETION (spawn -> switch -> exit) and the phase-1 slot
+            # is the cost-to-exit from the same point, so summing them adds a
+            # second, overlapping copy of the exit leg -- measured at ~2x the
+            # route on the 306 verified official tapes. Only the un-substituted
+            # A* fallback has genuinely disjoint per-phase legs.
+            _subst = bool(obs.get("_potential_substituted", False))
+            self.optimal_path_unit = (
+                str(obs.get("_potential_route_unit", "px")) if _subst else "px"
+            )
+            self.optimal_path_px_per_unit = (
+                float(obs.get("_potential_route_px_per_unit", 1.0))
+                if _subst else 1.0
+            )
+            # A composed cost-to-completion that descends the `_d_max_exit` tail
+            # fallback is an UNDER-estimate that shrinks with the severed
+            # component, not an upper bound -- so it is not a route length at
+            # all. Publish it as unknown and let the consumer take its documented
+            # fallback rather than a confidently wrong number.
+            self.optimal_path_trustworthy = (
+                bool(obs.get("_potential_route_trustworthy", True))
+                if _subst else True
+            )
             self.optimal_path_length = (
-                self._initial_dist_switch + self._initial_dist_exit
+                self._initial_dist_switch
+                if _subst
+                else self._initial_dist_switch + self._initial_dist_exit
             )
             # Geometric-fallback continuity: when PBRS is on but the env's
             # potential substitution did NOT commit (the obs flag is explicitly
@@ -690,9 +724,13 @@ class RewardCalculator:
                                 speed_bonus_extra = _rb
                                 terminal_reward += speed_bonus_extra
                                 self.episode_new_record_reward = speed_bonus_extra
-                if frac is None and self.config.completion_speed_par_norm and self.optimal_path_length:
-                    par_frames = float(self.optimal_path_length) / max(
-                        self.config.completion_speed_par_speed_px, 1e-6
+                if frac is None and self.config.completion_speed_par_norm:
+                    # `completion_speed_par_scale` applies HERE and nowhere else:
+                    # the per-level discount consumes the route length itself
+                    # via `info["optimal_path_frames"]`, and scaling that would
+                    # change the horizon as well as the bonus.
+                    par_frames = self.optimal_route_frames() * float(
+                        getattr(self.config, "completion_speed_par_scale", 1.0)
                     )
                     frames_used = obs.get("sim_frame")
                     if (
@@ -746,9 +784,20 @@ class RewardCalculator:
 
         # Non-terminal: HWM shaping + sparse switch + gold + time + backtrack.
         reward = 0.0
+        # Per-step summands that `last_components` used to omit. Every term that
+        # is added to `reward` below must land in one of these, because the
+        # published breakdown is what any per-term attribution has to add up
+        # from -- and until this existed, `total_reward` was right while the
+        # published parts silently were not a partition of it (the waypoint
+        # reach bonus alone was 1.32 of a 15.15 episode return, invisible).
+        switch_reward = 0.0
+        momentum_pbrs_reward = 0.0
+        pace_pbrs_reward = 0.0
+        stall_penalty_step = 0.0
 
         if switch_just_activated:
-            reward += self.config.switch_activation_reward
+            switch_reward = self.config.switch_activation_reward
+            reward += switch_reward
 
         reward += gold_payout
         self.episode_gold_paid_total += gold_payout
@@ -844,10 +893,12 @@ class RewardCalculator:
         if self.config.enable_momentum_pbrs:
             _mom = self._momentum_shaping(obs, frames_executed)
             reward += _mom
+            momentum_pbrs_reward = _mom
             self.episode_momentum_pbrs_reward += _mom
         if self.config.enable_pace_pbrs:
             _pace = self._pace_shaping(obs, self._last_cost_to_go_raw)
             reward += _pace
+            pace_pbrs_reward = _pace
             self.episode_pace_pbrs_reward += _pace
 
         # Per-leg waypoint PBRS: F = w*(gamma*Phi(s') - Phi(s)) with Phi toward the
@@ -1213,6 +1264,7 @@ class RewardCalculator:
                         ) * frames_executed
                         stall_penalty = -min(mag, self.config.stall_penalty_cap)
                         reward += stall_penalty
+                        stall_penalty_step = stall_penalty
                         self.episode_stall_penalty_total += stall_penalty
                 else:
                     self._stall_no_improve_frames = 0
@@ -1235,9 +1287,11 @@ class RewardCalculator:
             if eucl_exit < self.closest_distance_to_exit:
                 self.closest_distance_to_exit = eucl_exit
 
+        truncation_penalty = 0.0
         if truncated:
-            reward += self.config.truncation_penalty
-            self.episode_truncation_penalty += self.config.truncation_penalty
+            truncation_penalty = float(self.config.truncation_penalty)
+            reward += truncation_penalty
+            self.episode_truncation_penalty += truncation_penalty
 
         scaled = reward * GLOBAL_REWARD_SCALE
         self.last_components = {
@@ -1249,10 +1303,28 @@ class RewardCalculator:
             "gold_reward": gold_payout,
             "gold_pickup_reward": gold_reward,
             "locked_door_reward": door_reward,
+            # Summands added below so the published breakdown PARTITIONS
+            # total_reward. `pbrs_reward` already aggregates the lattice,
+            # waypoint, hazard, impact and arc-risk potentials.
+            "switch_reward": switch_reward,
+            "momentum_pbrs_reward": momentum_pbrs_reward,
+            "pace_pbrs_reward": pace_pbrs_reward,
+            "waypoint_reach_bonus": self.step_waypoint_reach_bonus,
+            "stall_penalty": stall_penalty_step,
             "subgoal_phase": subgoal_phase,
             "beta_blend_hwm": beta_hwm,
             "time_penalty": time_penalty,
             "backtrack_penalty": backtrack_penalty,
+            # The timeout lump. It was added to `reward` above and accumulated
+            # into `episode_truncation_penalty` for the EPISODE metrics, but was
+            # never published as a step key -- so on a truncated step the
+            # published breakdown missed the largest summand on the step
+            # (-1.5 against a ~-0.01 step reward) and did not partition
+            # `total_reward`. Same class as the five summands the batch-2 audit
+            # added; found by the per-term advantage attribution, where it
+            # surfaced as up to 56% of one rollout's advantage magnitude having
+            # no named source.
+            "truncation_penalty": truncation_penalty,
             "frontier_bonus": frontier_bonus,
             "landing_bonus": landing_bonus,
             "total_reward": reward,
@@ -1360,6 +1432,41 @@ class RewardCalculator:
             return float(d)
         except Exception:
             return None
+
+    def optimal_route_frames(self) -> float:
+        r"""``optimal_path_length`` expressed in FRAMES, or 0.0 when unknown.
+
+        This is the single definition of "how long is this level's route",
+        consumed by the per-level discount (``info["optimal_path_frames"]`` ->
+        ``figar_ppo``) and by the completion-speed par bonus. It exists because
+        ``optimal_path_length`` does **not** have one unit:
+
+        * un-substituted, it is an A\* path cost in **pixels**;
+        * substituted from the physics free-space flood or the surface lattice,
+          it is already in **frames** (those floods charge estimated frames per
+          edge) and no par-speed division applies;
+        * substituted from a geometric / mine-threading flood, it is in **grid
+          steps** of ``route_cost_px_per_unit`` pixels.
+
+        Dividing all three by ``completion_speed_par_speed_px`` -- which is what
+        both consumers used to do -- is correct for exactly one of them.
+        Returns 0.0 rather than a wrong number when the length is unavailable or
+        known-degraded, so each consumer takes its documented fallback.
+        """
+        opl = self.optimal_path_length
+        if not opl or float(opl) <= 0.0:
+            return 0.0
+        if not getattr(self, "optimal_path_trustworthy", True):
+            return 0.0
+        unit = getattr(self, "optimal_path_unit", "px")
+        if unit == "frames":
+            return float(opl)
+        par = max(float(self.config.completion_speed_par_speed_px or 1.0), 1e-6)
+        if unit == "grid":
+            return float(opl) * float(
+                getattr(self, "optimal_path_px_per_unit", 1.0)
+            ) / par
+        return float(opl) / par
 
     def _get_distances(
         self,
@@ -1647,6 +1754,9 @@ class RewardCalculator:
 
         self.episode_path_length = 0.0
         self.optimal_path_length = None
+        self.optimal_path_unit = "px"
+        self.optimal_path_px_per_unit = 1.0
+        self.optimal_path_trustworthy = True
         self.prev_player_pos = None
         self.spawn_position = None
         self._prev_goal_dist = None

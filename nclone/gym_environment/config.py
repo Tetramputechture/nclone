@@ -527,6 +527,17 @@ class EnvironmentConfig:
     # Reward system configuration
     reward_config: Optional[RewardConfig] = None
 
+    # Publish the reward calculator's per-step component breakdown in the step
+    # ``info`` dict, as ``info["reward_components"]``.
+    #
+    # Off by default and deliberately so: it is a dict copy per env per frame on
+    # the collect loop, which the throughput census names as the bound. It exists
+    # for the per-term TD-residual / advantage attribution the design critique
+    # asks for (§5.2) -- reward -> delta -> advantage -> gradient cannot be
+    # measured from a scalar reward, and no offline replay can supply the value
+    # function the residual is taken against.
+    expose_reward_components: bool = False
+
     # Shared level cache (for zero-copy multi-worker training on same level)
     shared_level_cache: Optional[Any] = None
 

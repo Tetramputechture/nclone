@@ -140,13 +140,27 @@ class PhysicsRouteSpike:
         )
 
     # --- sim helpers ---
+    #: A ``save_full_state()`` buffer to start replays/traces from instead of
+    #: spawn. ``None`` = spawn, which is every existing caller. Set by
+    #: ``FastDStarSolver.plan(start_snapshot=...)`` so a search that STARTED from
+    #: an arbitrary policy-visited state also traces and tapes from it -- without
+    #: this, ``_trace`` and ``frame_inputs`` silently replay the plan from spawn
+    #: and return a trajectory for a route nobody took.
+    _start_snapshot = None
+
+    def _reset_to_start(self) -> None:
+        if self._start_snapshot is None:
+            self.sim.fast_reset()
+        else:
+            self.sim.restore_full_state(self._start_snapshot)
+
     def _replay(self, actions: List[int]) -> int:
         """Replay an action list on the sim; return total frames advanced.
 
         Base actions hold ``ACT[a]`` for ``macro`` frames.  Clincher actions
         (id in ``_clinch_ids``) run the adaptive CDJ from the CURRENT state, so
         the trick's impulse stacks on whatever velocity the chain carried in."""
-        self.sim.fast_reset()
+        self._reset_to_start()
         frames = 0
         for a in actions:
             if a in self._clinch_ids:
@@ -179,7 +193,7 @@ class PhysicsRouteSpike:
         cannot be expanded statically — it is captured live here by re-running the
         clincher on the sim.  Used for the winning trajectory / render tape."""
         from ..cdj_primitive import execute_cdj
-        self.sim.fast_reset()
+        self._reset_to_start()
         tape: List[Tuple[int, int]] = []
         for a in actions:
             if a in self._clinch_ids:
@@ -313,7 +327,7 @@ class PhysicsRouteSpike:
     def _trace(self, actions: List[int]) -> Tuple[List[Tuple[float, float]], Optional[int]]:
         """Replay frame-by-frame to capture the full physical trajectory."""
         tape = self.frame_inputs(actions)  # exact per-frame inputs (mutates sim)
-        self.sim.fast_reset()
+        self._reset_to_start()
         traj = [self.sim.get_ninja_pos()]
         switch_frame = None
         frame = 0

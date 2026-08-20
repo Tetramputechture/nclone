@@ -309,6 +309,27 @@ class RewardConfig:
     # because the bonus is a RATIO this only sets where the gradient is steepest,
     # not the ceiling, so mild misspecification is harmless.
     completion_speed_par_speed_px: float = 2.5
+    # Multiplier on the par, applied ONLY to the speed bonus and never to
+    # `info["optimal_path_frames"]` (the per-level discount reads the route
+    # length itself). It exists because correcting the route-length UNITS moved
+    # this reward as a side effect: measured over 297 verified routes, the bonus
+    # rose on 282 and fell on 0, gained 8.2% of R_EXIT on average, and the
+    # fraction of levels pinned at the cap -- where `frac` clamps at 1.0 and the
+    # term carries NO gradient -- went from 5% to 40%. A scale of 0.70
+    # reproduces the pre-correction reward (mean bonus 2.027 vs 1.909) and keeps
+    # the term graded; see `docs/FINDINGS_critique_batch4.md` §4.3 and
+    # `scripts/price_completion_speed_par.py`.
+    #
+    # DEFAULT 1.0 = the corrected par, i.e. no change from what ships today,
+    # and batch 6 §2 DECIDES to keep it there. `par_frames = route_px /
+    # par_speed_px`, so a par SCALE is exactly a rescaling of the assumed speed:
+    # 0.70 asserts 3.571 px/frame, and 5 of the 297 verified optimal routes
+    # reach that -- on 98% of levels the cap becomes unreachable rather than
+    # merely harder. The saturation argument FOR 0.70 was measured at the tape's
+    # frame count; priced at the frame count the policy actually achieves on the
+    # 48 levels it wins (median 1.28x the tape), scale 1.0 saturates on 8 of 48,
+    # not two levels in five. See `docs/FINDINGS_critique_batch6.md` §2.
+    completion_speed_par_scale: float = 1.0
     # SINGLE-LEVEL SPEEDRUN: reference the speed bonus to the fastest win this
     # env has ever recorded on the level (a personal-best RECORD) instead of a
     # static par. Motivation: both the par and budget forms clamp at 1.0, so once

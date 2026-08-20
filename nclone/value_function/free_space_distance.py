@@ -689,6 +689,28 @@ class FreeSpaceDistanceSource:
     switch: Optional[Tuple[float, float]] = None
     exit: Optional[Tuple[float, float]] = None
     available = False
+    # ``exit_cost_at_switch`` is trustworthy only when the exit was actually
+    # reachable from the switch in this mask; ``_build`` clears this when it has
+    # to take the ``_d_max_exit`` fallback (see the WARNING there). Declared at
+    # class level for the same ``__new__`` reason as the block above.
+    exit_reachable_from_switch = True
+
+    @property
+    def route_cost_unit(self) -> str:
+        """The unit ``cost_to_go`` / ``cost_to_completion`` return.
+
+        ``"frames"`` under the anisotropic physics cost model (``_dijkstra_physics``
+        charges estimated FRAMES per edge); ``"grid"`` otherwise (``_dijkstra``
+        charges 1.0 / 1.41 grid steps of ``_CELL`` px). Consumers that need a
+        route LENGTH -- the per-level discount proxy and the completion-speed par
+        -- have to know which they were handed; there is no par speed that
+        converts both.
+        """
+        return "frames" if self._physics_cost else "grid"
+
+    #: Pixels per grid step, for a consumer converting a ``"grid"`` cost.
+    route_cost_px_per_unit = float(_CELL)
+
 
     def __init__(self, map_data: List[int], *, name: Optional[str] = None,
                  mine_hard: bool = False, physics_cost: Optional[bool] = None,

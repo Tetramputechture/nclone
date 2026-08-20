@@ -440,6 +440,14 @@ class LatticeDistanceSource:
             return self._d_ex, self._d_max_ex
         return self._d_comb, self._d_max_comb
 
+    #: The surface lattice's ``d*`` is a physics-derived frame count, so its
+    #: cost IS a route length in frames -- no par-speed conversion applies.
+    route_cost_unit = "frames"
+    route_cost_px_per_unit = 1.0
+    #: The lattice composes its phases internally (``d_comb``), so it never takes
+    #: the free-space sources' ``_d_max_exit`` tail fallback.
+    exit_reachable_from_switch = True
+
     def cost_to_go(
         self, x: float, y: float, switch_activated: bool, open_door_indices=None
     ) -> float:

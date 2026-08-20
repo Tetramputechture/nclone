@@ -101,9 +101,26 @@ class FastDStarSolver(DStarGuidedSpike):
                 return frames
         return frames
 
-    def plan(self) -> dict:  # noqa: C901 - mirrors the parent loop structure
+    def plan(self, start_snapshot: Optional[bytes] = None) -> dict:  # noqa: C901
+        """Search a winning route from ``start_snapshot``, or from spawn.
+
+        ``start_snapshot`` is a ``save_full_state()`` buffer -- the same object
+        the search already stores per frontier node, so starting from an
+        arbitrary state costs exactly what expanding one costs (~8 us restore)
+        and needs no replay prefix. This is what makes an ORACLE-LABELLING probe
+        on policy-visited states possible at all: the states a policy reaches are
+        off-tape by construction, so no action prefix from spawn exists to replay.
+
+        ``g`` still counts from 0, so the returned cost is frames-to-finish FROM
+        THIS STATE and ``max_frames`` bounds the remaining route rather than the
+        whole one. The search is otherwise identical, including the dedup key and
+        the lattice heuristic (both are functions of the state, not of the path).
+        """
         t0 = time.time()
-        self.sim.fast_reset()
+        # Also makes `_trace`/`frame_inputs` replay from here rather than from
+        # spawn (see `PhysicsRouteSpike._reset_to_start`).
+        self._start_snapshot = start_snapshot
+        self._reset_to_start()
         root = self._read_state(0)
         # State snapshots are 966-byte buffers (all values 0-255); store as
         # ``bytes`` (~1 KB/node, compact + immutable) and restore via ``list``.

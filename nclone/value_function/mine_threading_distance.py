@@ -94,6 +94,11 @@ class MineThreadingDistanceSource:
         self._d_max_switch = 1.0
         self._d_max_exit = 1.0
         self.exit_cost_at_switch = 0.0
+        # Whether ``exit_cost_at_switch`` is a real switch->exit tail or the
+        # ``_d_max_exit`` fallback. The fallback SHRINKS with the severed
+        # component (see the WARNING on the free-space source), so a consumer
+        # that needs a route LENGTH must refuse it rather than believe it.
+        self.exit_reachable_from_switch = True
         try:
             self._build(list(map_data))
         except Exception as e:  # pragma: no cover
@@ -208,6 +213,7 @@ class MineThreadingDistanceSource:
         # Phase-1 tail constant: exit cost at the switch (continuity across
         # activation). Evaluated in inner space (the field's frame).
         c = self._field_at(self._d_exit, *switch_in)
+        self.exit_reachable_from_switch = bool(np.isfinite(c))
         self.exit_cost_at_switch = float(c) if np.isfinite(c) else float(self._d_max_exit)
 
         self.available = (np.isfinite(self._d_switch).any()
@@ -359,6 +365,11 @@ class MineThreadingDistanceSource:
         if switch_activated:
             return self._d_exit, self._d_max_exit
         return self._d_switch, self._d_max_switch
+
+    #: The mine-threading flood charges geometric grid steps (with a mine-
+    #: clearance multiplier), not frames -- see ``_build``'s ``orth``/``diag``.
+    route_cost_unit = "grid"
+    route_cost_px_per_unit = float(_CELL)
 
     def cost_to_go(self, x: float, y: float, switch_activated: bool) -> float:
         if not self.available:

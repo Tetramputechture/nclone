@@ -200,6 +200,22 @@ class GlobalPotentialSource:
         self._active = self._primary
         return False
 
+    @property
+    def route_cost_unit(self) -> str:
+        """The unit the ACTIVE source's costs are in -- ``"frames"`` for the
+        physics-cost free-space flood and the lattice, ``"grid"`` otherwise.
+        The route-length proxy has to read this: there is no single par speed
+        that converts both, and the two differ by more than 2x."""
+        return str(getattr(self._active, "route_cost_unit", "grid"))
+
+    @property
+    def route_cost_px_per_unit(self) -> float:
+        return float(getattr(self._active, "route_cost_px_per_unit", 1.0))
+
+    @property
+    def exit_reachable_from_switch(self) -> bool:
+        return bool(getattr(self._active, "exit_reachable_from_switch", True))
+
     def door_phase(
         self, switch_activated: bool, open_door_indices=None
     ) -> Optional[int]:

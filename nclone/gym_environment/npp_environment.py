@@ -934,18 +934,54 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # already has the d* cost in pixels; converting with the same par speed
         # the completion-speed bonus uses keeps the two definitions of "par" from
         # drifting apart. 0.0 = unknown (the consumer falls back to a fixed gamma).
-        _opl = getattr(self.reward_calculator, "optimal_path_length", None)
-        if _opl:
-            _par_px = max(
-                float(
-                    getattr(self.config, "completion_speed_par_speed_px", 1.0)
-                    or 1.0
-                ),
-                1e-6,
+        # `optimal_route_frames()` owns the unit conversion. This used to read
+        # `completion_speed_par_speed_px` off `self.config` -- the ENVIRONMENT
+        # config, which has no such field (it lives on `config.reward_config`),
+        # so the `getattr` default fired and the division was by 1.0. The proxy
+        # was therefore a DISTANCE published as a frame count, and the per-level
+        # discount consumed it as frames. It returns 0.0 (= unknown, consumer
+        # keeps the global gamma) when the route length is unavailable or when
+        # it descends a degraded switch->exit tail.
+        info["optimal_path_frames"] = float(
+            self.reward_calculator.optimal_route_frames()
+        )
+
+        # Per-term reward breakdown for the learner's advantage attribution
+        # (§5.2). Opt-in: this is a dict copy per env per frame on the collect
+        # loop. `last_components` is a PARTITION of the step reward (see
+        # tests/test_reward_components_partition.py), which is what makes a
+        # per-term GAE decomposition add back up.
+        if getattr(self.config, "expose_reward_components", False):
+            _comp = dict(
+                getattr(self.reward_calculator, "last_components", None) or {}
             )
-            info["optimal_path_frames"] = float(_opl) / _par_px
-        else:
-            info["optimal_path_frames"] = 0.0
+            # The calculator is not the environment's reward boundary. Merge in
+            # what `_modify_reward_hook` added on THIS step so the published
+            # dict partitions the reward the vecenv actually returned, and add
+            # the difference to `total_reward` so the partition still closes.
+            _post = getattr(self, "_last_post_calculator_bonuses", None)
+            if _post and _comp:
+                _comp.update(_post)
+                _extra = float(sum(_post.values()))
+                if _extra:
+                    # The hook adds its bonus to the reward the calculator has
+                    # ALREADY scaled, so `scaled_reward` takes it as-is and
+                    # `total_reward` (the pre-scale sum) takes it divided back.
+                    # Identical while GLOBAL_REWARD_SCALE is 1.0; written this
+                    # way so changing that constant does not silently make the
+                    # published breakdown stop adding up.
+                    from .reward_calculation.reward_constants import (
+                        GLOBAL_REWARD_SCALE,
+                    )
+
+                    if "scaled_reward" in _comp:
+                        _comp["scaled_reward"] = float(_comp["scaled_reward"]) + _extra
+                    if "total_reward" in _comp:
+                        _comp["total_reward"] = (
+                            float(_comp["total_reward"])
+                            + _extra / float(GLOBAL_REWARD_SCALE or 1.0)
+                        )
+            info["reward_components"] = _comp
 
         info["region_bonus"] = float(getattr(self, "_region_bonus", 0.0))
         info["region_new"] = bool(getattr(self, "_region_new", False))
@@ -2320,6 +2356,20 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         # degrades to the HWM ratchet — see RewardCalculator PBRS episode-init.
         obs["_potential_substituted"] = bool(
             getattr(self, "_potential_substituted", False)
+        )
+        # How to read those distances as a route LENGTH, and whether the
+        # composed cost-to-completion descends a real switch->exit tail. The
+        # reward calculator publishes `optimal_path_length` from them, and its
+        # two consumers (the per-level discount and the completion-speed par)
+        # both need a unit they can convert.
+        obs["_potential_route_unit"] = str(
+            getattr(self, "_potential_route_unit", "px")
+        )
+        obs["_potential_route_px_per_unit"] = float(
+            getattr(self, "_potential_route_px_per_unit", 1.0)
+        )
+        obs["_potential_route_trustworthy"] = bool(
+            getattr(self, "_potential_route_trustworthy", True)
         )
         # Number of necessary locked doors opened (from the lattice door plan);
         # consumed by the reward calculator for the locked-door-switch bonus +
@@ -3779,20 +3829,34 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
         in the single-head reward stream that feeds GAE — the same path the RND
         intrinsic used, without RND's beta-schedule / goal-decay zeroing."""
         reward = super()._modify_reward_hook(reward, curr_obs, player_won, terminated)
+        # What this hook adds is recorded, not just added. These three land in
+        # the env reward AFTER `RewardCalculator.last_components` is published,
+        # so without this the per-step breakdown does not partition the reward
+        # the vecenv returns -- measured at 13.5% of the GAE advantage magnitude
+        # under the v22/gamma-5 launch config, larger than `pbrs_reward`'s
+        # share, and invisible to every per-component analysis. The episode
+        # metrics already reconcile against it (see `base_environment`'s
+        # `post_calculator_bonus_total`); the STEP dict did not.
+        added = {"visitation_bonus": 0.0, "frontier_approach_bonus": 0.0,
+                 "region_novelty_bonus": 0.0}
         if self._visitation_bonus_coef > 0.0:
             bonus = float(getattr(self, "_visitation_bonus", 0.0))
             reward = reward + bonus
+            added["visitation_bonus"] = bonus
             self._episode_visitation_bonus_total += bonus
         # v18 C1 go-to-frontier shaping (same post-clawback slot).
         if getattr(self, "_frontier_approach_coef", 0.0) > 0.0:
             bonus = float(getattr(self, "_frontier_bonus", 0.0))
             reward = reward + bonus
+            added["frontier_approach_bonus"] = bonus
             self._episode_frontier_bonus_total += bonus
         # v26 W4 room-discovery bonus (same post-clawback slot).
         if self._region_novelty_coef > 0.0:
             bonus = float(getattr(self, "_region_bonus", 0.0))
             reward = reward + bonus
+            added["region_novelty_bonus"] = bonus
             self._episode_region_bonus_total += bonus
+        self._last_post_calculator_bonuses = added
         return reward
 
     def _compute_ego_crop(self, nx: float, ny: float) -> np.ndarray:

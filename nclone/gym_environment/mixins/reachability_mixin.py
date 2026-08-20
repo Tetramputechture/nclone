@@ -107,6 +107,15 @@ class ReachabilityMixin:
         # PBRS never flips basis at switch activation. Exposed into the obs dict
         # as ``_potential_substituted`` (reward metadata, stripped from policy obs).
         self._potential_substituted = False
+        # Route-length metadata for whichever source committed the substitution.
+        # ``_potential_route_unit`` is "frames" | "grid" | "px" and says how to
+        # read ``_cached_switch_distance`` as a route LENGTH;
+        # ``_potential_route_trustworthy`` is False when the composed
+        # cost-to-completion descends a degraded switch->exit tail (the
+        # ``_d_max_exit`` fallback), which SHRINKS rather than bounds.
+        self._potential_route_unit = "px"
+        self._potential_route_px_per_unit = 1.0
+        self._potential_route_trustworthy = True
         # Cached physics-aware nav hint for the optional ``lattice_nav`` obs key.
         self._cached_lattice_nav = np.zeros(4, dtype=np.float32)
 
@@ -407,6 +416,7 @@ class ReachabilityMixin:
         # sets it back to True. When it stays False the raw per-phase A* distances
         # are live and the reward calculator applies its own continuity fallback.
         self._potential_substituted = False
+        self._set_route_meta(None, False)
 
         if want_global:
             map_name = getattr(
@@ -458,6 +468,7 @@ class ReachabilityMixin:
             self._potential_substituted = bool(
                 np.isfinite(c_sw) and np.isfinite(c_ex)
             )
+            self._set_route_meta(src, self._potential_substituted)
             self._global_potential_source_kind = str(
                 getattr(src, "source_kind", "global")
             )
@@ -513,6 +524,7 @@ class ReachabilityMixin:
                     committed_src, nx, ny, switch_activated
                 )
             self._potential_substituted = committed_src is not None
+            self._set_route_meta(committed_src, self._potential_substituted)
             return
         try:
             map_name = getattr(
@@ -604,10 +616,12 @@ class ReachabilityMixin:
                 self._potential_substituted = bool(
                     np.isfinite(c_sw) and np.isfinite(c_ex)
                 )
+                self._set_route_meta(src, self._potential_substituted)
         except Exception:
             # Never let the potential source break an episode.
             self._use_lattice_this_episode = False
             self._potential_substituted = False
+            self._set_route_meta(None, False)
 
     # ------------------------------------------------------------------
     # Locked-door necessity
@@ -749,9 +763,35 @@ class ReachabilityMixin:
             return
         if self._minethreading_substitute(nx, ny, switch_activated):
             self._potential_substituted = True
+            self._set_route_meta(self._minethreading_source, True)
             return
         self._potential_substituted = bool(
             self._freespace_substitute(nx, ny, switch_activated, want_reward)
+        )
+        self._set_route_meta(self._freespace_source, self._potential_substituted)
+
+    def _set_route_meta(self, src, committed: bool) -> None:
+        """Record how to read the substituted distances as a route LENGTH.
+
+        The reward distances are substituted with a potential whose unit is a
+        property of the source (the physics free-space flood and the surface
+        lattice charge FRAMES; the geometric flood and the mine-threading flood
+        charge grid steps), while the un-substituted fallback is an A* path cost
+        in PIXELS. ``optimal_path_length`` is consumed as a route length by the
+        per-level discount and the completion-speed par, and neither can convert
+        a number whose unit it cannot see.
+        """
+        if not committed:
+            self._potential_route_unit = "px"
+            self._potential_route_px_per_unit = 1.0
+            self._potential_route_trustworthy = True
+            return
+        self._potential_route_unit = str(getattr(src, "route_cost_unit", "grid"))
+        self._potential_route_px_per_unit = float(
+            getattr(src, "route_cost_px_per_unit", 1.0)
+        )
+        self._potential_route_trustworthy = bool(
+            getattr(src, "exit_reachable_from_switch", True)
         )
 
     def _maybe_ballistic_reevaluate(
