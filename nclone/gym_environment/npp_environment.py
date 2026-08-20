@@ -3817,6 +3817,24 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
             nx, ny = self.nplay_headless.ninja_position()
             self._update_region_novelty(nx, ny)
 
+    def set_expose_reward_components(self, enabled: bool) -> bool:
+        """Turn the per-step reward breakdown on or off at runtime.
+
+        `info["reward_components"]` costs a dict copy per env per FRAME on the
+        collect loop, and the learner only decomposes one rollout in
+        ``--advantage-attribution-freq``. Paying it on every step of every
+        rollout was measured at **12.2% of throughput** at 64 envs (799 vs 910
+        fps over 131,072 steps on a GH200, 2026-08-20) -- 4+ hours on a 100M
+        run, for a table built 1% of the time. The learner now broadcasts this
+        once per rollout so the cost is paid only on the rollouts that are
+        actually attributed.
+
+        Returns the value that is now in effect, so a broadcast that did not
+        land reads as a number rather than as a silently unchanged env.
+        """
+        self.config.expose_reward_components = bool(enabled)
+        return bool(self.config.expose_reward_components)
+
     def _modify_reward_hook(
         self,
         reward: float,
