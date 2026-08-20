@@ -3822,12 +3822,27 @@ class NppEnvironment(BaseNppEnvironment, GraphMixin, ReachabilityMixin, DebugMix
 
         `info["reward_components"]` costs a dict copy per env per FRAME on the
         collect loop, and the learner only decomposes one rollout in
-        ``--advantage-attribution-freq``. Paying it on every step of every
-        rollout was measured at **12.2% of throughput** at 64 envs (799 vs 910
-        fps over 131,072 steps on a GH200, 2026-08-20) -- 4+ hours on a 100M
-        run, for a table built 1% of the time. The learner now broadcasts this
-        once per rollout so the cost is paid only on the rollouts that are
-        actually attributed.
+        ``--advantage-attribution-freq``, so it broadcasts this once per rollout
+        and pays only on the rollouts it actually attributes.
+
+        HOW MUCH THAT SAVES: below the noise floor. MEASURED on the GH200 2026-08-20, 64 envs, 3 arms x 3 interleaved
+        repeats of 131,072 steps each (wall seconds, lower is better):
+
+            publish every step   168 149 150   mean 155.7  sd 10.7   842 fps
+            toggle per rollout   149 154 162   mean 155.0  sd  6.6   846 fps
+            attribution off      146 159 150   mean 151.7  sd  6.7   864 fps
+
+        The WHOLE instrumentation costs about 2.6% of wall time, and the per-rollout
+        toggle buys 0.4% of that -- nothing, against a within-arm spread of 8.7-12.8%
+        and a pooled sd of 4.8%.
+
+        A RETRACTION, recorded because it drove this code: the first version of this
+        measurement was ONE pair, read a 13.9% gap off it, and that number went into
+        a commit message. The same arm then ran 144 s and 157 s on identical config.
+        A single pair could not carry the claim and the claim was wrong.
+
+        It is kept because it is strictly less work and its semantics are
+        pinned by tests, NOT because it was measured to buy throughput.
 
         Returns the value that is now in effect, so a broadcast that did not
         land reads as a number rather than as a silently unchanged env.
